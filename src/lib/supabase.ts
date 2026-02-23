@@ -1,7 +1,26 @@
 import { createClient } from '@supabase/supabase-js'
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || ''
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
+const resolveEnvValue = (...candidates: Array<string | undefined>) => {
+  for (const candidate of candidates) {
+    const normalized = String(candidate || '').trim()
+    if (normalized) {
+      return normalized
+    }
+  }
+  return ''
+}
+
+const supabaseUrl = resolveEnvValue(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_PUBLIC_SUPABASE_URL,
+)
+
+const supabaseAnonKey = resolveEnvValue(
+  import.meta.env.VITE_SUPABASE_ANON_KEY,
+  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+  import.meta.env.VITE_PUBLIC_SUPABASE_ANON_KEY,
+  import.meta.env.VITE_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
+)
 
 const decodeBase64 = (value: string): string => {
   if (typeof atob === 'function') {

@@ -67,6 +67,57 @@ const resolveChatApiUrl = (): string => {
   return baseUrl.endsWith("/api/chat") ? baseUrl : `${baseUrl}/api/chat`
 }
 
+type ChatApiError = Error & {
+  chatErrorCode?: string
+  chatTraceId?: string
+}
+
+const createChatApiError = (message: string, errorCode?: string, traceId?: string): ChatApiError => {
+  const error = new Error(message) as ChatApiError
+  if (errorCode) {
+    error.chatErrorCode = errorCode
+  }
+  if (traceId) {
+    error.chatTraceId = traceId
+  }
+  return error
+}
+
+const mapChatApiErrorMessage = (errorCode: string, fallbackMessage: string) => {
+  switch (errorCode) {
+    case "UPSTREAM_CONNECTION_FAILED":
+    case "UPSTREAM_TIMEOUT":
+    case "FUNCTION_BUDGET_TIMEOUT":
+    case "UPSTREAM_EMPTY_RESPONSE":
+    case "UPSTREAM_EMPTY_RESPONSE_MAX_TOKENS":
+      return "AI 서버 연결이 불안정합니다. 잠시 후 다시 시도해주세요."
+    case "UPSTREAM_LOCATION_UNSUPPORTED":
+      return "현재 서버 지역에서는 Gemini API를 사용할 수 없습니다. 관리자에게 문의해주세요."
+    case "UPSTREAM_INVALID_RESPONSE":
+    case "UPSTREAM_INVALID_FORMAT":
+      return "AI 응답 형식이 불안정합니다. 잠시 후 다시 시도해주세요."
+    default:
+      return fallbackMessage
+  }
+}
+
+const NETWORK_ERROR_CODES = new Set([
+  "CLIENT_NETWORK_ERROR",
+  "CLIENT_TIMEOUT",
+  "UPSTREAM_CONNECTION_FAILED",
+  "UPSTREAM_TIMEOUT",
+  "FUNCTION_BUDGET_TIMEOUT",
+  "UPSTREAM_EMPTY_RESPONSE",
+  "UPSTREAM_EMPTY_RESPONSE_MAX_TOKENS",
+])
+
+const CONFIGURATION_ERROR_CODES = new Set([
+  "UPSTREAM_LOCATION_UNSUPPORTED",
+  "UPSTREAM_INVALID_FORMAT",
+  "UPSTREAM_INVALID_RESPONSE",
+  "UPSTREAM_MODEL_ERROR",
+])
+
 const EMOTION_LABELS: Record<AIResponse["emotion"], string> = {
   normal: "기본 표정",
   happy: "기분 좋아짐",
@@ -532,9 +583,9 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
       } catch (fetchError: any) {
         clearTimeout(timeoutId)
         if (fetchError.name === "AbortError") {
-          throw new Error("응답 시간이 초과되었습니다. 네트워크 연결을 확인해주세요.")
+          throw createChatApiError("응답 시간이 초과되었습니다. 네트워크 연결을 확인해주세요.", "CLIENT_TIMEOUT")
         } else if (fetchError.message.includes("Failed to fetch")) {
-          throw new Error("서버에 연결할 수 없습니다. 인터넷 연결을 확인해주세요.")
+          throw createChatApiError("서버에 연결할 수 없습니다. 인터넷 연결을 확인해주세요.", "CLIENT_NETWORK_ERROR")
         }
         throw fetchError
       }
@@ -542,10 +593,14 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
       if (!response.ok) {
         let errorMessage = "서버 오류가 발생했습니다."
         let errorCode = ""
+        let traceId = String(response.headers.get("x-v-mate-trace-id") || "").trim()
         try {
           const errorData = await response.json()
           errorMessage = errorData.error || errorMessage
           errorCode = errorData.error_code || ""
+          if (typeof errorData.trace_id === "string" && errorData.trace_id.trim()) {
+            traceId = errorData.trace_id.trim()
+          }
           if (errorMessage.includes("API key") || errorMessage.includes("GOOGLE_API_KEY")) {
             errorMessage = "API 키가 설정되지 않았거나 만료되었습니다. 관리자에게 문의해주세요."
           } else if (
@@ -556,6 +611,7 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
           } else if (
             errorCode === "UPSTREAM_CONNECTION_FAILED" ||
             errorCode === "UPSTREAM_TIMEOUT" ||
+            errorCode === "FUNCTION_BUDGET_TIMEOUT" ||
             errorMessage.includes("Failed to connect to Gemini API") ||
             errorMessage.includes("temporarily unavailable") ||
             errorMessage.includes("overloaded")
@@ -569,12 +625,30 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
             errorMessage = "서비스가 일시적으로 사용할 수 없습니다. 잠시 후 다시 시도해주세요."
           }
         }
-        throw new Error(errorMessage)
+        errorMessage = mapChatApiErrorMessage(errorCode, errorMessage)
+        throw createChatApiError(errorMessage, errorCode || `HTTP_${response.status}`, traceId)
       }
 
       const data = await response.json()
+      const traceId = (
+        typeof data.trace_id === "string" && data.trace_id.trim()
+          ? data.trace_id
+          : String(response.headers.get("x-v-mate-trace-id") || "").trim()
+      )
       if (data.error) {
-        throw new Error(data.error)
+        const errorCode = typeof data.error_code === "string" ? data.error_code : ""
+        throw createChatApiError(
+          mapChatApiErrorMessage(errorCode, data.error),
+          errorCode || "UPSTREAM_RESPONSE_ERROR",
+          traceId,
+        )
+      }
+      if (typeof data.error_code === "string" && data.error_code.trim()) {
+        throw createChatApiError(
+          mapChatApiErrorMessage(data.error_code, "AI 서버 처리 중 오류가 발생했습니다."),
+          data.error_code,
+          traceId,
+        )
       }
       if (Object.prototype.hasOwnProperty.call(data, "cachedContent")) {
         if (typeof data.cachedContent === "string" && data.cachedContent.trim()) {
@@ -584,7 +658,7 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
         }
       }
       if (!data.text) {
-        throw new Error("서버로부터 응답을 받지 못했습니다. 다시 시도해주세요.")
+        throw createChatApiError("서버로부터 응답을 받지 못했습니다. 다시 시도해주세요.", "UPSTREAM_EMPTY_BODY", traceId)
       }
 
       const rawText = data.text
@@ -600,16 +674,11 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
           parsed.narration = parsed.narration.trim()
         }
       } catch (parseError) {
-        parsed = {
-          emotion: "normal",
-          inner_heart: "음... 뭔가 이상한데?",
-          response:
-            character.id === "mika"
-              ? "선생님... 잠깐만, 뭔가 이상한 기분이 드는데? 다시 말해줄 수 있어?"
-              : character.id === "alice"
-                ? "흠, 무언가 오류가 있었던 것 같다. 다시 한 번 말해달라."
-                : "어? 뭔가 꼬인 것 같은데... 다시 말해봐.",
-        }
+        throw createChatApiError(
+          "AI 응답 형식이 올바르지 않습니다. 잠시 후 다시 시도해주세요.",
+          "UPSTREAM_INVALID_FORMAT",
+          traceId,
+        )
       }
 
       const assistantMessage: Message = {
@@ -624,23 +693,71 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
       }
     } catch (err: any) {
       let parsed: AIResponse
+      const errorCode = typeof err?.chatErrorCode === "string" ? err.chatErrorCode : ""
+      const traceId = typeof err?.chatTraceId === "string" ? err.chatTraceId : ""
       const errorMsg = err.message || "알 수 없는 오류가 발생했습니다."
+      const traceSuffix = traceId ? ` (trace: ${traceId})` : ""
 
-      if (errorMsg.includes("네트워크") || errorMsg.includes("연결")) {
+      if (errorCode) {
+        console.error("[V-MATE] Chat request failed", {
+          characterId: character.id,
+          errorCode,
+          traceId: traceId || null,
+          message: errorMsg,
+        })
+      }
+
+      if (NETWORK_ERROR_CODES.has(errorCode) || errorMsg.includes("네트워크") || errorMsg.includes("연결")) {
         parsed = {
           emotion: "normal",
           inner_heart:
             character.id === "mika"
-              ? "선생님 기다리게 했지... 이번엔 제대로 집중해서 들을게."
+              ? "서버 연결이 흔들려서 답장을 못 만들었어..."
               : character.id === "alice"
-                ? "통신이 잠시 흔들렸군... 다시 맞춰보자."
-                : "신호가 잠깐 튄 듯.",
+                ? "상류 모델 연결이 불안정하군."
+                : "서버 연결 불안정.",
           response:
             character.id === "mika"
-              ? "선생님, 방금 신호가 잠깐 흔들렸어. 한 번만 다시 말해줘. ☆"
+              ? `선생님, 지금 AI 서버 연결이 불안정해서 답장을 만들지 못했어. 잠깐 뒤에 다시 시도해줘.${traceSuffix}`
               : character.id === "alice"
-                ? "통신이 일시적으로 불안정했다. 같은 내용을 다시 전해주겠는가."
-                : "지금 신호 잠깐 튐. 다시 한 번만.",
+                ? `현재 AI 서버 연결이 불안정하여 응답 생성에 실패했다. 잠시 후 다시 시도해달라.${traceSuffix}`
+                : `지금 AI 서버 연결이 불안정해서 답장 생성 실패. 잠깐 뒤에 다시 시도해줘.${traceSuffix}`,
+        }
+      } else if (errorCode === "UPSTREAM_LOCATION_UNSUPPORTED" || errorMsg.includes("서버 지역") || errorMsg.includes("location is not supported")) {
+        parsed = {
+          emotion: "normal",
+          inner_heart:
+            character.id === "mika"
+              ? "서버 지역 정책 때문에 호출이 막혔어..."
+              : character.id === "alice"
+                ? "현재 배포 지역 정책으로 호출이 제한되는군."
+                : "서버 지역 정책으로 차단됨.",
+          response:
+            character.id === "mika"
+              ? `선생님, 지금 서버 지역에서는 AI 호출이 제한돼. 관리자에게 배포 지역 변경이나 모델 전환을 요청해줘.${traceSuffix}`
+              : character.id === "alice"
+                ? `현재 서버 지역에서는 Gemini API 호출이 제한된다. 관리자에게 배포 지역 변경 또는 모델 전환을 요청해달라.${traceSuffix}`
+                : `지금 서버 지역에서 Gemini 호출 제한됨. 관리자에게 지역/모델 변경 요청해줘.${traceSuffix}`,
+        }
+      } else if (
+        errorCode === "UPSTREAM_INVALID_FORMAT" ||
+        errorCode === "UPSTREAM_INVALID_RESPONSE" ||
+        errorMsg.includes("응답 형식")
+      ) {
+        parsed = {
+          emotion: "normal",
+          inner_heart:
+            character.id === "mika"
+              ? "응답 포맷이 깨져서 지금은 안전하게 멈추는 게 맞아..."
+              : character.id === "alice"
+                ? "응답 계약(JSON) 파싱에 실패했다."
+                : "응답 포맷 깨짐.",
+          response:
+            character.id === "mika"
+              ? `선생님, 방금 AI 응답 형식이 깨져서 처리에 실패했어. 한 번만 다시 시도해줘.${traceSuffix}`
+              : character.id === "alice"
+                ? `AI 응답 형식 오류로 처리에 실패했다. 잠시 후 다시 시도해달라.${traceSuffix}`
+                : `AI 응답 형식 오류로 처리 실패. 잠깐 뒤에 다시 시도해줘.${traceSuffix}`,
         }
       } else if (errorMsg.includes("API 키") || errorMsg.includes("만료")) {
         parsed = {
@@ -648,10 +765,10 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
           inner_heart: "서버 쪽에 문제가 있는 것 같다...",
           response:
             character.id === "mika"
-              ? "선생님... 뭔가 문제가 있는 것 같아. 나중에 다시 말해줄 수 있어?"
+              ? `선생님, 서버 API 키 설정에 문제가 있어 보여. 관리자에게 확인 요청해줘.${traceSuffix}`
               : character.id === "alice"
-                ? "시스템에 문제가 발생했다. 잠시 후 다시 시도해달라."
-                : "서버 쪽 문제인 것 같은데... 나중에 다시 말해줘.",
+                ? `API 키 설정 오류로 요청이 거절되었다. 관리자에게 확인을 요청해달라.${traceSuffix}`
+                : `서버 API 키 설정 문제로 요청 실패. 관리자 확인 필요.${traceSuffix}`,
         }
       } else if (errorMsg.includes("시간이 초과")) {
         parsed = {
@@ -659,26 +776,21 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
           inner_heart: "시간이 오래 걸리는구나...",
           response:
             character.id === "mika"
-              ? "선생님... 응답이 좀 느린 것 같은데? 다시 말해줄 수 있어?"
+              ? `선생님, 응답 시간이 초과됐어. 잠깐 뒤에 다시 시도해줘.${traceSuffix}`
               : character.id === "alice"
-                ? "응답이 지연되고 있다. 잠시 후 다시 시도해달라."
-                : "응답이 좀 느린 것 같은데... 다시 말해봐.",
+                ? `응답 지연으로 요청이 종료되었다. 잠시 후 다시 시도해달라.${traceSuffix}`
+                : `응답 시간 초과로 요청 종료. 잠깐 뒤 다시 시도해줘.${traceSuffix}`,
         }
-      } else if (errorMsg.includes("서버 지역") || errorMsg.includes("location is not supported")) {
+      } else if (CONFIGURATION_ERROR_CODES.has(errorCode)) {
         parsed = {
           emotion: "normal",
-          inner_heart:
-            character.id === "mika"
-              ? "내가 있는 서버 위치에서 지금 연결이 막혀 있어..."
-              : character.id === "alice"
-                ? "현재 서버 지역 정책으로 호출이 차단되는군."
-                : "지금 서버 위치 이슈로 막힘.",
+          inner_heart: "서버 설정 이슈가 있는 것 같다.",
           response:
             character.id === "mika"
-              ? "선생님, 지금 서버 지역에서는 AI 호출이 안 되는 상태래. 관리자에게 서버 지역 변경이나 모델 변경을 부탁해줘."
+              ? `선생님, 서버 설정 문제로 답장을 만들지 못했어. 관리자 확인이 필요해.${traceSuffix}`
               : character.id === "alice"
-                ? "현재 서버 지역에서는 Gemini API 호출이 제한된다. 관리자에게 배포 지역 변경 또는 모델 전환을 요청해달라."
-                : "지금 서버 지역에서 Gemini가 막혀있대. 관리자한테 배포 지역/모델 바꿔달라고 해줘.",
+                ? `서버 설정 문제로 요청에 실패했다. 관리자 확인이 필요하다.${traceSuffix}`
+                : `서버 설정 문제로 요청 실패. 관리자 확인 필요.${traceSuffix}`,
         }
       } else {
         parsed = {
@@ -691,10 +803,10 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
                 : "어? 뭔가 이상한데...",
           response:
             character.id === "mika"
-              ? "선생님... 잠깐만, 뭔가 이상한 기분이 드는데? 다시 말해줄 수 있어?"
+              ? `선생님, 예상치 못한 오류가 발생했어. 잠시 후 다시 시도해줘.${traceSuffix}`
               : character.id === "alice"
-                ? "예상치 못한 오류가 발생했다. 다시 한 번 말해달라."
-                : "어? 뭔가 꼬인 것 같은데... 다시 말해봐.",
+                ? `예상치 못한 오류가 발생했다. 잠시 후 다시 시도해달라.${traceSuffix}`
+                : `예상치 못한 오류 발생. 잠시 후 다시 시도해줘.${traceSuffix}`,
         }
       }
 

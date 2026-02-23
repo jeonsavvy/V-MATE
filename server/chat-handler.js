@@ -26,7 +26,7 @@ const getGeminiRetryConfig = () => ({
     cacheLookupRetryEnabled:
         String(process.env.GEMINI_CACHE_LOOKUP_RETRY_ENABLED || 'true').toLowerCase() !== 'false',
     networkRecoveryRetryEnabled:
-        String(process.env.GEMINI_NETWORK_RECOVERY_RETRY_ENABLED || 'false').toLowerCase() === 'true',
+        String(process.env.GEMINI_NETWORK_RECOVERY_RETRY_ENABLED || 'true').toLowerCase() !== 'false',
     emptyResponseRetryEnabled:
         String(process.env.GEMINI_EMPTY_RESPONSE_RETRY_ENABLED || 'false').toLowerCase() === 'true',
 });
@@ -76,42 +76,6 @@ const isValidCachedContentName = (value) => {
 const parseCachedContentName = (value) => {
     const text = String(value || '').trim();
     return isValidCachedContentName(text) ? text : null;
-};
-
-const buildUpstreamFallbackPayload = (characterId) => {
-    if (characterId === 'mika') {
-        return {
-            emotion: 'normal',
-            inner_heart: '선생님이 기다렸을 텐데... 잠깐 숨 고르고 다시 집중하자.',
-            response: '선생님, 방금 신호가 살짝 흔들렸어. 한 번만 다시 말해줘. 이번엔 제대로 들을게.',
-            narration: '',
-        };
-    }
-
-    if (characterId === 'alice') {
-        return {
-            emotion: 'normal',
-            inner_heart: '연결이 순간 흔들렸군. 침착하게 다시 정비하면 된다.',
-            response: '통신이 잠시 불안정했다. 같은 내용을 한 번 더 전해주겠는가.',
-            narration: '',
-        };
-    }
-
-    if (characterId === 'kael') {
-        return {
-            emotion: 'normal',
-            inner_heart: '아... 튕겼네. 기다리게 해서 미안한데 다시 받으면 된다.',
-            response: '지금 신호 잠깐 튐. 한 번만 다시 보내줘.',
-            narration: '',
-        };
-    }
-
-    return {
-        emotion: 'normal',
-        inner_heart: '응답 연결이 잠시 불안정했다.',
-        response: '연결이 잠시 흔들렸어요. 같은 내용을 한 번만 다시 보내주세요.',
-        narration: '',
-    };
 };
 
 const createPromptCacheEntry = async ({
@@ -277,6 +241,14 @@ const buildHeaders = (originAllowed, origin) => {
 const withElapsedHeader = (headers, startedAtMs) => ({
     ...headers,
     'X-V-MATE-Elapsed-Ms': String(Math.max(0, Date.now() - startedAtMs)),
+});
+
+const buildErrorPayload = ({ error, errorCode, traceId, retryable = false, details }) => ({
+    error,
+    error_code: errorCode,
+    trace_id: traceId,
+    ...(retryable ? { retryable: true } : {}),
+    ...(details ? { details } : {}),
 });
 
 const ALLOWED_EMOTIONS = new Set(['normal', 'happy', 'confused', 'angry']);
@@ -651,9 +623,13 @@ export const handler = async (event, context) => {
             return {
                 statusCode: 500,
                 headers: withElapsedHeader(headers, requestStartedAt),
-                body: JSON.stringify({
-                    error: 'API key not configured. Please set GOOGLE_API_KEY in runtime secrets.',
-                }),
+                body: JSON.stringify(
+                    buildErrorPayload({
+                        error: 'API key not configured. Please set GOOGLE_API_KEY in runtime secrets.',
+                        errorCode: 'SERVER_API_KEY_NOT_CONFIGURED',
+                        traceId: requestTraceId,
+                    })
+                ),
             };
         }
 
@@ -665,10 +641,14 @@ export const handler = async (event, context) => {
             return {
                 statusCode: 400,
                 headers: withElapsedHeader(headers, requestStartedAt),
-                body: JSON.stringify({
-                    error: 'Invalid request body. Expected JSON format.',
-                    details: parseError.message,
-                }),
+                body: JSON.stringify(
+                    buildErrorPayload({
+                        error: 'Invalid request body. Expected JSON format.',
+                        errorCode: 'INVALID_REQUEST_BODY',
+                        traceId: requestTraceId,
+                        details: parseError.message,
+                    })
+                ),
             };
         }
 
@@ -678,9 +658,13 @@ export const handler = async (event, context) => {
             return {
                 statusCode: 400,
                 headers: withElapsedHeader(headers, requestStartedAt),
-                body: JSON.stringify({
-                    error: 'userMessage is required and must be a non-empty string.',
-                }),
+                body: JSON.stringify(
+                    buildErrorPayload({
+                        error: 'userMessage is required and must be a non-empty string.',
+                        errorCode: 'INVALID_USER_MESSAGE',
+                        traceId: requestTraceId,
+                    })
+                ),
             };
         }
 
@@ -1045,37 +1029,28 @@ export const handler = async (event, context) => {
 
         if (!geminiResponse || !geminiData) {
             const upstreamErrorCode = lastModelError?.code || 'UPSTREAM_UNKNOWN_ERROR';
-            const shouldUseFallbackPayload =
+            const isRetryableNetworkFailure =
                 upstreamErrorCode === 'UPSTREAM_CONNECTION_FAILED' ||
                 upstreamErrorCode === 'UPSTREAM_TIMEOUT' ||
                 upstreamErrorCode === 'FUNCTION_BUDGET_TIMEOUT';
 
-            if (shouldUseFallbackPayload) {
-                const fallbackPayload = buildUpstreamFallbackPayload(normalizedCharacterId);
-                console.warn('[V-MATE] Returning upstream fallback payload', {
-                    ...logMeta,
-                    upstreamErrorCode,
-                    elapsedMs: Math.max(0, Date.now() - requestStartedAt),
-                });
-                return {
-                    statusCode: 200,
-                    headers: withElapsedHeader(headers, requestStartedAt),
-                    body: JSON.stringify({
-                        text: JSON.stringify(fallbackPayload),
-                        cachedContent: cachedContentName || null,
-                        error_code: upstreamErrorCode,
-                        elapsed_ms: Math.max(0, Date.now() - requestStartedAt),
-                    }),
-                };
-            }
+            console.warn('[V-MATE] Returning hard error for upstream failure', {
+                ...logMeta,
+                upstreamErrorCode,
+                elapsedMs: Math.max(0, Date.now() - requestStartedAt),
+            });
 
             return {
                 statusCode: lastModelError?.status || 503,
                 headers: withElapsedHeader(headers, requestStartedAt),
-                body: JSON.stringify({
-                    error: lastModelError?.message || 'Model call failed. Please try again later.',
-                    error_code: upstreamErrorCode,
-                }),
+                body: JSON.stringify(
+                    buildErrorPayload({
+                        error: lastModelError?.message || 'Model call failed. Please try again later.',
+                        errorCode: upstreamErrorCode,
+                        traceId: requestTraceId,
+                        retryable: isRetryableNetworkFailure,
+                    })
+                ),
             };
         }
 
@@ -1102,10 +1077,13 @@ export const handler = async (event, context) => {
             return {
                 statusCode: geminiResponse.status || 500,
                 headers: withElapsedHeader(headers, requestStartedAt),
-                body: JSON.stringify({
-                    error: errorMessage,
-                    error_code: errorCode,
-                }),
+                body: JSON.stringify(
+                    buildErrorPayload({
+                        error: errorMessage,
+                        errorCode,
+                        traceId: requestTraceId,
+                    })
+                ),
             };
         }
 
@@ -1176,27 +1154,28 @@ export const handler = async (event, context) => {
         }
 
         if (!modelText) {
-            const fallbackPayload = buildUpstreamFallbackPayload(normalizedCharacterId);
             const finishReason = geminiData?.candidates?.[0]?.finishReason || null;
             const emptyResponseErrorCode =
                 finishReason === 'MAX_TOKENS'
                     ? 'UPSTREAM_EMPTY_RESPONSE_MAX_TOKENS'
                     : 'UPSTREAM_EMPTY_RESPONSE';
-            console.warn('[V-MATE] Returning fallback payload for empty model text', {
+            console.warn('[V-MATE] Returning hard error for empty model text', {
                 ...logMeta,
                 errorCode: emptyResponseErrorCode,
                 finishReason,
                 promptBlockReason: geminiData?.promptFeedback?.blockReason || null,
             });
             return {
-                statusCode: 200,
+                statusCode: 502,
                 headers: withElapsedHeader(headers, requestStartedAt),
-                body: JSON.stringify({
-                    text: JSON.stringify(fallbackPayload),
-                    cachedContent: cachedContentName || null,
-                    error_code: emptyResponseErrorCode,
-                    elapsed_ms: Math.max(0, Date.now() - requestStartedAt),
-                }),
+                body: JSON.stringify(
+                    buildErrorPayload({
+                        error: 'Gemini returned an empty response. Please retry.',
+                        errorCode: emptyResponseErrorCode,
+                        traceId: requestTraceId,
+                        retryable: true,
+                    })
+                ),
             };
         }
 
@@ -1208,15 +1187,28 @@ export const handler = async (event, context) => {
         const isFormatFallback =
             normalizedPayload.response === '잠시 응답 형식이 불안정했어요. 한 번만 다시 말해줘.' &&
             normalizedPayload.inner_heart === '';
-        const finalPayload = isFormatFallback
-            ? buildUpstreamFallbackPayload(normalizedCharacterId)
-            : normalizedPayload;
         if (isFormatFallback) {
-            console.warn('[V-MATE] Replacing format fallback with character fallback payload', {
+            console.warn('[V-MATE] Returning hard error for format fallback payload', {
                 ...logMeta,
                 rawModelTextPreview: toSafeLogPreview(modelText),
             });
+            if (cachedContentName) {
+                removePromptCache(promptCacheKey);
+                cachedContentName = null;
+            }
+            return {
+                statusCode: 502,
+                headers: withElapsedHeader(headers, requestStartedAt),
+                body: JSON.stringify(
+                    buildErrorPayload({
+                        error: 'Gemini response format validation failed.',
+                        errorCode: 'UPSTREAM_INVALID_FORMAT',
+                        traceId: requestTraceId,
+                    })
+                ),
+            };
         }
+        const finalPayload = normalizedPayload;
         const responseCachedContent = cachedContentName || null;
 
         if (canUseContextCache && promptCacheKey && responseCachedContent) {
@@ -1233,6 +1225,7 @@ export const handler = async (event, context) => {
             body: JSON.stringify({
                 text: JSON.stringify(finalPayload),
                 cachedContent: responseCachedContent,
+                trace_id: requestTraceId,
             }),
         };
     } catch (error) {
@@ -1241,10 +1234,14 @@ export const handler = async (event, context) => {
         return {
             statusCode: 500,
             headers: withElapsedHeader(headers, requestStartedAt),
-            body: JSON.stringify({
-                error: 'Internal server error. Please try again later.',
-                ...(process.env.CLOUDFLARE_DEV && { details: error.message }),
-            }),
+            body: JSON.stringify(
+                buildErrorPayload({
+                    error: 'Internal server error. Please try again later.',
+                    errorCode: 'INTERNAL_SERVER_ERROR',
+                    traceId: requestTraceId,
+                    details: process.env.CLOUDFLARE_DEV ? error.message : undefined,
+                })
+            ),
         };
     }
 };
