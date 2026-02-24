@@ -3,7 +3,7 @@ import { Character, Message, AIResponse, CHARACTERS } from "@/lib/data"
 import { Button } from "@/components/ui/button"
 import { Avatar } from "@/components/ui/avatar"
 import { cn } from "@/lib/utils"
-import { Send, ArrowLeft, Trash2 } from "lucide-react"
+import { Send, ArrowLeft, Trash2, PanelRightOpen, PanelRightClose, Sparkles, Heart } from "lucide-react"
 import { CHARACTER_UI_META } from "@/lib/character-ui"
 import { User as SupabaseUser } from "@supabase/supabase-js"
 import { supabase, isSupabaseConfigured } from "@/lib/supabase"
@@ -168,6 +168,7 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
   const [isLoading, setIsLoading] = useState(false)
   const [historyPreviews, setHistoryPreviews] = useState<Record<string, HistoryPreview>>({})
   const [showEmotionIllustrations, setShowEmotionIllustrations] = useState(true)
+  const [isInfoPanelOpen, setIsInfoPanelOpen] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const messageInputRef = useRef<HTMLTextAreaElement>(null)
   const isLoadingHistoryRef = useRef(false)
@@ -193,6 +194,10 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
 
   useEffect(() => {
     void resolveSystemPrompt(character.id)
+  }, [character.id])
+
+  useEffect(() => {
+    setIsInfoPanelOpen(false)
   }, [character.id])
 
   useEffect(() => {
@@ -1016,12 +1021,26 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
     })
   }, [messages, showEmotionIllustrations, character])
 
+  const latestAssistantMessage = [...messages]
+    .reverse()
+    .find((msg) => msg.role === "assistant" && typeof msg.content !== "string") as Message | undefined
+  const latestAssistantPayload = latestAssistantMessage && typeof latestAssistantMessage.content !== "string"
+    ? latestAssistantMessage.content
+    : null
+  const activeEmotion = latestAssistantPayload?.emotion || "normal"
+  const activeEmotionLabel = EMOTION_LABELS[activeEmotion]
+
   return (
     <div className="relative h-dvh overflow-hidden bg-[#e7dfd3] text-[#22242b]">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_16%_18%,rgba(123,109,140,0.16),transparent_34%),radial-gradient(circle_at_84%_85%,rgba(112,139,160,0.12),transparent_34%)]" />
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_16%_18%,rgba(123,109,140,0.14),transparent_36%),radial-gradient(circle_at_84%_85%,rgba(112,139,160,0.1),transparent_34%)]" />
 
-      <div className="relative z-10 mx-auto grid h-full w-full max-w-[1520px] lg:grid-cols-[320px_minmax(0,1fr)]">
-        <aside className="hidden h-full border-r border-white/45 bg-[#eee7db]/74 p-4 backdrop-blur-xl lg:block">
+      <div
+        className={cn(
+          "relative z-10 mx-auto grid h-full w-full max-w-[1680px] lg:grid-cols-[300px_minmax(0,1fr)]",
+          isInfoPanelOpen && "xl:grid-cols-[300px_minmax(0,1fr)_320px]"
+        )}
+      >
+        <aside className="hidden h-full border-r border-white/45 bg-[#eee7db]/72 p-4 backdrop-blur-xl lg:block">
           <div className="flex h-full flex-col">
             <div className="flex items-center justify-between px-2">
               <p className="text-sm font-bold text-[#2f3138]">캐릭터 목록</p>
@@ -1040,8 +1059,8 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
                     className={cn(
                       "w-full rounded-2xl border p-3 text-left shadow-[0_14px_24px_-20px_rgba(23,22,20,0.72)] transition",
                       isActive
-                        ? "border-[#d4c2ed] bg-white/92"
-                        : "border-white/45 bg-white/72 hover:border-[#d1bfe9]"
+                        ? "border-[#d4c2ed] bg-white/94"
+                        : "border-white/45 bg-white/74 hover:border-[#d1bfe9]"
                     )}
                   >
                     <div className="flex items-start gap-3">
@@ -1054,7 +1073,7 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center justify-between gap-1">
                           <p className="truncate text-sm font-bold text-[#2f3138]">{item.name}</p>
-                          <span className="rounded-full border border-[#d8cebf] bg-white/75 px-1.5 py-0.5 text-[10px] font-semibold text-[#7b7469]">
+                          <span className="rounded-full border border-[#d8cebf] bg-white/80 px-1.5 py-0.5 text-[10px] font-semibold text-[#7b7469]">
                             {entry.hasHistory ? "최근" : "새 대화"}
                           </span>
                         </div>
@@ -1069,14 +1088,14 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
         </aside>
 
         <div className="flex h-full min-w-0 flex-col">
-          <header className="flex items-center justify-between border-b border-white/55 bg-[#efe8dc]/88 p-3 shadow-[0_16px_26px_-24px_rgba(23,22,19,0.8)] backdrop-blur-xl lg:px-6 lg:py-4">
+          <header className="flex items-center justify-between border-b border-white/55 bg-[#efe8dc]/90 p-3 shadow-[0_16px_26px_-24px_rgba(23,22,19,0.8)] backdrop-blur-xl lg:px-6 lg:py-4">
             <div className="flex min-w-0 items-center gap-3">
               <Button
                 variant="ghost"
                 onClick={onBack}
-                className="text-[#666259] hover:bg-black/5 hover:text-[#2f3138]"
+                className="h-10 rounded-xl text-[#666259] hover:bg-black/5 hover:text-[#2f3138]"
               >
-                <ArrowLeft className="mr-2 h-5 w-5" />
+                <ArrowLeft className="mr-1.5 h-5 w-5" />
                 <span className="hidden sm:inline">홈으로</span>
               </Button>
 
@@ -1090,21 +1109,18 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
               <Button
                 type="button"
                 variant="ghost"
-                onClick={() => setShowEmotionIllustrations((prev) => !prev)}
-                className={cn(
-                  "h-9 rounded-xl px-3 text-xs font-semibold",
-                  showEmotionIllustrations
-                    ? "text-[#5b5668] hover:bg-[#7d6aa8]/10"
-                    : "text-[#7a756d] hover:bg-black/5"
-                )}
-                title={showEmotionIllustrations ? "감정 일러스트 숨기기" : "감정 일러스트 보기"}
+                onClick={() => setIsInfoPanelOpen((prev) => !prev)}
+                className="h-9 rounded-xl px-3 text-xs font-semibold text-[#5c5769] hover:bg-[#7d6aa8]/10"
+                aria-expanded={isInfoPanelOpen}
+                aria-label="캐릭터 정보 패널 열기"
               >
-                {showEmotionIllustrations ? "일러스트 ON" : "일러스트 OFF"}
+                {isInfoPanelOpen ? <PanelRightClose className="mr-1 h-4 w-4" /> : <PanelRightOpen className="mr-1 h-4 w-4" />}
+                정보
               </Button>
               <Button
                 variant="ghost"
                 onClick={handleClearChat}
-                className="text-[#7a756d] hover:bg-red-500/10 hover:text-red-500"
+                className="h-9 rounded-xl text-[#7a756d] hover:bg-red-500/10 hover:text-red-500"
                 title="대화 초기화"
               >
                 <Trash2 className="h-4 w-4" />
@@ -1112,7 +1128,7 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
               <select
                 value={character.id}
                 onChange={(e) => onCharacterChange(e.target.value)}
-                className="cursor-pointer rounded-xl border border-[#c7bcac] bg-white/78 px-2.5 py-1.5 text-xs text-[#5f635f] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] outline-none transition hover:bg-white focus:border-[#8b6cc7] lg:hidden"
+                className="cursor-pointer rounded-xl border border-[#c7bcac] bg-white/80 px-2.5 py-1.5 text-xs text-[#5f635f] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] outline-none transition hover:bg-white focus:border-[#8b6cc7] lg:hidden"
               >
                 {Object.values(CHARACTERS).map((option) => (
                   <option key={option.id} value={option.id}>{option.name}</option>
@@ -1121,81 +1137,105 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
             </div>
           </header>
 
+          {isInfoPanelOpen && (
+            <section className="border-b border-white/45 bg-[#f2ebdf]/92 px-3 py-3 xl:hidden">
+              <div className="mx-auto w-full max-w-[980px] space-y-3 rounded-2xl border border-white/45 bg-white/72 p-3">
+                <div className="flex items-center gap-3">
+                  <img src={character.images.normal} alt={character.name} className="h-16 w-16 rounded-xl object-cover object-top" />
+                  <div>
+                    <p className="text-sm font-bold text-[#2f3138]">{character.name}</p>
+                    <p className="text-xs text-[#6d665b]">{characterMeta.tags.join(" · ")}</p>
+                    <p className="mt-1 text-xs font-semibold text-[#7a638f]">{activeEmotionLabel}</p>
+                  </div>
+                </div>
+                <p className="text-xs leading-relaxed text-[#4f493f]">{characterMeta.summary}</p>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setShowEmotionIllustrations((prev) => !prev)}
+                  className={cn(
+                    "h-9 w-full rounded-xl text-xs font-semibold",
+                    showEmotionIllustrations ? "text-[#5b5668] hover:bg-[#7d6aa8]/10" : "text-[#7a756d] hover:bg-black/5"
+                  )}
+                >
+                  {showEmotionIllustrations ? "감정 일러스트 ON" : "감정 일러스트 OFF"}
+                </Button>
+              </div>
+            </section>
+          )}
+
           <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-4 scroll-smooth sm:px-4 lg:px-8 lg:py-6">
-            <div className="mx-auto w-full max-w-[920px] space-y-5">
-              <p className="rounded-full bg-white/50 px-3 py-1 text-center text-xs font-semibold text-[#70695f]">
+            <div className="mx-auto w-full max-w-[980px] space-y-5">
+              <p className="mx-auto w-fit rounded-full border border-white/45 bg-white/58 px-3 py-1 text-center text-xs font-semibold text-[#70695f]">
                 이 대화는 AI로 생성된 가상의 이야기입니다
               </p>
 
-              {preparedMessages.map(({ msg, isUser, content, innerHeart, narration, emotion, showIllustrationCard, messageImage }) => {
-                return (
-                  <div
-                    key={msg.id}
-                    className={cn("fade-in flex w-full", isUser ? "justify-end" : "justify-start")}
-                  >
-                    <div
-                      className={cn(
-                        "flex w-full max-w-[92%] gap-3 sm:max-w-[82%]",
-                        isUser ? "flex-row-reverse" : "flex-row"
-                      )}
-                    >
-                      {!isUser && (
-                        <Avatar
-                          src={messageImage}
-                          alt={character.name}
-                          fallback={character.name[0]}
-                          className="mt-1 size-9 shrink-0 border border-black/10 object-cover object-top"
-                        />
-                      )}
+              {preparedMessages.map(({ msg, isUser, content, innerHeart, narration, emotion, showIllustrationCard, messageImage }) => (
+                <div key={msg.id} className={cn("fade-in flex w-full", isUser ? "justify-end" : "justify-start")}>
+                  <div className={cn("flex w-full gap-3", isUser ? "max-w-[84%] flex-row-reverse sm:max-w-[76%]" : "max-w-[92%] sm:max-w-[84%]")}>
+                    {!isUser && (
+                      <Avatar
+                        src={messageImage}
+                        alt={character.name}
+                        fallback={character.name[0]}
+                        className="mt-1 size-9 shrink-0 border border-black/10 object-cover object-top"
+                      />
+                    )}
 
-                      <div className="min-w-0 flex-1 space-y-2">
-                        {showIllustrationCard && emotion && (
-                          <div className="w-full max-w-[720px] overflow-hidden rounded-2xl border border-white/65 bg-white/90 shadow-[0_20px_34px_-24px_rgba(24,23,20,0.72)]">
-                            <img
-                              src={messageImage}
-                              alt={`${character.name} ${emotion}`}
-                              className="h-[280px] w-full object-cover object-top sm:h-[400px] lg:h-[500px]"
-                              loading="lazy"
-                              decoding="async"
-                            />
-                            <div className="border-t border-black/5 bg-[#f6f1e9] px-3 py-2 text-[11px] font-semibold text-[#5f584d]">
-                              {character.name} · {EMOTION_LABELS[emotion]}
-                            </div>
+                    <div className="min-w-0 flex-1 space-y-2">
+                      <p className={cn("px-1 text-[11px] font-semibold", isUser ? "text-right text-[#70688a]" : "text-[#6b6474]")}>
+                        {isUser ? "나" : `${character.name}${emotion ? ` · ${EMOTION_LABELS[emotion]}` : ""}`}
+                      </p>
+
+                      {showIllustrationCard && emotion && (
+                        <div className="w-full max-w-[760px] overflow-hidden rounded-2xl border border-white/65 bg-white/92 shadow-[0_20px_34px_-24px_rgba(24,23,20,0.72)]">
+                          <img
+                            src={messageImage}
+                            alt={`${character.name} ${emotion}`}
+                            className="h-[260px] w-full object-cover object-top sm:h-[360px] lg:h-[440px]"
+                            loading="lazy"
+                            decoding="async"
+                          />
+                          <div className="border-t border-black/5 bg-[#f6f1e9] px-3 py-2 text-[11px] font-semibold text-[#5f584d]">
+                            {character.name} · {EMOTION_LABELS[emotion]}
                           </div>
-                        )}
-
-                        {!isUser && narration && (
-                          <div className="rounded-xl border border-[#d9ceb8] bg-[#f3ecdf]/95 px-3 py-2 text-sm leading-relaxed text-[#4f493f]">
-                            <p className="mb-1 text-[11px] font-bold uppercase tracking-[0.12em] text-[#847a69]">상황</p>
-                            <p className="whitespace-pre-wrap">{narration}</p>
-                          </div>
-                        )}
-
-                        <div
-                          className={cn(
-                            "rounded-2xl border px-4 py-3 text-[15px] leading-7 shadow-[0_12px_24px_-18px_rgba(34,35,43,0.38)]",
-                            isUser
-                              ? "rounded-br-sm border-[#2d3038] bg-gradient-to-br from-[#3d4049] to-[#2c2f38] text-[#fbfaf7]"
-                              : "rounded-bl-sm border-[#d9cfbf] bg-[#fcf9f2] text-[#1f222a]"
-                          )}
-                        >
-                          {!isUser && innerHeart && (
-                            <div className="mb-3 rounded-xl border border-[#d7c8d7] bg-[#f7eef6]/96 px-3 py-2">
-                              <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-[#7d5f79]">속마음</p>
-                              <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-[#5d445b]">{innerHeart}</p>
-                            </div>
-                          )}
-                          <div className="whitespace-pre-wrap break-words">{content}</div>
                         </div>
+                      )}
+
+                      {!isUser && narration && (
+                        <div className="rounded-xl border border-[#ddd1bf] bg-[#f7f1e6]/96 px-3 py-2 text-sm leading-relaxed text-[#4f493f]">
+                          <p className="mb-1 text-[11px] font-bold uppercase tracking-[0.12em] text-[#85796a]">상황</p>
+                          <p className="whitespace-pre-wrap">{narration}</p>
+                        </div>
+                      )}
+
+                      <div
+                        className={cn(
+                          "rounded-2xl border px-4 py-3 text-[15px] leading-7 shadow-[0_12px_24px_-18px_rgba(34,35,43,0.34)]",
+                          isUser
+                            ? "rounded-br-sm border-[#2f3140] bg-gradient-to-br from-[#4f4370] to-[#3a344f] text-[#fbfaf7]"
+                            : "rounded-bl-sm border-[#d9cfbf] bg-[#fcf9f2] text-[#1f222a]"
+                        )}
+                      >
+                        {!isUser && innerHeart && (
+                          <div className="mb-3 rounded-xl border border-[#d8cde7] bg-[#f7eefc]/96 px-3 py-2">
+                            <div className="mb-1 inline-flex items-center gap-1 text-[11px] font-bold uppercase tracking-[0.12em] text-[#7d5f79]">
+                              <Heart className="h-3 w-3" />
+                              속마음
+                            </div>
+                            <p className="whitespace-pre-wrap text-sm leading-relaxed text-[#5d445b]">{innerHeart}</p>
+                          </div>
+                        )}
+                        <div className="whitespace-pre-wrap break-words">{content}</div>
                       </div>
                     </div>
                   </div>
-                )
-              })}
+                </div>
+              ))}
 
               {isLoading && (
                 <div className="fade-in flex justify-start">
-                  <div className="flex items-center gap-2 rounded-2xl rounded-bl-sm border border-[#ddd3c7] bg-[#fbf8f2]/96 px-4 py-2.5 text-sm text-[#6a645a] shadow-[0_12px_22px_-20px_rgba(0,0,0,0.65)]">
+                  <div className="flex items-center gap-2 rounded-2xl rounded-bl-sm border border-[#d9cfbf] bg-[#fbf8f2]/96 px-4 py-2.5 text-sm text-[#6a645a] shadow-[0_12px_22px_-20px_rgba(0,0,0,0.65)]">
                     <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[#8f8aa8] [animation-delay:-0.2s]" />
                     <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[#8f8aa8] [animation-delay:-0.1s]" />
                     <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[#8f8aa8]" />
@@ -1206,8 +1246,16 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
             </div>
           </div>
 
-          <div className="border-t border-white/45 bg-[#ece4d8]/82 px-3 pb-[calc(0.95rem+env(safe-area-inset-bottom))] pt-3 backdrop-blur-xl sm:px-4 lg:px-8 lg:pb-[calc(1.1rem+env(safe-area-inset-bottom))] lg:pt-4">
-            <div className="mx-auto w-full max-w-[920px]">
+          <div className="border-t border-white/45 bg-[#ece4d8]/84 px-3 pb-[calc(0.95rem+env(safe-area-inset-bottom))] pt-3 backdrop-blur-xl sm:px-4 lg:px-8 lg:pb-[calc(1.1rem+env(safe-area-inset-bottom))] lg:pt-4">
+            <div className="mx-auto w-full max-w-[980px]">
+              <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-white/45 bg-white/70 px-3 py-2">
+                <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#5e5862]">
+                  <Sparkles className="h-3.5 w-3.5 text-[#7b5cb8]" />
+                  {isLoading ? `${character.name}이(가) 답변을 작성하고 있어요` : `${character.name}과 이어서 대화해보세요`}
+                </div>
+                <span className="rounded-full bg-[#f2ecff] px-2 py-1 text-[11px] font-semibold text-[#6a5991]">{activeEmotionLabel}</span>
+              </div>
+
               <div className="mb-3 flex flex-wrap gap-2">
                 {QUICK_REPLY_TEMPLATES.map((template) => (
                   <button
@@ -1215,36 +1263,86 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
                     type="button"
                     onClick={() => handleQuickReplyClick(template)}
                     disabled={isLoading}
-                    className="rounded-full border border-[#d8cebe] bg-white/80 px-3 py-1.5 text-xs font-semibold text-[#615b51] transition hover:border-[#cfbce9] hover:text-[#3b3c43] disabled:cursor-not-allowed disabled:opacity-55"
+                    className="rounded-full border border-[#d8cebe] bg-white/82 px-3 py-1.5 text-xs font-semibold text-[#615b51] transition hover:border-[#cfbce9] hover:text-[#3b3c43] disabled:cursor-not-allowed disabled:opacity-55"
                   >
                     {template}
                   </button>
                 ))}
               </div>
 
-              <div className="flex items-end gap-2 rounded-2xl border border-white/45 bg-[#f7f2ea]/88 p-2.5 shadow-[0_16px_28px_-20px_rgba(32,31,27,0.55)]">
+              <div className="flex items-end gap-2 rounded-2xl border border-[#d8cdbe] bg-[#f7f2ea]/92 p-2.5 shadow-[0_16px_28px_-20px_rgba(32,31,27,0.55)] transition focus-within:border-[#8b6cc7] focus-within:shadow-[0_18px_30px_-18px_rgba(76,58,122,0.55)]">
                 <textarea
                   ref={messageInputRef}
                   value={inputValue}
                   onChange={(event) => setInputValue(event.target.value)}
                   onKeyDown={handleInputKeyDown}
-                  placeholder="메시지를 입력하세요"
+                  placeholder={isLoading ? "답변 생성 중입니다..." : "메시지를 입력하세요"}
                   disabled={isLoading}
                   rows={1}
-                  className="max-h-[156px] min-h-[42px] flex-1 resize-none bg-transparent px-1 py-2 text-[15px] leading-6 text-[#2a2c34] placeholder:text-[#847c73] outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                  className="max-h-[156px] min-h-[44px] flex-1 resize-none bg-transparent px-1 py-2 text-[15px] leading-6 text-[#2a2c34] placeholder:text-[#847c73] outline-none disabled:cursor-not-allowed disabled:opacity-50"
                 />
                 <Button
                   onClick={handleSendMessage}
                   disabled={isLoading || !inputValue.trim()}
-                  className="size-10 shrink-0 rounded-xl bg-gradient-to-br from-[#3c3f48] to-[#2e3037] text-white shadow-[0_12px_22px_-14px_rgba(24,25,31,0.9)] hover:brightness-110"
+                  className="h-11 shrink-0 rounded-xl bg-gradient-to-br from-[#4d3f74] to-[#3b3258] px-3 text-white shadow-[0_12px_22px_-14px_rgba(24,25,31,0.9)] hover:brightness-110 disabled:opacity-60"
                 >
-                  <Send className="size-4" />
+                  <Send className="mr-1 h-4 w-4" />
+                  <span className="text-xs font-semibold">전송</span>
                 </Button>
               </div>
               <p className="mt-2 px-1 text-[11px] text-[#8f877b]">Enter 전송 · Shift + Enter 줄바꿈</p>
             </div>
           </div>
         </div>
+
+        {isInfoPanelOpen && (
+          <aside className="hidden h-full border-l border-white/45 bg-[#f0e9dd]/82 p-4 backdrop-blur-xl xl:block">
+            <div className="flex h-full flex-col gap-4">
+              <div className="overflow-hidden rounded-2xl border border-white/45 bg-white/76 shadow-[0_18px_32px_-24px_rgba(20,18,15,0.74)]">
+                <img
+                  src={character.images.normal}
+                  alt={character.name}
+                  className="h-56 w-full object-cover object-top"
+                />
+                <div className="space-y-2 p-4">
+                  <p className="text-lg font-bold text-[#2f3138]">{character.name}</p>
+                  <p className="text-sm leading-relaxed text-[#4f493f]">{characterMeta.summary}</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {characterMeta.tags.map((tag) => (
+                      <span key={tag} className="rounded-md border border-[#dacfbf] bg-white/80 px-2 py-1 text-[11px] font-medium text-[#6b6459]">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                  {characterMeta.heroQuote && (
+                    <p className="rounded-xl border border-[#e1d6ea] bg-[#f7effc] px-3 py-2 text-xs font-semibold leading-relaxed text-[#6b4d88]">
+                      “{characterMeta.heroQuote}”
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-3 rounded-2xl border border-white/45 bg-white/72 p-4">
+                <p className="text-sm font-bold text-[#2f3138]">대화 상태</p>
+                <div className="rounded-xl border border-[#ddd1bf] bg-[#f7f1e6] px-3 py-2 text-xs text-[#5c564a]">
+                  현재 감정: <span className="font-semibold text-[#6a5991]">{activeEmotionLabel}</span>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setShowEmotionIllustrations((prev) => !prev)}
+                  className={cn(
+                    "h-10 w-full rounded-xl text-xs font-semibold",
+                    showEmotionIllustrations ? "text-[#5b5668] hover:bg-[#7d6aa8]/10" : "text-[#7a756d] hover:bg-black/5"
+                  )}
+                  title={showEmotionIllustrations ? "감정 일러스트 숨기기" : "감정 일러스트 보기"}
+                >
+                  {showEmotionIllustrations ? "감정 일러스트 ON" : "감정 일러스트 OFF"}
+                </Button>
+              </div>
+            </div>
+          </aside>
+        )}
       </div>
     </div>
   )

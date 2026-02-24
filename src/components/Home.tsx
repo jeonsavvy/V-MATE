@@ -3,7 +3,7 @@ import { Character, CHARACTERS, Message } from "@/lib/data"
 import { CHARACTER_FILTERS, CHARACTER_UI_META, CharacterFilter } from "@/lib/character-ui"
 import { Button } from "./ui/button"
 import { Input } from "./ui/input"
-import { Search, LogOut, Sparkles } from "lucide-react"
+import { Search, LogOut, Sparkles, ArrowRight, Flame, Clock3 } from "lucide-react"
 import { User as SupabaseUser } from "@supabase/supabase-js"
 import { supabase, isSupabaseConfigured } from "@/lib/supabase"
 import { toast } from "sonner"
@@ -61,6 +61,29 @@ const truncatePreview = (text: string, max = 42): string => {
   if (!normalized) return ""
   if (normalized.length <= max) return normalized
   return `${normalized.slice(0, max)}…`
+}
+
+const formatRelativeTime = (updatedAt: string | null): string => {
+  if (!updatedAt) return "기록 없음"
+  const diff = Date.now() - Date.parse(updatedAt)
+  if (Number.isNaN(diff) || diff < 0) return "최근"
+
+  const minute = 60 * 1000
+  const hour = 60 * minute
+  const day = 24 * hour
+
+  if (diff < hour) {
+    const value = Math.max(1, Math.floor(diff / minute))
+    return `${value}분 전`
+  }
+
+  if (diff < day) {
+    const value = Math.floor(diff / hour)
+    return `${value}시간 전`
+  }
+
+  const value = Math.floor(diff / day)
+  return `${value}일 전`
 }
 
 export function Home({ onCharacterSelect, user, onAuthRequest }: HomeProps) {
@@ -167,6 +190,9 @@ export function Home({ onCharacterSelect, user, onAuthRequest }: HomeProps) {
 
   const heroCharacters = filteredCharacters.slice(0, 3)
   const primaryCharacter = heroCharacters[0] ?? filteredCharacters[0] ?? characters[0]
+  const primaryCharacterMeta = primaryCharacter ? CHARACTER_UI_META[primaryCharacter.id] : null
+  const recentContinuation = recentChats.slice(0, 4)
+  const heroSignals = ["지금 가장 많이 이어진 대화", "감정선이 짙은 추천", "가볍게 시작하기 좋은 분위기"]
   const selectedCharacter = selectedCharacterId ? CHARACTERS[selectedCharacterId] : null
   const selectedCharacterMeta = selectedCharacter ? CHARACTER_UI_META[selectedCharacter.id] : null
 
@@ -192,7 +218,7 @@ export function Home({ onCharacterSelect, user, onAuthRequest }: HomeProps) {
       </div>
 
       <header className="sticky top-0 z-30 border-b border-white/40 bg-[#ece4d8]/80 px-4 py-3 shadow-[0_16px_34px_-30px_rgba(28,26,22,0.75)] backdrop-blur-xl">
-        <div className="mx-auto flex max-w-6xl items-center gap-3">
+        <div className="mx-auto flex w-full max-w-[1280px] items-center gap-3">
           <div className="shrink-0 text-2xl font-black tracking-tight text-[#7b5cb8]">V-MATE</div>
 
           <div className="relative min-w-0 flex-1">
@@ -245,97 +271,111 @@ export function Home({ onCharacterSelect, user, onAuthRequest }: HomeProps) {
         </div>
       </header>
 
-      <main className="relative z-10 mx-auto max-w-6xl space-y-8 px-4 py-5 md:py-6">
-        <section className="space-y-3">
-          <div className="rounded-2xl border border-white/45 bg-white/70 p-4 shadow-[0_20px_35px_-28px_rgba(24,22,19,0.85)]">
-            <div className="flex items-center gap-2 text-[#4c463e]">
-              <Sparkles className="h-4 w-4 text-[#7b5cb8]" />
-              <p className="text-sm font-semibold">빠르게 시작하기</p>
-            </div>
-            <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-sm text-[#5f584d]">
-                최근 기록을 이어가거나 추천 캐릭터와 바로 대화를 시작해보세요.
-              </p>
-              {primaryCharacter && (
-                  <Button
-                    onClick={() => onCharacterSelect(primaryCharacter)}
-                    className="h-10 rounded-full bg-[#7b5cb8] px-5 text-sm font-semibold text-white shadow-[0_12px_24px_-16px_rgba(123,92,184,0.92)] transition hover:bg-[#6b4fa6]"
-                  >
-                    {primaryCharacter.name}와 시작
-                  </Button>
-              )}
+      <main className="relative z-10 mx-auto w-full max-w-[1280px] space-y-10 px-4 py-5 md:py-6 lg:space-y-12">
+        <section className="grid gap-4 xl:grid-cols-[minmax(0,1.75fr)_minmax(0,1fr)]">
+          <div className="relative overflow-hidden rounded-[30px] border border-white/45 bg-black/40 shadow-[0_28px_54px_-32px_rgba(23,21,18,0.85)]">
+            <img
+              src={primaryCharacter.images.normal}
+              alt={`${primaryCharacter.name} 대표 이미지`}
+              className="absolute inset-0 h-full w-full object-cover"
+              style={{ objectPosition: primaryCharacterMeta?.heroObjectPosition || "center top" }}
+            />
+            <div className="absolute inset-0 bg-[linear-gradient(105deg,rgba(20,17,23,0.88)_12%,rgba(20,17,23,0.45)_56%,rgba(20,17,23,0.25)_100%)]" />
+            <div className="absolute -right-16 top-8 h-44 w-44 rounded-full bg-[#9a80d6]/35 blur-[70px]" />
+
+            <div className="relative flex min-h-[290px] flex-col justify-end gap-4 p-6 text-white sm:min-h-[360px] sm:p-8">
+              <span className="inline-flex w-fit items-center gap-1 rounded-full border border-white/35 bg-white/12 px-3 py-1 text-xs font-semibold tracking-[0.12em] text-white/90">
+                <Sparkles className="h-3.5 w-3.5" />
+                TODAY'S MOOD
+              </span>
+              <div className="space-y-2">
+                <h1 className="max-w-2xl text-3xl font-black leading-tight text-white sm:text-4xl">
+                  오늘은 어떤 감정선으로 대화를 시작할까요?
+                </h1>
+                <p className="max-w-xl text-sm leading-relaxed text-white/86 sm:text-base">
+                  {primaryCharacterMeta?.heroQuote ?? primaryCharacter.greeting}
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2.5">
+                <Button
+                  onClick={() => onCharacterSelect(primaryCharacter)}
+                  className="h-11 rounded-full bg-[#8d6bd2] px-5 text-sm font-semibold text-white shadow-[0_16px_30px_-18px_rgba(141,107,210,0.92)] transition hover:bg-[#7d5dc2]"
+                >
+                  {primaryCharacter.name}와 대화 시작
+                  <ArrowRight className="h-4 w-4" />
+                </Button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedCharacterId(primaryCharacter.id)}
+                  className="inline-flex h-11 items-center rounded-full border border-white/50 bg-white/12 px-5 text-sm font-semibold text-white transition hover:bg-white/20"
+                >
+                  캐릭터 자세히 보기
+                </button>
+              </div>
             </div>
           </div>
 
-          {recentChats.length > 0 && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <h3 className="text-lg font-bold text-[#2b2d35]">최근 채팅</h3>
-                <p className="text-xs font-semibold text-[#756d62]">{recentChats.length}개</p>
+          <div className="rounded-3xl border border-white/45 bg-white/72 p-4 shadow-[0_20px_38px_-26px_rgba(23,21,18,0.78)] sm:p-5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-[#38352f]">
+                <Clock3 className="h-4 w-4 text-[#7b5cb8]" />
+                <p className="text-sm font-bold">지금 이어서 대화하기</p>
               </div>
+              <p className="text-xs font-semibold text-[#746d63]">{recentChats.length}개 기록</p>
+            </div>
 
-              <div className="-mx-1 flex snap-x snap-mandatory gap-3 overflow-x-auto px-1 pb-1">
-                {recentChats.map((item) => {
+            {recentContinuation.length > 0 ? (
+              <div className="mt-4 space-y-2">
+                {recentContinuation.map((item) => {
                   const char = CHARACTERS[item.characterId]
                   if (!char) return null
-
                   return (
                     <button
                       key={item.characterId}
                       onClick={() => onCharacterSelect(char)}
-                      className="min-w-[240px] snap-start rounded-2xl border border-white/45 bg-white/76 p-3 text-left shadow-[0_14px_24px_-20px_rgba(23,22,20,0.72)] transition hover:-translate-y-0.5 hover:border-[#d6c6ef]"
+                      className="group flex w-full items-center gap-3 rounded-2xl border border-[#ece2d6] bg-white/86 p-3 text-left transition hover:border-[#d7c6ee] hover:bg-white"
                     >
-                      <div className="flex items-center gap-3">
-                        <img src={char.images.normal} alt={char.name} className="h-12 w-12 rounded-xl object-cover object-top" />
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-bold text-[#2f3138]">{char.name}</p>
-                          <p className="mt-1 truncate text-xs text-[#625b50]">{item.preview}</p>
-                        </div>
+                      <img src={char.images.normal} alt={char.name} className="h-12 w-12 rounded-xl object-cover object-top" />
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <p className="truncate text-sm font-bold text-[#2f3138]">{char.name}</p>
+                        <p className="truncate text-xs text-[#5d574d]">{item.preview}</p>
+                        <p className="text-[11px] font-medium text-[#8a8378]">{formatRelativeTime(item.updatedAt)}</p>
                       </div>
+                      <ArrowRight className="h-4 w-4 shrink-0 text-[#8c8579] transition group-hover:text-[#6d5b96]" />
                     </button>
                   )
                 })}
               </div>
-            </div>
-          )}
-
-          <div className="flex flex-wrap items-center gap-2 pt-1">
-            {CHARACTER_FILTERS.map((filter) => {
-              const isActive = activeFilter === filter
-              return (
-                <button
-                  key={filter}
-                  onClick={() => setActiveFilter(filter)}
-                  className={`rounded-full border px-3.5 py-2 text-sm font-semibold transition md:px-4 ${
-                    isActive
-                      ? "border-[#7b5cb8] bg-[#7b5cb8] text-white shadow-[0_10px_20px_-14px_rgba(123,92,184,0.95)]"
-                      : "border-[#d4c8b8] bg-white/70 text-[#635d53] hover:border-[#cfbce9] hover:text-[#2f3138]"
-                  }`}
-                >
-                  {filter}
-                </button>
-              )
-            })}
+            ) : (
+              <div className="mt-5 rounded-2xl border border-dashed border-[#d7ccbd] bg-[#f7f2ea] px-4 py-6 text-center text-sm text-[#6a645a]">
+                아직 이어갈 대화가 없어요. 추천 캐릭터로 첫 대화를 시작해보세요.
+              </div>
+            )}
           </div>
         </section>
 
-        <section className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-2xl font-black text-[#252730]">추천 캐릭터</h3>
-            <p className="text-xs font-semibold text-[#7a7469]">상세 보기 후 대화 시작</p>
+        <section className="space-y-4">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold tracking-[0.12em] text-[#8c8376]">CURATED PICKS</p>
+              <h2 className="mt-1 text-2xl font-black text-[#252730] sm:text-[2rem]">추천 캐릭터</h2>
+              <p className="mt-1 text-sm text-[#645d53]">감정선이 강한 캐릭터 중심으로 바로 몰입할 수 있게 큐레이션했어요.</p>
+            </div>
+            <div className="inline-flex items-center gap-2 rounded-full border border-white/50 bg-white/68 px-3 py-1.5 text-xs font-semibold text-[#5d574c]">
+              <Flame className="h-3.5 w-3.5 text-[#7b5cb8]" />
+              상세 보기 후 대화 시작
+            </div>
           </div>
+
           {heroCharacters.length > 0 && (
-            <div className="-mx-1 flex snap-x snap-mandatory gap-3 overflow-x-auto px-1 pb-1 md:mx-0 md:grid md:overflow-visible md:px-0 md:pb-0 md:grid-cols-[1.5fr_1fr_1fr]">
+            <div className="-mx-1 flex snap-x snap-mandatory gap-3 overflow-x-auto px-1 pb-1 md:mx-0 md:grid md:overflow-visible md:px-0 md:pb-0 md:grid-cols-[1.45fr_1fr_1fr]">
               {heroCharacters.map((char, index) => {
                 const meta = CHARACTER_UI_META[char.id]
-                const isMainCard = index === 0
                 return (
                   <button
                     key={char.id}
                     onClick={() => setSelectedCharacterId(char.id)}
-                    className={`group relative min-h-[280px] w-[80vw] shrink-0 snap-center overflow-hidden rounded-3xl border border-white/45 text-left shadow-[0_20px_38px_-24px_rgba(26,25,23,0.78)] transition hover:-translate-y-1 hover:shadow-[0_28px_46px_-26px_rgba(26,25,23,0.88)] sm:w-[56vw] md:min-h-[330px] md:w-auto ${
-                      isMainCard ? "md:col-span-1" : ""
-                    }`}
+                    className="group relative min-h-[300px] w-[82vw] shrink-0 snap-center overflow-hidden rounded-3xl border border-white/45 text-left shadow-[0_22px_42px_-24px_rgba(22,20,18,0.82)] transition hover:-translate-y-1.5 hover:shadow-[0_30px_48px_-24px_rgba(22,20,18,0.9)] sm:w-[56vw] md:w-auto md:min-h-[340px]"
                   >
                     <img
                       src={char.images.normal}
@@ -343,15 +383,15 @@ export function Home({ onCharacterSelect, user, onAuthRequest }: HomeProps) {
                       className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
                       style={{ objectPosition: meta.heroObjectPosition || "center top" }}
                     />
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent" />
-                    <div className="absolute bottom-0 left-0 right-0 p-5 text-white">
-                      {meta.badge && (
-                        <span className="inline-flex rounded-full bg-[#8b6cc7] px-2 py-1 text-[10px] font-semibold tracking-[0.15em]">
-                          {meta.badge}
-                        </span>
-                      )}
-                      <h2 className="mt-2 text-2xl font-black leading-tight">{char.name}</h2>
-                      <p className="mt-1 text-sm text-white/85">{meta.heroQuote ?? meta.summary}</p>
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/86 via-black/35 to-transparent" />
+                    <div className="absolute inset-x-0 bottom-0 space-y-2 p-5 text-white">
+                      <p className="text-[11px] font-semibold tracking-[0.14em] text-white/85">{heroSignals[index] ?? "추천 캐릭터"}</p>
+                      <h3 className="text-[1.7rem] font-black leading-tight">{char.name}</h3>
+                      <p className="line-clamp-2 text-sm text-white/86">{meta.heroQuote ?? meta.summary}</p>
+                      <span className="inline-flex items-center gap-1 text-xs font-semibold text-white/90">
+                        캐릭터 살펴보기
+                        <ArrowRight className="h-3.5 w-3.5" />
+                      </span>
                     </div>
                   </button>
                 )
@@ -361,9 +401,31 @@ export function Home({ onCharacterSelect, user, onAuthRequest }: HomeProps) {
         </section>
 
         <section className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-2xl font-black text-[#252730]">캐릭터 모아보기</h3>
-            <p className="text-xs font-semibold text-[#7a7469]">총 {filteredCharacters.length}개</p>
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold tracking-[0.12em] text-[#8c8376]">BROWSE</p>
+              <h3 className="mt-1 text-2xl font-black text-[#252730]">캐릭터 모아보기</h3>
+            </div>
+            <p className="text-xs font-semibold text-[#756d62]">총 {filteredCharacters.length}개</p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {CHARACTER_FILTERS.map((filter) => {
+              const isActive = activeFilter === filter
+              return (
+                <button
+                  key={filter}
+                  onClick={() => setActiveFilter(filter)}
+                  className={`rounded-full border px-3.5 py-2 text-sm font-semibold transition md:px-4 ${
+                    isActive
+                      ? "border-[#7b5cb8] bg-[#7b5cb8] text-white shadow-[0_10px_20px_-14px_rgba(123,92,184,0.95)]"
+                      : "border-[#d4c8b8] bg-white/74 text-[#635d53] hover:border-[#cfbce9] hover:text-[#2f3138]"
+                  }`}
+                >
+                  {filter}
+                </button>
+              )
+            })}
           </div>
 
           <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
@@ -373,15 +435,15 @@ export function Home({ onCharacterSelect, user, onAuthRequest }: HomeProps) {
                 <button
                   key={char.id}
                   onClick={() => setSelectedCharacterId(char.id)}
-                  className="group overflow-hidden rounded-2xl border border-white/45 bg-[#f3ece1]/80 text-left shadow-[0_18px_30px_-22px_rgba(26,25,23,0.72)] transition duration-300 hover:-translate-y-1.5 hover:border-[#e0a69f] hover:shadow-[0_24px_38px_-22px_rgba(26,25,23,0.84)]"
+                  className="group overflow-hidden rounded-2xl border border-white/45 bg-[#f3ece1]/84 text-left shadow-[0_18px_30px_-22px_rgba(26,25,23,0.72)] transition duration-300 hover:-translate-y-1.5 hover:border-[#d7c2f2] hover:shadow-[0_24px_38px_-22px_rgba(26,25,23,0.84)]"
                 >
-                  <div className="relative aspect-square overflow-hidden">
+                  <div className="relative aspect-[4/4.2] overflow-hidden">
                     <img
                       src={char.images.normal}
                       alt={char.name}
                       className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
                     />
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/62 via-transparent to-transparent" />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/0 to-transparent" />
                     {meta.badge && (
                       <span className="absolute left-2 top-2 rounded-md bg-black/55 px-2 py-1 text-[10px] font-semibold tracking-[0.14em] text-white">
                         {meta.badge}
@@ -399,6 +461,10 @@ export function Home({ onCharacterSelect, user, onAuthRequest }: HomeProps) {
                         </span>
                       ))}
                     </div>
+                    <p className="inline-flex items-center gap-1 text-xs font-semibold text-[#6b5a95]">
+                      상세 보기
+                      <ArrowRight className="h-3.5 w-3.5" />
+                    </p>
                   </div>
                 </button>
               )

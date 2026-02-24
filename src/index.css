@@ -65,6 +65,7 @@
     font-family: 'Pretendard', sans-serif;
     background-color: #e7dfd3;
     color: #22242b;
+    line-height: 1.5;
   }
 }
 
@@ -89,9 +90,9 @@
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
-    animation-duration: 0.01ms !important;
+    animation-duration: 60ms !important;
     animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+    transition-duration: 60ms !important;
     scroll-behavior: auto !important;
   }
 }
