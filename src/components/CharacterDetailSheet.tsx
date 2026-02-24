@@ -37,7 +37,7 @@ export function CharacterDetailSheet({
             <div className="absolute bottom-4 left-4 right-4 text-white">
               <div>
                 {meta.badge && (
-                  <span className="inline-flex rounded-full bg-[#f75b4f] px-2 py-1 text-[10px] font-semibold tracking-[0.16em]">
+                  <span className="inline-flex rounded-full bg-[#8b6cc7] px-2 py-1 text-[10px] font-semibold tracking-[0.16em]">
                     {meta.badge}
                   </span>
                 )}

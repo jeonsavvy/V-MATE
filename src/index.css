@@ -23,7 +23,7 @@
     --destructive-foreground: 0 0% 98%;
     --border: 34 26% 78%;
     --input: 34 26% 78%;
-    --ring: 8 70% 59%;
+    --ring: 259 39% 54%;
     --radius: 0.5rem;
   }
 
@@ -56,7 +56,7 @@
   }
 
   *:focus-visible {
-    outline: 2px solid rgba(224, 93, 78, 0.65);
+    outline: 2px solid rgba(123, 92, 184, 0.65);
     outline-offset: 2px;
   }
 
@@ -69,7 +69,7 @@
 }
 
 ::selection {
-  background: rgba(242, 98, 83, 0.32);
+  background: rgba(123, 92, 184, 0.32);
 }
 
 .fade-in {
@@ -113,4 +113,3 @@
 ::-webkit-scrollbar-thumb:hover {
   background: #706860;
 }
-

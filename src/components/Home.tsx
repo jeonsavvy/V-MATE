@@ -193,13 +193,13 @@ export function Home({ onCharacterSelect, user, onAuthRequest }: HomeProps) {
 
       <header className="sticky top-0 z-30 border-b border-white/40 bg-[#ece4d8]/80 px-4 py-3 shadow-[0_16px_34px_-30px_rgba(28,26,22,0.75)] backdrop-blur-xl">
         <div className="mx-auto flex max-w-6xl items-center gap-3">
-          <div className="shrink-0 text-2xl font-black tracking-tight text-[#ef4f42]">V-MATE</div>
+          <div className="shrink-0 text-2xl font-black tracking-tight text-[#7b5cb8]">V-MATE</div>
 
           <div className="relative min-w-0 flex-1">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#7d756b]" />
             <Input
               placeholder="검색어를 입력해 주세요"
-              className="h-10 rounded-full border-[#c8beaf] bg-white/75 pl-9 text-[#2a2b30] placeholder:text-[#847c72] shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] transition-all focus:border-[#e05d4e] focus:bg-white"
+              className="h-10 rounded-full border-[#c8beaf] bg-white/75 pl-9 text-[#2a2b30] placeholder:text-[#847c72] shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] transition-all focus:border-[#8b6cc7] focus:bg-white"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
             />
@@ -236,7 +236,7 @@ export function Home({ onCharacterSelect, user, onAuthRequest }: HomeProps) {
             ) : (
               <Button
                 onClick={onAuthRequest}
-                className="h-10 rounded-full bg-[#f55f53] px-5 text-white shadow-[0_12px_24px_-16px_rgba(245,95,83,0.92)] transition hover:bg-[#e85347]"
+                className="h-10 rounded-full bg-[#7b5cb8] px-5 text-white shadow-[0_12px_24px_-16px_rgba(123,92,184,0.92)] transition hover:bg-[#6b4fa6]"
               >
                 로그인
               </Button>
@@ -249,7 +249,7 @@ export function Home({ onCharacterSelect, user, onAuthRequest }: HomeProps) {
         <section className="space-y-3">
           <div className="rounded-2xl border border-white/45 bg-white/70 p-4 shadow-[0_20px_35px_-28px_rgba(24,22,19,0.85)]">
             <div className="flex items-center gap-2 text-[#4c463e]">
-              <Sparkles className="h-4 w-4 text-[#f55f53]" />
+              <Sparkles className="h-4 w-4 text-[#7b5cb8]" />
               <p className="text-sm font-semibold">빠르게 시작하기</p>
             </div>
             <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -257,12 +257,12 @@ export function Home({ onCharacterSelect, user, onAuthRequest }: HomeProps) {
                 최근 기록을 이어가거나 추천 캐릭터와 바로 대화를 시작해보세요.
               </p>
               {primaryCharacter && (
-                <Button
-                  onClick={() => onCharacterSelect(primaryCharacter)}
-                  className="h-10 rounded-full bg-[#f55f53] px-5 text-sm font-semibold text-white shadow-[0_12px_24px_-16px_rgba(245,95,83,0.92)] transition hover:bg-[#e85347]"
-                >
-                  {primaryCharacter.name}와 시작
-                </Button>
+                  <Button
+                    onClick={() => onCharacterSelect(primaryCharacter)}
+                    className="h-10 rounded-full bg-[#7b5cb8] px-5 text-sm font-semibold text-white shadow-[0_12px_24px_-16px_rgba(123,92,184,0.92)] transition hover:bg-[#6b4fa6]"
+                  >
+                    {primaryCharacter.name}와 시작
+                  </Button>
               )}
             </div>
           </div>
@@ -283,7 +283,7 @@ export function Home({ onCharacterSelect, user, onAuthRequest }: HomeProps) {
                     <button
                       key={item.characterId}
                       onClick={() => onCharacterSelect(char)}
-                      className="min-w-[240px] snap-start rounded-2xl border border-white/45 bg-white/76 p-3 text-left shadow-[0_14px_24px_-20px_rgba(23,22,20,0.72)] transition hover:-translate-y-0.5 hover:border-[#e9b4ae]"
+                      className="min-w-[240px] snap-start rounded-2xl border border-white/45 bg-white/76 p-3 text-left shadow-[0_14px_24px_-20px_rgba(23,22,20,0.72)] transition hover:-translate-y-0.5 hover:border-[#d6c6ef]"
                     >
                       <div className="flex items-center gap-3">
                         <img src={char.images.normal} alt={char.name} className="h-12 w-12 rounded-xl object-cover object-top" />
@@ -308,8 +308,8 @@ export function Home({ onCharacterSelect, user, onAuthRequest }: HomeProps) {
                   onClick={() => setActiveFilter(filter)}
                   className={`rounded-full border px-3.5 py-2 text-sm font-semibold transition md:px-4 ${
                     isActive
-                      ? "border-[#f55f53] bg-[#f55f53] text-white shadow-[0_10px_20px_-14px_rgba(245,95,83,0.95)]"
-                      : "border-[#d4c8b8] bg-white/70 text-[#635d53] hover:border-[#e5b7b1] hover:text-[#2f3138]"
+                      ? "border-[#7b5cb8] bg-[#7b5cb8] text-white shadow-[0_10px_20px_-14px_rgba(123,92,184,0.95)]"
+                      : "border-[#d4c8b8] bg-white/70 text-[#635d53] hover:border-[#cfbce9] hover:text-[#2f3138]"
                   }`}
                 >
                   {filter}
@@ -346,7 +346,7 @@ export function Home({ onCharacterSelect, user, onAuthRequest }: HomeProps) {
                     <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent" />
                     <div className="absolute bottom-0 left-0 right-0 p-5 text-white">
                       {meta.badge && (
-                        <span className="inline-flex rounded-full bg-[#f75b4f] px-2 py-1 text-[10px] font-semibold tracking-[0.15em]">
+                        <span className="inline-flex rounded-full bg-[#8b6cc7] px-2 py-1 text-[10px] font-semibold tracking-[0.15em]">
                           {meta.badge}
                         </span>
                       )}

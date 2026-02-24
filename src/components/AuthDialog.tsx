@@ -171,7 +171,7 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required
-                  className="border-[#d1c4b3] bg-white/75 text-[#22242b] placeholder:text-[#8f8b82] focus-visible:border-[#e05d4e]"
+                  className="border-[#d1c4b3] bg-white/75 text-[#22242b] placeholder:text-[#8f8b82] focus-visible:border-[#8b6cc7]"
                 />
               </div>
               <div className="space-y-2">
@@ -182,18 +182,18 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
-                  className="border-[#d1c4b3] bg-white/75 text-[#22242b] focus-visible:border-[#e05d4e]"
+                  className="border-[#d1c4b3] bg-white/75 text-[#22242b] focus-visible:border-[#8b6cc7]"
                 />
               </div>
               <button
                 type="button"
                 onClick={handleResetPassword}
                 disabled={isResetLoading || isLoading}
-                className="text-xs font-semibold text-[#7a6757] underline-offset-2 transition hover:text-[#d45648] hover:underline disabled:cursor-not-allowed disabled:opacity-60"
+                className="text-xs font-semibold text-[#7a6757] underline-offset-2 transition hover:text-[#6b4fa6] hover:underline disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {isResetLoading ? "재설정 메일 발송 중..." : "비밀번호를 잊으셨나요?"}
               </button>
-              <Button type="submit" className="w-full bg-[#f55f53] text-white shadow-[0_14px_26px_-18px_rgba(245,95,83,0.95)] transition hover:bg-[#ea564a]" disabled={isLoading}>
+              <Button type="submit" className="w-full bg-[#7b5cb8] text-white shadow-[0_14px_26px_-18px_rgba(123,92,184,0.95)] transition hover:bg-[#6b4fa6]" disabled={isLoading}>
                 {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 로그인
               </Button>
@@ -210,7 +210,7 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   required
-                  className="border-[#d1c4b3] bg-white/75 text-[#22242b] placeholder:text-[#8f8b82] focus-visible:border-[#e05d4e]"
+                  className="border-[#d1c4b3] bg-white/75 text-[#22242b] placeholder:text-[#8f8b82] focus-visible:border-[#8b6cc7]"
                 />
               </div>
               <div className="space-y-2">
@@ -222,7 +222,7 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required
-                  className="border-[#d1c4b3] bg-white/75 text-[#22242b] placeholder:text-[#8f8b82] focus-visible:border-[#e05d4e]"
+                  className="border-[#d1c4b3] bg-white/75 text-[#22242b] placeholder:text-[#8f8b82] focus-visible:border-[#8b6cc7]"
                 />
               </div>
               <div className="space-y-2">
@@ -234,7 +234,7 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
                   onChange={(e) => setPassword(e.target.value)}
                   required
                   minLength={6}
-                  className="border-[#d1c4b3] bg-white/75 text-[#22242b] focus-visible:border-[#e05d4e]"
+                  className="border-[#d1c4b3] bg-white/75 text-[#22242b] focus-visible:border-[#8b6cc7]"
                 />
                 <p className="text-xs text-[#8a8378]">영문/숫자 포함 6자 이상 권장</p>
               </div>
@@ -247,10 +247,10 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
                   onChange={(e) => setConfirmPassword(e.target.value)}
                   required
                   minLength={6}
-                  className="border-[#d1c4b3] bg-white/75 text-[#22242b] focus-visible:border-[#e05d4e]"
+                  className="border-[#d1c4b3] bg-white/75 text-[#22242b] focus-visible:border-[#8b6cc7]"
                 />
               </div>
-              <Button type="submit" className="w-full bg-[#f55f53] text-white shadow-[0_14px_26px_-18px_rgba(245,95,83,0.95)] transition hover:bg-[#ea564a]" disabled={isLoading}>
+              <Button type="submit" className="w-full bg-[#7b5cb8] text-white shadow-[0_14px_26px_-18px_rgba(123,92,184,0.95)] transition hover:bg-[#6b4fa6]" disabled={isLoading}>
                 {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 회원가입
               </Button>

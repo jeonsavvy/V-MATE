@@ -1040,8 +1040,8 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
                     className={cn(
                       "w-full rounded-2xl border p-3 text-left shadow-[0_14px_24px_-20px_rgba(23,22,20,0.72)] transition",
                       isActive
-                        ? "border-[#e8b0ab] bg-white/92"
-                        : "border-white/45 bg-white/72 hover:border-[#e7b4ae]"
+                        ? "border-[#d4c2ed] bg-white/92"
+                        : "border-white/45 bg-white/72 hover:border-[#d1bfe9]"
                     )}
                   >
                     <div className="flex items-start gap-3">
@@ -1112,7 +1112,7 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
               <select
                 value={character.id}
                 onChange={(e) => onCharacterChange(e.target.value)}
-                className="cursor-pointer rounded-xl border border-[#c7bcac] bg-white/78 px-2.5 py-1.5 text-xs text-[#5f635f] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] outline-none transition hover:bg-white focus:border-[#e05d4e] lg:hidden"
+                className="cursor-pointer rounded-xl border border-[#c7bcac] bg-white/78 px-2.5 py-1.5 text-xs text-[#5f635f] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] outline-none transition hover:bg-white focus:border-[#8b6cc7] lg:hidden"
               >
                 {Object.values(CHARACTERS).map((option) => (
                   <option key={option.id} value={option.id}>{option.name}</option>
@@ -1215,7 +1215,7 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
                     type="button"
                     onClick={() => handleQuickReplyClick(template)}
                     disabled={isLoading}
-                    className="rounded-full border border-[#d8cebe] bg-white/80 px-3 py-1.5 text-xs font-semibold text-[#615b51] transition hover:border-[#e5b4ae] hover:text-[#3b3c43] disabled:cursor-not-allowed disabled:opacity-55"
+                    className="rounded-full border border-[#d8cebe] bg-white/80 px-3 py-1.5 text-xs font-semibold text-[#615b51] transition hover:border-[#cfbce9] hover:text-[#3b3c43] disabled:cursor-not-allowed disabled:opacity-55"
                   >
                     {template}
                   </button>

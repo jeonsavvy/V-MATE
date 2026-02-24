@@ -30,7 +30,7 @@ graph TD
   - 로그인: Supabase `chat_messages` 테이블
 - **서버리스 프록시**: Gemini API Key는 Cloudflare Worker에서만 사용
 - **모델 고정**: `gemini-3-flash-preview` 사용 (서버 코드 고정)
-- **동일 모델 재시도 없음**: 모델 요청은 단일 시도로만 처리
+- **조건부 복구 재시도**: 동일 모델에서 cache lookup 실패/네트워크 실패 시 복구 재시도(설정값으로 제어)
 - **Gemini Context Cache 재사용**: 캐릭터별 시스템 프롬프트 캐시를 `cachedContent`로 재사용해 재요청 비용 절감
 - **JSON Mode 요청**: `responseMimeType: "application/json"`
 - **Origin allowlist CORS**: `ALLOWED_ORIGINS` 기반 허용
@@ -57,6 +57,7 @@ npm install
 # Client
 VITE_SUPABASE_URL=...
 VITE_SUPABASE_ANON_KEY=...
+VITE_SUPABASE_PUBLISHABLE_KEY=...
 VITE_CHAT_API_BASE_URL=
 
 # Cloudflare Worker Secret/Vars
@@ -66,6 +67,7 @@ GOOGLE_API_KEY=...
 GEMINI_HISTORY_MESSAGES=10
 GEMINI_MAX_PART_CHARS=700
 GEMINI_MAX_SYSTEM_PROMPT_CHARS=5000
+GEMINI_MAX_OUTPUT_TOKENS=1024
 GEMINI_MODEL_TIMEOUT_MS=15000
 FUNCTION_TOTAL_TIMEOUT_MS=20000
 FUNCTION_TIMEOUT_GUARD_MS=1500
@@ -73,7 +75,11 @@ GEMINI_CONTEXT_CACHE_ENABLED=true
 GEMINI_CONTEXT_CACHE_TTL_SECONDS=21600
 GEMINI_CONTEXT_CACHE_CREATE_TIMEOUT_MS=1800
 GEMINI_CONTEXT_CACHE_WARMUP_MIN_CHARS=1200
-GEMINI_CONTEXT_CACHE_AUTO_CREATE=true
+GEMINI_CONTEXT_CACHE_AUTO_CREATE=false
+GEMINI_CACHE_LOOKUP_RETRY_ENABLED=true
+GEMINI_NETWORK_RECOVERY_RETRY_ENABLED=true
+GEMINI_EMPTY_RESPONSE_RETRY_ENABLED=false
+GEMINI_THINKING_LEVEL=minimal
 ALLOWED_ORIGINS=http://localhost:5173,https://your-domain.com
 ALLOW_ALL_ORIGINS=false
 RATE_LIMIT_WINDOW_MS=60000
@@ -102,8 +108,11 @@ npm run cf:dev
 
 - 기본 히스토리 윈도우: `GEMINI_HISTORY_MESSAGES` (기본 10)
 - 모델: `gemini-3-flash-preview` 고정 (모델 fallback 없음)
-- 모델 최대 출력 토큰: 320 (`server/chat-handler.js`의 `generationConfig.maxOutputTokens`)
-- 동일 모델 재시도: 없음(0회, 단일 시도)
+- 모델 최대 출력 토큰: `GEMINI_MAX_OUTPUT_TOKENS` (기본 1024)
+- 동일 모델 복구 재시도:
+  - `GEMINI_CACHE_LOOKUP_RETRY_ENABLED` (기본 true)
+  - `GEMINI_NETWORK_RECOVERY_RETRY_ENABLED` (기본 true)
+  - `GEMINI_EMPTY_RESPONSE_RETRY_ENABLED` (기본 false)
 - 시스템 프롬프트 최대 길이: `GEMINI_MAX_SYSTEM_PROMPT_CHARS` (기본 5000)
 - 요청 파트 최대 길이: `GEMINI_MAX_PART_CHARS` (기본 700)
 - 모델 요청 타임아웃: `GEMINI_MODEL_TIMEOUT_MS` (기본 15000ms)
@@ -113,9 +122,10 @@ npm run cf:dev
 - Context Cache TTL: `GEMINI_CONTEXT_CACHE_TTL_SECONDS` (기본 21600초)
 - Cache 생성 타임아웃: `GEMINI_CONTEXT_CACHE_CREATE_TIMEOUT_MS` (기본 1800ms)
 - Cache 워밍 기준 길이: `GEMINI_CONTEXT_CACHE_WARMUP_MIN_CHARS` (기본 1200자)
-- Cache 자동 생성: `GEMINI_CONTEXT_CACHE_AUTO_CREATE` (기본 true)
+- Cache 자동 생성: `GEMINI_CONTEXT_CACHE_AUTO_CREATE` (코드 기본 false, `wrangler.jsonc` 샘플 값 true)
+- Gemini thinking level: `GEMINI_THINKING_LEVEL` (`minimal|low|medium|high`, 기본 `minimal`)
 - 기본 Rate Limit: 60초당 30회(`RATE_LIMIT_WINDOW_MS`, `RATE_LIMIT_MAX_REQUESTS`)
-- CORS는 `ALLOWED_ORIGINS`에 등록된 Origin만 허용
+- CORS는 기본적으로 `ALLOWED_ORIGINS` 기반 허용(단, Origin 없는 non-browser 호출은 허용)
 - 클라이언트에서 service role key 감지 시 Supabase를 비활성화하고 placeholder client로 대체
 - API 실패/파싱 실패 시 캐릭터별 fallback 대사 출력(클라이언트 레벨 유지)
 
