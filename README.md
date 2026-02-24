@@ -28,6 +28,7 @@ graph TD
 - **하이브리드 저장**:
   - 비로그인: LocalStorage
   - 로그인: Supabase `chat_messages` 테이블
+- **URL 기반 화면 분리**: `/`(홈), `/chat/:characterId`(채팅)
 - **서버리스 프록시**: Gemini API Key는 Cloudflare Worker에서만 사용
 - **모델 고정**: `gemini-3-flash-preview` 사용 (서버 코드 고정)
 - **조건부 복구 재시도**: 동일 모델에서 cache lookup 실패/네트워크 실패 시 복구 재시도(설정값으로 제어)

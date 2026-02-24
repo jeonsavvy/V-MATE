@@ -9,11 +9,67 @@ const Home = lazy(() => import("@/components/Home").then((module) => ({ default:
 const ChatView = lazy(() => import("@/components/ChatView").then((module) => ({ default: module.ChatView })))
 const AuthDialog = lazy(() => import("@/components/AuthDialog").then((module) => ({ default: module.AuthDialog })))
 
+type RouteState =
+  | { view: "home" }
+  | { view: "chat"; charId: string }
+
+const normalizePathname = (pathname: string) => {
+  if (!pathname || pathname === "/") {
+    return "/"
+  }
+  return pathname.endsWith("/") ? pathname.slice(0, -1) : pathname
+}
+
+const parseRouteFromPathname = (pathname: string): RouteState => {
+  const normalizedPath = normalizePathname(pathname)
+  const segments = normalizedPath.split("/").filter(Boolean)
+
+  if (segments[0] === "chat" && segments[1]) {
+    const charId = segments[1].toLowerCase()
+    if (CHARACTERS[charId]) {
+      return { view: "chat", charId }
+    }
+  }
+
+  return { view: "home" }
+}
+
+const toPathname = (route: RouteState): string => {
+  if (route.view === "chat") {
+    return `/chat/${route.charId}`
+  }
+  return "/"
+}
+
+const resolveInitialRoute = (): RouteState => {
+  if (typeof window === "undefined") {
+    return { view: "home" }
+  }
+  return parseRouteFromPathname(window.location.pathname)
+}
+
 function App() {
-  const [currentView, setCurrentView] = useState<"home" | "chat">("home")
-  const [currentCharId, setCurrentCharId] = useState<string | null>(null)
+  const [route, setRoute] = useState<RouteState>(resolveInitialRoute)
   const [user, setUser] = useState<User | null>(null)
   const [isAuthDialogOpen, setIsAuthDialogOpen] = useState(false)
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setRoute(parseRouteFromPathname(window.location.pathname))
+    }
+
+    const initialRoute = parseRouteFromPathname(window.location.pathname)
+    const normalizedPath = toPathname(initialRoute)
+    if (window.location.pathname !== normalizedPath) {
+      window.history.replaceState({}, "", normalizedPath)
+    }
+    setRoute(initialRoute)
+
+    window.addEventListener("popstate", handlePopState)
+    return () => {
+      window.removeEventListener("popstate", handlePopState)
+    }
+  }, [])
 
   useEffect(() => {
     if (!isSupabaseConfigured()) {
@@ -39,22 +95,43 @@ function App() {
     }
   }, [])
 
+  const navigateTo = (nextRoute: RouteState, options?: { replace?: boolean }) => {
+    const nextPath = toPathname(nextRoute)
+    const currentPath = normalizePathname(window.location.pathname)
+    if (currentPath !== nextPath) {
+      if (options?.replace) {
+        window.history.replaceState({}, "", nextPath)
+      } else {
+        window.history.pushState({}, "", nextPath)
+      }
+    } else if (options?.replace) {
+      window.history.replaceState({}, "", nextPath)
+    }
+    setRoute(nextRoute)
+  }
+
   const handleCharacterSelect = (character: Character) => {
-    setCurrentCharId(character.id)
-    setCurrentView("chat")
+    navigateTo({ view: "chat", charId: character.id })
+  }
+
+  const handleCharacterChange = (charId: string) => {
+    const normalizedCharId = String(charId || "").toLowerCase()
+    if (!CHARACTERS[normalizedCharId]) {
+      return
+    }
+    navigateTo({ view: "chat", charId: normalizedCharId })
   }
 
   const handleBackToHome = () => {
-    setCurrentView("home")
-    setCurrentCharId(null)
+    navigateTo({ view: "home" })
   }
 
-  const character = currentCharId ? CHARACTERS[currentCharId] : null
+  const character = route.view === "chat" ? CHARACTERS[route.charId] : null
 
   return (
     <div className="min-h-dvh w-full overflow-x-hidden bg-[#e7dfd3]">
       <Suspense fallback={<div className="flex min-h-dvh items-center justify-center text-sm text-[#6d665d]">화면 로딩 중...</div>}>
-        {currentView === "home" ? (
+        {route.view === "home" ? (
           <Home
             onCharacterSelect={handleCharacterSelect}
             user={user}
@@ -64,7 +141,7 @@ function App() {
           character && (
             <ChatView
               character={character}
-              onCharacterChange={setCurrentCharId}
+              onCharacterChange={handleCharacterChange}
               user={user}
               onBack={handleBackToHome}
             />
