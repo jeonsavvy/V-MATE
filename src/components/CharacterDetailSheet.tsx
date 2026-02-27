@@ -32,7 +32,13 @@ export function CharacterDetailSheet({
 
         <div className="max-h-[86dvh] overflow-y-auto pb-28">
           <div className="relative aspect-[4/5] w-full overflow-hidden">
-            <img src={character.images.normal} alt={character.name} className="h-full w-full object-cover object-top" />
+            <img
+              src={character.images.normal}
+              alt={character.name}
+              className="h-full w-full object-cover object-top"
+              loading="lazy"
+              decoding="async"
+            />
             <div className="absolute inset-0 bg-gradient-to-t from-black/72 via-black/18 to-transparent" />
             <div className="absolute bottom-4 left-4 right-4 text-white">
               <div>

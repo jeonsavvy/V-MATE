@@ -7,11 +7,27 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "./ui/tabs"
 import { toast } from "sonner"
 import { Loader2 } from "lucide-react"
 import { devError } from "@/lib/logger"
+import { buildBrowserRedirectUrl, getBrowserOrigin } from "@/lib/browserRuntime"
 
 interface AuthDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onSuccess?: () => void
+}
+
+const resolveErrorMessage = (error: unknown, fallback: string) => {
+  if (error instanceof Error && error.message) {
+    return error.message
+  }
+
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const message = (error as { message?: unknown }).message
+    if (typeof message === "string" && message.trim()) {
+      return message
+    }
+  }
+
+  return fallback
 }
 
 export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
@@ -29,7 +45,7 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
     if (!module.isSupabaseConfigured()) {
       return null
     }
-    return module.supabase
+    return module.resolveSupabaseClient()
   }
 
   const handleSignIn = async (e: React.FormEvent) => {
@@ -56,8 +72,8 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
       setEmail("")
       setPassword("")
       onSuccess?.()
-    } catch (error: any) {
-      toast.error(error.message || "로그인에 실패했습니다")
+    } catch (error: unknown) {
+      toast.error(resolveErrorMessage(error, "로그인에 실패했습니다"))
     } finally {
       setIsLoading(false)
     }
@@ -80,6 +96,7 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
     setIsLoading(true)
 
     try {
+      const redirectOrigin = getBrowserOrigin()
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
@@ -87,12 +104,13 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
           data: {
             name: name,
           },
-          emailRedirectTo: window.location.origin,
+          ...(redirectOrigin ? { emailRedirectTo: redirectOrigin } : {}),
         },
       })
 
       if (error) {
-        if (error.message.includes('secret') || error.message.includes('Forbidden')) {
+        const normalizedMessage = resolveErrorMessage(error, "").toLowerCase()
+        if (normalizedMessage.includes("secret") || normalizedMessage.includes("forbidden")) {
           toast.error("Supabase 설정 오류입니다. 관리자에게 문의해주세요.")
           devError("Supabase auth error:", error)
           return
@@ -118,9 +136,9 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
           setName("")
         }
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       devError("Sign up error:", error)
-      toast.error(error.message || "회원가입에 실패했습니다")
+      toast.error(resolveErrorMessage(error, "회원가입에 실패했습니다"))
     } finally {
       setIsLoading(false)
     }
@@ -140,14 +158,15 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
 
     setIsResetLoading(true)
     try {
+      const redirectTo = buildBrowserRedirectUrl("/")
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/`,
+        redirectTo,
       })
 
       if (error) throw error
       toast.success("비밀번호 재설정 메일을 발송했습니다.")
-    } catch (error: any) {
-      toast.error(error.message || "비밀번호 재설정 메일 발송에 실패했습니다")
+    } catch (error: unknown) {
+      toast.error(resolveErrorMessage(error, "비밀번호 재설정 메일 발송에 실패했습니다"))
     } finally {
       setIsResetLoading(false)
     }

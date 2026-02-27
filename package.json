@@ -3,11 +3,15 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "dev": "vite",
     "start": "node server/cloud-run-server.js",
     "typecheck": "tsc --noEmit",
     "test": "node --test",
+    "verify": "npm run typecheck && npm test && npm run build",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "cf:dev": "npm run build && npx --yes wrangler@4.67.0 dev",

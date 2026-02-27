@@ -1,4 +1,5 @@
-import type { AIResponse } from "@/lib/data"
+import type { AIResponse, CharacterId } from "@/lib/data"
+import { CHAT_REQUEST_LIMITS } from "@/lib/chat/chatContract"
 
 export type ChatRequestHistoryItem = {
   role: "user" | "assistant"
@@ -6,7 +7,7 @@ export type ChatRequestHistoryItem = {
 }
 
 export type ChatRequestV2 = {
-  characterId: "mika" | "alice" | "kael"
+  characterId: CharacterId
   userMessage: string
   messageHistory: ChatRequestHistoryItem[]
   cachedContent?: string
@@ -25,6 +26,8 @@ export type ChatApiError = Error & {
 }
 
 const ALLOWED_EMOTIONS = new Set<AIResponse["emotion"]>(["normal", "happy", "confused", "angry"])
+const CLIENT_REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]+$/
+const CACHED_CONTENT_PATTERN = /^cachedContents\/[A-Za-z0-9/_\-.]+$/
 
 export const NETWORK_ERROR_CODES = new Set([
   "CLIENT_NETWORK_ERROR",
@@ -37,10 +40,24 @@ export const NETWORK_ERROR_CODES = new Set([
 ])
 
 export const CONFIGURATION_ERROR_CODES = new Set([
+  "SERVER_API_KEY_NOT_CONFIGURED",
   "UPSTREAM_LOCATION_UNSUPPORTED",
   "UPSTREAM_INVALID_FORMAT",
   "UPSTREAM_INVALID_RESPONSE",
   "UPSTREAM_MODEL_ERROR",
+])
+
+export const REQUEST_POLICY_ERROR_CODES = new Set([
+  "METHOD_NOT_ALLOWED",
+  "ORIGIN_NOT_ALLOWED",
+  "REQUEST_BODY_TOO_LARGE",
+  "UNSUPPORTED_CONTENT_TYPE",
+  "INVALID_REQUEST_BODY",
+  "INVALID_CHARACTER_ID",
+  "INVALID_USER_MESSAGE",
+  "INVALID_MESSAGE_HISTORY",
+  "INVALID_CACHED_CONTENT",
+  "INVALID_CLIENT_REQUEST_ID",
 ])
 
 const resolveRuntimeEnv = () =>
@@ -119,8 +136,92 @@ export const createChatApiError = (message: string, errorCode?: string, traceId?
   return error
 }
 
+const normalizeChatRequestPayload = (payload: ChatRequestV2): ChatRequestV2 => {
+  const normalizedUserMessage = String(payload.userMessage || "")
+    .trim()
+    .slice(0, CHAT_REQUEST_LIMITS.userMessageMaxChars)
+
+  if (!normalizedUserMessage) {
+    throw createChatApiError("메시지를 입력해주세요.", "INVALID_USER_MESSAGE")
+  }
+
+  const normalizedHistory = (Array.isArray(payload.messageHistory) ? payload.messageHistory : [])
+    .map((item) => {
+      const role = item?.role === "assistant" ? "assistant" : item?.role === "user" ? "user" : null
+      if (!role) {
+        return null
+      }
+
+      const content = String(item.content || "")
+        .trim()
+        .slice(0, CHAT_REQUEST_LIMITS.historyContentMaxChars)
+      if (!content) {
+        return null
+      }
+
+      return { role, content }
+    })
+    .filter((item): item is ChatRequestHistoryItem => item !== null)
+    .slice(-CHAT_REQUEST_LIMITS.historyMaxItems)
+
+  const nextPayload: ChatRequestV2 = {
+    characterId: payload.characterId,
+    userMessage: normalizedUserMessage,
+    messageHistory: normalizedHistory,
+  }
+
+  if (typeof payload.cachedContent === "string") {
+    const normalizedCachedContent = payload.cachedContent
+      .trim()
+      .slice(0, CHAT_REQUEST_LIMITS.cachedContentMaxChars)
+    if (normalizedCachedContent && CACHED_CONTENT_PATTERN.test(normalizedCachedContent)) {
+      nextPayload.cachedContent = normalizedCachedContent
+    }
+  }
+
+  if (typeof payload.clientRequestId === "string") {
+    const normalizedClientRequestId = payload.clientRequestId.trim()
+    if (
+      normalizedClientRequestId &&
+      normalizedClientRequestId.length <= CHAT_REQUEST_LIMITS.clientRequestIdMaxChars &&
+      CLIENT_REQUEST_ID_PATTERN.test(normalizedClientRequestId)
+    ) {
+      nextPayload.clientRequestId = normalizedClientRequestId
+    }
+  }
+
+  return nextPayload
+}
+
 export const mapChatApiErrorMessage = (errorCode: string, fallbackMessage: string) => {
   switch (errorCode) {
+    case "REQUEST_BODY_TOO_LARGE":
+      return "요청 본문이 너무 큽니다. 메시지 길이를 줄여 다시 시도해주세요."
+    case "INVALID_CHARACTER_ID":
+      return "지원하지 않는 캐릭터 요청입니다. 다시 선택 후 시도해주세요."
+    case "INVALID_USER_MESSAGE":
+      return "메시지가 비어 있거나 너무 깁니다. 내용을 확인해주세요."
+    case "INVALID_CLIENT_REQUEST_ID":
+      return "요청 식별자 형식이 올바르지 않습니다. 새로고침 후 다시 시도해주세요."
+    case "INVALID_REQUEST_BODY":
+      return "요청 형식이 올바르지 않습니다. 앱을 새로고침 후 다시 시도해주세요."
+    case "INVALID_MESSAGE_HISTORY":
+      return "대화 히스토리 형식이 올바르지 않습니다. 잠시 후 다시 시도해주세요."
+    case "INVALID_CACHED_CONTENT":
+      return "세션 캐시가 만료되었습니다. 다시 시도해주세요."
+    case "UNSUPPORTED_CONTENT_TYPE":
+      return "요청 Content-Type이 올바르지 않습니다. 앱을 새로고침 후 다시 시도해주세요."
+    case "METHOD_NOT_ALLOWED":
+      return "지원하지 않는 요청 방식입니다. 앱을 새로고침 후 다시 시도해주세요."
+    case "ORIGIN_NOT_ALLOWED":
+      return "현재 접속한 도메인에서는 API 호출이 허용되지 않습니다."
+    case "SERVER_API_KEY_NOT_CONFIGURED":
+      return "서버 설정 문제로 요청을 처리할 수 없습니다. 관리자에게 문의해주세요."
+    case "INTERNAL_SERVER_ERROR":
+      return "서버 내부 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+    case "RATE_LIMIT_EXCEEDED":
+    case "HTTP_429":
+      return "요청이 많아 잠시 제한되었습니다. 잠시 후 다시 시도해주세요."
     case "UPSTREAM_CONNECTION_FAILED":
     case "UPSTREAM_TIMEOUT":
     case "FUNCTION_BUDGET_TIMEOUT":
@@ -132,6 +233,8 @@ export const mapChatApiErrorMessage = (errorCode: string, fallbackMessage: strin
     case "UPSTREAM_INVALID_RESPONSE":
     case "UPSTREAM_INVALID_FORMAT":
       return "AI 응답 형식이 불안정합니다. 잠시 후 다시 시도해주세요."
+    case "UPSTREAM_MODEL_ERROR":
+      return "AI 서버 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
     default:
       return fallbackMessage
   }
@@ -149,6 +252,7 @@ export const sendChatMessage = async ({
   apiVersion = "2",
 }: SendChatMessageParams): Promise<ChatResponseV2> => {
   const chatApiUrl = resolveChatApiUrl()
+  const normalizedPayload = normalizeChatRequestPayload(payload)
   let response: Response
 
   try {
@@ -159,7 +263,7 @@ export const sendChatMessage = async ({
         "X-V-MATE-API-Version": apiVersion,
       },
       body: JSON.stringify({
-        ...payload,
+        ...normalizedPayload,
         api_version: apiVersion,
       }),
       signal,
@@ -190,14 +294,28 @@ export const sendChatMessage = async ({
   const traceId = typeof data.trace_id === "string"
     ? data.trace_id.trim()
     : String(response.headers.get("x-v-mate-trace-id") || "").trim()
+  const headerErrorCode = String(response.headers.get("x-v-mate-error-code") || "").trim()
 
   if (!response.ok) {
-    const errorCode = typeof data.error_code === "string" ? data.error_code : `HTTP_${response.status}`
+    const errorCode = typeof data.error_code === "string"
+      ? data.error_code
+      : headerErrorCode || `HTTP_${response.status}`
     const errorText = typeof data.error === "string" ? data.error : "서버 오류가 발생했습니다."
+
+    if (response.status === 429 || errorCode === "RATE_LIMIT_EXCEEDED") {
+      const retryAfter = Number.parseInt(String(response.headers.get("retry-after") || ""), 10)
+      const retryAfterMessage = Number.isFinite(retryAfter) && retryAfter > 0
+        ? `요청이 많아 일시 제한되었습니다. ${retryAfter}초 후 다시 시도해주세요.`
+        : mapChatApiErrorMessage(errorCode, errorText)
+      throw createChatApiError(retryAfterMessage, errorCode, traceId)
+    }
+
     throw createChatApiError(mapChatApiErrorMessage(errorCode, errorText), errorCode, traceId)
   }
 
-  const explicitErrorCode = typeof data.error_code === "string" ? data.error_code.trim() : ""
+  const explicitErrorCode = typeof data.error_code === "string"
+    ? data.error_code.trim()
+    : headerErrorCode
   if (typeof data.error === "string" && data.error.trim()) {
     throw createChatApiError(
       mapChatApiErrorMessage(explicitErrorCode, data.error),
@@ -234,4 +352,3 @@ export const sendChatMessage = async ({
     trace_id: traceId,
   }
 }
-

@@ -10,6 +10,7 @@ export interface AvatarProps extends React.HTMLAttributes<HTMLDivElement> {
 const Avatar = React.forwardRef<HTMLDivElement, AvatarProps>(
   ({ className, src, alt, fallback, children, ...props }, ref) => {
     const [imgError, setImgError] = React.useState(false)
+    const normalizedAlt = typeof alt === "string" && alt.trim() ? alt : fallback || "avatar"
 
     return (
       <div
@@ -23,8 +24,10 @@ const Avatar = React.forwardRef<HTMLDivElement, AvatarProps>(
         {src && !imgError ? (
           <img
             src={src}
-            alt={alt}
+            alt={normalizedAlt}
             className="aspect-square size-full object-cover"
+            loading="lazy"
+            decoding="async"
             onError={() => setImgError(true)}
           />
         ) : (
@@ -40,7 +43,5 @@ const Avatar = React.forwardRef<HTMLDivElement, AvatarProps>(
 Avatar.displayName = "Avatar"
 
 export { Avatar }
-
-
 
 

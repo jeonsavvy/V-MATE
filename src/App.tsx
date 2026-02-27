@@ -1,9 +1,10 @@
 import { useState, useEffect, lazy, Suspense } from "react"
 import { Toaster } from "@/components/ui/sonner"
-import { CHARACTERS } from "@/lib/data"
-import { User } from "@supabase/supabase-js"
-import type { Character } from "@/lib/data"
+import { CHARACTERS, isCharacterId } from "@/lib/data"
+import type { Character, CharacterId } from "@/lib/data"
+import type { User } from "@supabase/supabase-js"
 import { devError } from "@/lib/logger"
+import { getStoredKeys } from "@/lib/browserStorage"
 
 const Home = lazy(() => import("@/components/Home").then((module) => ({ default: module.Home })))
 const ChatView = lazy(() => import("@/components/ChatView").then((module) => ({ default: module.ChatView })))
@@ -11,7 +12,7 @@ const AuthDialog = lazy(() => import("@/components/AuthDialog").then((module) =>
 
 type RouteState =
   | { view: "home" }
-  | { view: "chat"; charId: string }
+  | { view: "chat"; charId: CharacterId }
 
 const normalizePathname = (pathname: string) => {
   if (!pathname || pathname === "/") {
@@ -26,7 +27,7 @@ const parseRouteFromPathname = (pathname: string): RouteState => {
 
   if (segments[0] === "chat" && segments[1]) {
     const charId = segments[1].toLowerCase()
-    if (CHARACTERS[charId]) {
+    if (isCharacterId(charId)) {
       return { view: "chat", charId }
     }
   }
@@ -48,10 +49,19 @@ const resolveInitialRoute = (): RouteState => {
   return parseRouteFromPathname(window.location.pathname)
 }
 
+const hasPersistedSupabaseSession = (): boolean => {
+  if (typeof window === "undefined") {
+    return false
+  }
+
+  return getStoredKeys().some((key) => key.startsWith("sb-") && key.endsWith("-auth-token"))
+}
+
 function App() {
   const [route, setRoute] = useState<RouteState>(resolveInitialRoute)
   const [user, setUser] = useState<User | null>(null)
   const [isAuthDialogOpen, setIsAuthDialogOpen] = useState(false)
+  const [shouldInitializeAuth, setShouldInitializeAuth] = useState<boolean>(hasPersistedSupabaseSession)
 
   useEffect(() => {
     const handlePopState = () => {
@@ -72,6 +82,10 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (!shouldInitializeAuth) {
+      return
+    }
+
     let mounted = true
     let unsubscribe: (() => void) | null = null
 
@@ -81,10 +95,15 @@ function App() {
         return
       }
 
+      const supabase = await module.resolveSupabaseClient()
+      if (!supabase) {
+        return
+      }
+
       try {
         const {
           data: { session },
-        } = await module.supabase.auth.getSession()
+        } = await supabase.auth.getSession()
 
         if (mounted) {
           setUser(session?.user ?? null)
@@ -96,7 +115,7 @@ function App() {
       try {
         const {
           data: { subscription },
-        } = module.supabase.auth.onAuthStateChange((_event, session) => {
+        } = supabase.auth.onAuthStateChange((_event, session) => {
           if (mounted) {
             setUser(session?.user ?? null)
           }
@@ -114,7 +133,7 @@ function App() {
       mounted = false
       unsubscribe?.()
     }
-  }, [])
+  }, [shouldInitializeAuth])
 
   const navigateTo = (nextRoute: RouteState, options?: { replace?: boolean }) => {
     const nextPath = toPathname(nextRoute)
@@ -137,7 +156,7 @@ function App() {
 
   const handleCharacterChange = (charId: string) => {
     const normalizedCharId = String(charId || "").toLowerCase()
-    if (!CHARACTERS[normalizedCharId]) {
+    if (!isCharacterId(normalizedCharId)) {
       return
     }
     navigateTo({ view: "chat", charId: normalizedCharId })
@@ -147,7 +166,12 @@ function App() {
     navigateTo({ view: "home" })
   }
 
-  const character = route.view === "chat" ? CHARACTERS[route.charId] : null
+  const character = route.view === "chat" ? CHARACTERS[route.charId] ?? null : null
+
+  const openAuthDialog = () => {
+    setShouldInitializeAuth(true)
+    setIsAuthDialogOpen(true)
+  }
 
   return (
     <div className="min-h-dvh w-full overflow-x-hidden bg-[#e7dfd3]">
@@ -156,7 +180,7 @@ function App() {
           <Home
             onCharacterSelect={handleCharacterSelect}
             user={user}
-            onAuthRequest={() => setIsAuthDialogOpen(true)}
+            onAuthRequest={openAuthDialog}
           />
         ) : (
           character && (

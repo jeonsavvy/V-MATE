@@ -12,15 +12,24 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false,
+    modulePreload: {
+      resolveDependencies(_filename, deps, context) {
+        if (context.hostType === 'html') {
+          return deps.filter(
+            (dependency) =>
+              !dependency.includes('vendor-supabase') &&
+              !dependency.includes('historySupabaseStore')
+          )
+        }
+
+        return deps
+      },
+    },
     rollupOptions: {
       output: {
         manualChunks(id) {
           if (!id.includes('node_modules')) {
             return
-          }
-
-          if (id.includes('@supabase')) {
-            return 'vendor-supabase'
           }
 
           if (
@@ -35,6 +44,10 @@ export default defineConfig({
 
           if (id.includes('lucide-react')) {
             return 'vendor-icons'
+          }
+
+          if (id.includes('@supabase/supabase-js')) {
+            return 'vendor-supabase'
           }
 
           if (id.includes('/react/') || id.includes('react-dom')) {

@@ -30,6 +30,7 @@ export const useChatSession = (characterId: string) => {
   }, [abortInFlight])
 
   const beginRequest = useCallback((targetCharacterId: string) => {
+    abortInFlight()
     const requestId = requestCounterRef.current + 1
     requestCounterRef.current = requestId
     const controller = new AbortController()
@@ -39,7 +40,7 @@ export const useChatSession = (characterId: string) => {
       controller,
     }
     return { requestId, controller }
-  }, [])
+  }, [abortInFlight])
 
   const isRequestStale = useCallback((requestId: number, targetCharacterId: string) => {
     return (
@@ -62,4 +63,3 @@ export const useChatSession = (characterId: string) => {
     inFlightRequestRef,
   }
 }
-

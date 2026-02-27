@@ -1,4 +1,5 @@
-import { createClient } from '@supabase/supabase-js'
+import type { SupabaseClient } from "@supabase/supabase-js"
+import { devError } from "@/lib/logger"
 
 const runtimeEnv = (globalThis as { __V_MATE_RUNTIME_ENV__?: Record<string, string | undefined> })
   .__V_MATE_RUNTIME_ENV__ ?? {}
@@ -82,20 +83,49 @@ const isSecretKey = (key: string): boolean => {
 }
 
 const supabaseKeyIsSecret = isSecretKey(supabaseAnonKey)
+let hasWarnedSecretKey = false
+let supabaseClientPromise: Promise<SupabaseClient | null> | null = null
 
-if (supabaseAnonKey && supabaseKeyIsSecret) {
-  console.error('[V-MATE] ERROR: Service role key detected! Use anon public key instead.')
-  console.error('[V-MATE] Service role keys cannot be used in browser for security reasons.')
-  console.error('[V-MATE] Please set VITE_SUPABASE_ANON_KEY to the anon public key from Supabase dashboard.')
+const reportSupabaseConfigError = (...messages: string[]) => {
+  for (const message of messages) {
+    console.error(message)
+  }
 }
 
-export const supabase = supabaseUrl && supabaseAnonKey && !supabaseKeyIsSecret
-  ? createClient(supabaseUrl, supabaseAnonKey)
-  : createClient('https://placeholder.supabase.co', 'placeholder-key')
+const warnSecretKeyMisconfiguration = () => {
+  if (!supabaseAnonKey || !supabaseKeyIsSecret || hasWarnedSecretKey) {
+    return
+  }
+
+  hasWarnedSecretKey = true
+  reportSupabaseConfigError(
+    "[V-MATE] ERROR: Service role key detected. Use anon public key instead.",
+    "[V-MATE] Service role keys cannot be used in browser for security reasons.",
+    "[V-MATE] Please set VITE_SUPABASE_ANON_KEY to the anon public key from Supabase dashboard.",
+  )
+}
 
 export const isSupabaseConfigured = () => {
-  return !!(supabaseUrl && supabaseAnonKey && 
-    supabaseUrl !== 'https://placeholder.supabase.co' && 
-    supabaseAnonKey !== 'placeholder-key' &&
+  return !!(supabaseUrl && supabaseAnonKey &&
     !supabaseKeyIsSecret)
+}
+
+export const resolveSupabaseClient = async (): Promise<SupabaseClient | null> => {
+  if (!isSupabaseConfigured()) {
+    warnSecretKeyMisconfiguration()
+    return null
+  }
+
+  if (!supabaseClientPromise) {
+    supabaseClientPromise = import("@supabase/supabase-js")
+      .then(({ createClient }) => createClient(supabaseUrl, supabaseAnonKey))
+      .catch((error) => {
+        reportSupabaseConfigError("[V-MATE] Failed to initialize Supabase client.")
+        devError("[V-MATE] Failed to initialize Supabase client:", error)
+        supabaseClientPromise = null
+        return null
+      })
+  }
+
+  return supabaseClientPromise
 }

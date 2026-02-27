@@ -1,3 +1,5 @@
+import { logServerWarn } from './server-logger.js';
+
 const ALLOWED_EMOTIONS = new Set(['normal', 'happy', 'confused', 'angry']);
 
 export const JSON_RESPONSE_SCHEMA = {
@@ -31,18 +33,6 @@ const tryParseJsonObject = (text) => {
     } catch {
         return null;
     }
-};
-
-export const toSafeLogPreview = (value, maxChars = 160) => {
-    const text = String(value || '')
-        .replace(/\s+/g, ' ')
-        .trim();
-
-    if (!text) {
-        return '';
-    }
-
-    return text.length > maxChars ? `${text.slice(0, maxChars)}…` : text;
 };
 
 const looksLikeBrokenContractJson = (text) => {
@@ -202,10 +192,9 @@ export const normalizeAssistantPayload = (rawText, logContext = null) => {
 
     if (!parsed) {
         if (looksLikeBrokenContractJson(normalizedText)) {
-            console.warn('[V-MATE] JSON normalization fallback (broken contract JSON)', {
+            logServerWarn('[V-MATE] JSON normalization fallback (broken contract JSON)', {
                 ...safeLogContext,
                 rawTextLength: normalizedText.length,
-                rawTextPreview: toSafeLogPreview(normalizedText),
             });
             return safeFallback;
         }
@@ -217,17 +206,16 @@ export const normalizeAssistantPayload = (rawText, logContext = null) => {
             .trim();
 
         if (!plainResponse) {
-            console.warn('[V-MATE] JSON normalization fallback (empty text)', {
+            logServerWarn('[V-MATE] JSON normalization fallback (empty text)', {
                 ...safeLogContext,
                 rawTextLength: normalizedText.length,
             });
             return safeFallback;
         }
 
-        console.warn('[V-MATE] JSON normalization fallback (plain text passthrough)', {
+        logServerWarn('[V-MATE] JSON normalization fallback (plain text passthrough)', {
             ...safeLogContext,
             rawTextLength: normalizedText.length,
-            rawTextPreview: toSafeLogPreview(normalizedText),
         });
 
         return {
@@ -239,11 +227,10 @@ export const normalizeAssistantPayload = (rawText, logContext = null) => {
     }
 
     if (parseMode && parseMode !== 'strict-full') {
-        console.warn('[V-MATE] JSON normalization used recovery parser', {
+        logServerWarn('[V-MATE] JSON normalization used recovery parser', {
             ...safeLogContext,
             parseMode,
             rawTextLength: normalizedText.length,
-            rawTextPreview: toSafeLogPreview(normalizedText),
         });
     }
 
@@ -264,17 +251,17 @@ export const normalizeAssistantPayload = (rawText, logContext = null) => {
         : '';
 
     if (!ALLOWED_EMOTIONS.has(emotion)) {
-        console.warn('[V-MATE] Invalid emotion value normalized to default', {
+        logServerWarn('[V-MATE] Invalid emotion value normalized to default', {
             ...safeLogContext,
             emotion,
         });
     }
 
     if (response === safeFallback.response && typeof parsed?.response !== 'string') {
-        console.warn('[V-MATE] Parsed JSON missing string response field', {
+        logServerWarn('[V-MATE] Parsed JSON missing string response field', {
             ...safeLogContext,
             parseMode,
-            rawTextPreview: toSafeLogPreview(normalizedText),
+            rawTextLength: normalizedText.length,
         });
     }
 
