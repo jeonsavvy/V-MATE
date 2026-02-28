@@ -11,8 +11,8 @@ export function HomeStoryFlowSection({ steps }: HomeStoryFlowSectionProps) {
   return (
     <section className="space-y-4">
       <div>
-        <p className="text-xs font-semibold tracking-[0.12em] text-[#8c8376]">STORY FLOW</p>
-        <h2 className="mt-1 text-2xl font-black text-[#252730] sm:text-[2rem]">오늘의 대화 연출 플로우</h2>
+        <p className="text-xs font-semibold tracking-[0.12em] text-[#8c8376]">QUICK GUIDE</p>
+        <h2 className="mt-1 text-2xl font-black text-[#252730] sm:text-[2rem]">대화 시작 가이드</h2>
       </div>
       <div className="grid gap-3 md:grid-cols-3">
         {steps.map((step, index) => (

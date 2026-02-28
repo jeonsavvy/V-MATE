@@ -19,11 +19,11 @@ export function HomeCuratedPicksSection({
         <div>
           <p className="text-xs font-semibold tracking-[0.12em] text-[#8c8376]">CURATED PICKS</p>
           <h2 className="mt-1 text-2xl font-black text-[#252730] sm:text-[2rem]">추천 캐릭터</h2>
-          <p className="mt-1 text-sm text-[#645d53]">감정선이 강한 캐릭터 중심으로 바로 몰입할 수 있게 큐레이션했어요.</p>
+          <p className="mt-1 text-sm text-[#645d53]">바로 대화하기 좋은 캐릭터를 먼저 보여드립니다.</p>
         </div>
         <div className="inline-flex items-center gap-2 rounded-full border border-white/50 bg-white/68 px-3 py-1.5 text-xs font-semibold text-[#5d574c]">
           <Flame className="h-3.5 w-3.5 text-[#7b5cb8]" />
-          상세 보기 후 대화 시작
+          상세 확인 후 바로 시작
         </div>
       </div>
 

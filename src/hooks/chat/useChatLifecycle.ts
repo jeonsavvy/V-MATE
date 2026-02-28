@@ -4,7 +4,6 @@ import type { Character, Message } from "@/lib/data"
 import {
   loadChatHistory,
   loadHistoryPreviews as loadHistoryPreviewsFromRepository,
-  saveGuestHistory,
   toPreviewText,
   toTruncatedPreview,
   type HistoryPreview,
@@ -81,32 +80,6 @@ export const useChatLifecycle = ({
       isMounted = false
     }
   }, [setHistoryPreviews, user])
-
-  useEffect(() => {
-    if (isLoadingHistoryRef.current) {
-      return
-    }
-
-    if (!user) {
-      saveGuestHistory(character.id, messages)
-    }
-  }, [character.id, messages, user])
-
-  useEffect(() => {
-    if (user) {
-      return
-    }
-
-    const handleBeforeUnload = () => {
-      saveGuestHistory(character.id, messagesRef.current)
-    }
-
-    window.addEventListener("beforeunload", handleBeforeUnload)
-    return () => {
-      window.removeEventListener("beforeunload", handleBeforeUnload)
-      handleBeforeUnload()
-    }
-  }, [character.id, user])
 
   useEffect(() => {
     if (messages.length <= 1) {

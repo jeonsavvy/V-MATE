@@ -92,7 +92,7 @@ export function Home({ onCharacterSelect, user, onAuthRequest }: HomeProps) {
       </main>
 
       <footer className="relative z-10 px-4 pb-6 text-center text-xs text-[#7f776c]">
-        © V-MATE. All Rights Reserved.
+        © V-MATE
       </footer>
 
       {selectedCharacter && selectedCharacterMeta && (

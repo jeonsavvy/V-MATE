@@ -43,11 +43,11 @@ export function HomeHeroSection({
         <div className="relative flex min-h-[290px] flex-col justify-end gap-4 p-6 text-white sm:min-h-[360px] sm:p-8">
           <span className="inline-flex w-fit items-center gap-1 rounded-full border border-white/35 bg-white/12 px-3 py-1 text-xs font-semibold tracking-[0.12em] text-white/90">
             <Sparkles className="h-3.5 w-3.5" />
-            TODAY'S MOOD
+            QUICK START
           </span>
           <div className="space-y-2">
             <h1 className="max-w-2xl text-3xl font-black leading-tight text-white sm:text-4xl">
-              오늘은 어떤 감정선으로 대화를 시작할까요?
+              원하는 톤으로 바로 대화해요
             </h1>
             <p className="max-w-xl text-sm leading-relaxed text-white/86 sm:text-base">
               {primaryHeroQuote}
@@ -115,7 +115,7 @@ export function HomeHeroSection({
           </div>
         ) : (
           <div className="mt-5 rounded-2xl border border-dashed border-[#d7ccbd] bg-[#f7f2ea] px-4 py-6 text-center text-sm text-[#6a645a]">
-            아직 이어갈 대화가 없어요. 추천 캐릭터로 첫 대화를 시작해보세요.
+            아직 저장된 대화가 없습니다. 캐릭터를 고르고 첫 메시지를 시작해보세요.
           </div>
         )}
       </div>

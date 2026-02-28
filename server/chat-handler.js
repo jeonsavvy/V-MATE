@@ -43,6 +43,7 @@ import {
     buildRequestDedupeKey,
     withRequestDedupe,
 } from './modules/request-dedupe.js';
+import { resolveAuthenticatedUser } from './modules/auth-guard.js';
 
 const FIXED_GEMINI_MODEL_NAME = 'gemini-3-flash-preview';
 
@@ -136,6 +137,23 @@ export const handler = async (event, context) => {
     }
 
     try {
+        const authResult = await resolveAuthenticatedUser({
+            event,
+            requestTraceId,
+        });
+        if (!authResult.ok) {
+            return buildApiErrorResult({
+                statusCode: authResult.statusCode || 401,
+                headers: rateLimitedHeaders,
+                startedAtMs: requestStartedAt,
+                error: authResult.error || 'Authentication required.',
+                errorCode: authResult.errorCode || 'AUTH_REQUIRED',
+                traceId: requestTraceId,
+                retryable: Boolean(authResult.retryable),
+            });
+        }
+        const authenticatedUserId = String(authResult.userId || '').trim();
+
         const apiKey = process.env.GOOGLE_API_KEY;
         const contentType = String(event.headers?.['content-type'] || event.headers?.['Content-Type'] || '').toLowerCase();
         if (shouldRequireJsonContentType() && !contentType.includes('application/json')) {
@@ -220,6 +238,7 @@ export const handler = async (event, context) => {
             traceId: requestTraceId,
             characterId: normalizedCharacterId || null,
             clientRequestId: clientRequestId || null,
+            hasAuthenticatedUser: Boolean(authenticatedUserId),
         };
 
         const executeModelAndNormalize = async () => {
@@ -326,6 +345,7 @@ export const handler = async (event, context) => {
         };
 
         const dedupeConfig = getClientRequestDedupeConfig();
+        const requestScopeKey = authenticatedUserId ? `user:${authenticatedUserId}` : rateKey;
         const requestFingerprint = buildRequestDedupeFingerprint({
             normalizedCharacterId,
             userMessage,
@@ -333,7 +353,7 @@ export const handler = async (event, context) => {
             cachedContent,
         });
         const requestDedupeKey = buildRequestDedupeKey({
-            rateKey,
+            rateKey: requestScopeKey,
             clientRequestId,
             requestFingerprint,
         });

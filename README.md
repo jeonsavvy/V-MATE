@@ -14,8 +14,7 @@ graph TD
     C -->|"JSON response"| B
     B -->|"Normalized message object"| A
 
-    A --> D["LocalStorage (Guest)"]
-    A --> E["Supabase (Logged-in User)"]
+    A --> D["Supabase (Authenticated User)"]
 ```
 
 ---
@@ -25,9 +24,7 @@ graph TD
 - **Dual Psychology 출력**: `emotion`, `inner_heart`, `response` (+ `narration` optional)
 - **표정 변화 연출**: assistant emotion이 바뀌는 턴에 일러스트 카드 표시
 - **상황 설명 텍스트**: `narration`을 대사 버블과 분리 렌더
-- **하이브리드 저장**:
-  - 비로그인: LocalStorage
-  - 로그인: Supabase `chat_messages` 테이블
+- **회원 전용 채팅/저장**: 인증된 사용자만 대화 가능, 히스토리는 Supabase `chat_messages` 테이블에 저장
 - **URL 기반 화면 분리**: `/`(홈), `/chat/:characterId`(채팅)
 - **서버리스 프록시**: Gemini API Key는 Cloudflare Worker에서만 사용
 - **모델 고정**: `gemini-3-flash-preview` 사용 (서버 코드 고정)
@@ -122,6 +119,9 @@ REQUEST_BODY_MAX_BYTES=32768
 TRUST_X_FORWARDED_FOR=false
 TRUST_PROXY_HEADERS=false
 REQUIRE_JSON_CONTENT_TYPE=false
+REQUIRE_AUTH_FOR_CHAT=true
+AUTH_PROVIDER_TIMEOUT_MS=3500
+AUTH_PROVIDER_RETRY_COUNT=1
 PROMPT_CACHE_MAX_ENTRIES=256
 RATE_LIMIT_STORE=memory
 PROMPT_CACHE_STORE=memory
@@ -192,6 +192,9 @@ npm run verify
   - `false`면 `CF-Ray`가 함께 온 `CF-Connecting-IP`만 신뢰(Cloudflare 경유)
   - `true`면 `CF-Connecting-IP`/`X-Real-IP`(+ `TRUST_X_FORWARDED_FOR=true` 시 `X-Forwarded-For`) 사용
 - JSON Content-Type 강제 여부: `REQUIRE_JSON_CONTENT_TYPE` (기본 `false`, `true`면 `Content-Type: application/json` 이외 요청은 `415`)
+- 채팅 인증 강제 여부: `REQUIRE_AUTH_FOR_CHAT` (기본 `true`)
+- 인증 Provider 타임아웃: `AUTH_PROVIDER_TIMEOUT_MS` (기본 `3500ms`)
+- 인증 Provider 재시도 횟수: `AUTH_PROVIDER_RETRY_COUNT` (기본 `1`)
 - prompt cache 최대 엔트리 수: `PROMPT_CACHE_MAX_ENTRIES` (기본 `256`)
 - rate-limit 저장소 모드: `RATE_LIMIT_STORE` (`memory|kv`, 기본 `memory`)
 - prompt-cache 저장소 모드: `PROMPT_CACHE_STORE` (`memory|kv`, 기본 `memory`)
@@ -246,6 +249,13 @@ npm run verify
 | `INVALID_CACHED_CONTENT` | 400 | N | cachedContent 형식/길이 제한 위반 |
 | `INVALID_CLIENT_REQUEST_ID` | 400 | N | clientRequestId 형식 위반 |
 | `RATE_LIMIT_EXCEEDED` | 429 | Y | 요청 횟수 제한 초과 |
+| `AUTH_REQUIRED` | 401 | N | 인증 토큰 누락 |
+| `AUTH_UNAUTHORIZED` | 401 | N | 만료/무효 토큰 |
+| `AUTH_PROVIDER_NOT_CONFIGURED` | 503 | N | 인증 Provider 설정 누락 |
+| `AUTH_PROVIDER_TIMEOUT` | 504 | Y | 인증 Provider 타임아웃 |
+| `AUTH_PROVIDER_UNAVAILABLE` | 503 | Y | 인증 Provider 일시 장애 |
+| `AUTH_PROVIDER_ERROR` | 502 | N | 인증 Provider 오류 응답 |
+| `AUTH_PROVIDER_INVALID_RESPONSE` | 502 | N | 인증 Provider 응답 포맷 오류 |
 | `UPSTREAM_CONNECTION_FAILED` | 503 | Y | Gemini upstream 연결 실패 |
 | `UPSTREAM_TIMEOUT` | 504 | Y | Gemini upstream 타임아웃 |
 | `FUNCTION_BUDGET_TIMEOUT` | 504 | Y | 함수 실행 예산 내 응답 불가 |

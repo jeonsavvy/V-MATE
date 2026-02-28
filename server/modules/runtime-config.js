@@ -20,6 +20,18 @@ const parseStoreMode = (value) => {
     return normalized === 'kv' ? 'kv' : 'memory';
 };
 
+const firstNonEmpty = (values) => {
+    for (const value of values) {
+        const normalized = String(value || '').trim();
+        if (normalized) {
+            return normalized;
+        }
+    }
+    return '';
+};
+
+const normalizeUrl = (value) => String(value || '').trim().replace(/\/+$/, '');
+
 export const getRequestBodyLimitBytes = () =>
     toSafeInt(process.env.REQUEST_BODY_MAX_BYTES, 32 * 1024, {
         min: 1024,
@@ -116,6 +128,31 @@ export const getClientRequestDedupeConfig = () => ({
 export const getRateLimitStoreMode = () => parseStoreMode(process.env.RATE_LIMIT_STORE);
 
 export const getPromptCacheStoreMode = () => parseStoreMode(process.env.PROMPT_CACHE_STORE);
+
+export const getChatAuthConfig = () => ({
+    requireAuth: String(process.env.REQUIRE_AUTH_FOR_CHAT || 'true').toLowerCase() !== 'false',
+    authProviderTimeoutMs: toSafeInt(process.env.AUTH_PROVIDER_TIMEOUT_MS, 3500, {
+        min: 500,
+        max: 10000,
+    }),
+    authProviderRetryCount: toSafeInt(process.env.AUTH_PROVIDER_RETRY_COUNT, 1, {
+        min: 0,
+        max: 2,
+    }),
+    supabaseUrl: normalizeUrl(firstNonEmpty([
+        process.env.SUPABASE_URL,
+        process.env.VITE_SUPABASE_URL,
+        process.env.VITE_PUBLIC_SUPABASE_URL,
+    ])),
+    supabaseAnonKey: firstNonEmpty([
+        process.env.SUPABASE_ANON_KEY,
+        process.env.SUPABASE_PUBLISHABLE_KEY,
+        process.env.VITE_SUPABASE_ANON_KEY,
+        process.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+        process.env.VITE_PUBLIC_SUPABASE_ANON_KEY,
+        process.env.VITE_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
+    ]),
+});
 
 export const getChatRuntimeLimits = () => {
     const functionTotalTimeoutMs = toSafeInt(process.env.FUNCTION_TOTAL_TIMEOUT_MS, 20000, {

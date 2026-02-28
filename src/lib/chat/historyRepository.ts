@@ -1,6 +1,6 @@
 import type { User as SupabaseUser } from "@supabase/supabase-js"
 import type { Character, Message } from "@/lib/data"
-import { loadGuestHistoryPreviews, loadGuestRecentChats, readGuestHistory, writeGuestHistory, clearGuestHistory } from "@/lib/chat/historyGuestStore"
+import { createGreetingMessage } from "@/lib/chat/greetingMessage"
 import { devWarn } from "@/lib/logger"
 
 const PROMPT_CACHE_KEY_PREFIX = "gemini_cached_content_"
@@ -26,7 +26,8 @@ export type { ChatMessageRow, HistoryPreview, RecentChatItem } from "@/lib/chat/
 export const getPromptCacheKey = (characterId: string) => `${PROMPT_CACHE_KEY_PREFIX}${characterId}`
 
 export const saveGuestHistory = (characterId: string, messages: Message[]) => {
-  writeGuestHistory(characterId, messages)
+  void characterId
+  void messages
 }
 
 export const loadChatHistory = async ({
@@ -37,12 +38,12 @@ export const loadChatHistory = async ({
   character: Character
 }): Promise<Message[]> => {
   if (!user) {
-    return readGuestHistory(character)
+    return [createGreetingMessage(character)]
   }
 
   const store = await resolveSupabaseHistoryStore()
   if (!store) {
-    return readGuestHistory(character)
+    return [createGreetingMessage(character)]
   }
 
   return store.loadSupabaseChatHistory({
@@ -84,7 +85,7 @@ export const clearChatHistory = async ({
   characterId: string
 }) => {
   if (!user) {
-    clearGuestHistory(characterId)
+    void characterId
     return
   }
 
@@ -105,12 +106,12 @@ export const loadHistoryPreviews = async ({
   user: SupabaseUser | null
 }) => {
   if (!user) {
-    return loadGuestHistoryPreviews()
+    return {}
   }
 
   const store = await resolveSupabaseHistoryStore()
   if (!store) {
-    return loadGuestHistoryPreviews()
+    return {}
   }
 
   return store.loadSupabaseHistoryPreviews({ user })
@@ -122,12 +123,12 @@ export const loadRecentChats = async ({
   user: SupabaseUser | null
 }) => {
   if (!user) {
-    return loadGuestRecentChats()
+    return []
   }
 
   const store = await resolveSupabaseHistoryStore()
   if (!store) {
-    return loadGuestRecentChats()
+    return []
   }
 
   return store.loadSupabaseRecentChats({ user })

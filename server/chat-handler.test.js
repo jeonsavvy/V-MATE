@@ -30,6 +30,18 @@ const TRACKED_ENV_KEYS = [
   'CLOUDFLARE_DEV',
   'CLIENT_REQUEST_DEDUPE_WINDOW_MS',
   'CLIENT_REQUEST_DEDUPE_MAX_ENTRIES',
+  'REQUIRE_AUTH_FOR_CHAT',
+  'AUTH_PROVIDER_TIMEOUT_MS',
+  'AUTH_PROVIDER_RETRY_COUNT',
+  'SUPABASE_URL',
+  'SUPABASE_ANON_KEY',
+  'SUPABASE_PUBLISHABLE_KEY',
+  'VITE_SUPABASE_URL',
+  'VITE_SUPABASE_ANON_KEY',
+  'VITE_SUPABASE_PUBLISHABLE_KEY',
+  'VITE_PUBLIC_SUPABASE_URL',
+  'VITE_PUBLIC_SUPABASE_ANON_KEY',
+  'VITE_PUBLIC_SUPABASE_PUBLISHABLE_KEY',
 ];
 
 const ORIGINAL_ENV = Object.fromEntries(TRACKED_ENV_KEYS.map((key) => [key, process.env[key]]));
@@ -87,6 +99,7 @@ const applyBaseEnv = (overrides = {}) => {
     GEMINI_MAX_PART_CHARS: '700',
     GEMINI_MAX_SYSTEM_PROMPT_CHARS: '5000',
     CLOUDFLARE_DEV: 'false',
+    REQUIRE_AUTH_FOR_CHAT: 'false',
   };
 
   for (const [key, value] of Object.entries({ ...baseEnv, ...overrides })) {
@@ -447,6 +460,97 @@ test('returns 415 when content-type is not application/json and strict mode is e
   assert.equal(payload.error_code, 'UNSUPPORTED_CONTENT_TYPE');
 });
 
+test('returns 401 when auth is required and authorization header is missing', async () => {
+  applyBaseEnv({
+    REQUIRE_AUTH_FOR_CHAT: 'true',
+    SUPABASE_URL: 'https://demo.supabase.co',
+  });
+  globalThis.fetch = async () => {
+    throw new Error('fetch should not be called when auth header is missing');
+  };
+
+  const result = await handler(
+    makeEvent({
+      body: {
+        characterId: 'mika',
+        userMessage: '인증 필요 테스트',
+        messageHistory: [],
+      },
+      ip: '198.51.100.200',
+    }),
+    {}
+  );
+
+  const payload = parseBody(result);
+  assert.equal(result.statusCode, 401);
+  assert.equal(payload.error_code, 'AUTH_REQUIRED');
+});
+
+test('returns 401 when auth provider rejects access token', async () => {
+  applyBaseEnv({
+    REQUIRE_AUTH_FOR_CHAT: 'true',
+    SUPABASE_URL: 'https://demo.supabase.co',
+  });
+  globalThis.fetch = async (url) => {
+    assert.match(String(url), /auth\/v1\/user/);
+    return new Response('unauthorized', { status: 401 });
+  };
+
+  const result = await handler(
+    makeEvent({
+      body: {
+        characterId: 'mika',
+        userMessage: '인증 실패 테스트',
+        messageHistory: [],
+      },
+      extraHeaders: {
+        authorization: 'Bearer invalid-token',
+      },
+      ip: '198.51.100.201',
+    }),
+    {}
+  );
+
+  const payload = parseBody(result);
+  assert.equal(result.statusCode, 401);
+  assert.equal(payload.error_code, 'AUTH_UNAUTHORIZED');
+});
+
+test('returns 503 when auth is required but auth provider config is missing', async () => {
+  applyBaseEnv({
+    REQUIRE_AUTH_FOR_CHAT: 'true',
+  });
+  delete process.env.SUPABASE_URL;
+  delete process.env.SUPABASE_ANON_KEY;
+  delete process.env.VITE_SUPABASE_URL;
+  delete process.env.VITE_SUPABASE_ANON_KEY;
+  delete process.env.VITE_PUBLIC_SUPABASE_URL;
+  delete process.env.VITE_PUBLIC_SUPABASE_ANON_KEY;
+
+  globalThis.fetch = async () => {
+    throw new Error('fetch should not be called when auth provider config is missing');
+  };
+
+  const result = await handler(
+    makeEvent({
+      body: {
+        characterId: 'mika',
+        userMessage: '설정 누락 테스트',
+        messageHistory: [],
+      },
+      extraHeaders: {
+        authorization: 'Bearer invalid-token',
+      },
+      ip: '198.51.100.202',
+    }),
+    {}
+  );
+
+  const payload = parseBody(result);
+  assert.equal(result.statusCode, 503);
+  assert.equal(payload.error_code, 'AUTH_PROVIDER_NOT_CONFIGURED');
+});
+
 test('returns ChatResponseV2 shape when request succeeds', async () => {
   applyBaseEnv();
 
@@ -506,6 +610,73 @@ test('returns ChatResponseV2 shape when request succeeds', async () => {
     narration: '',
   });
   assert.equal(fetchCalls, 1);
+});
+
+test('returns ChatResponseV2 when auth requirement is enabled and token is valid', async () => {
+  applyBaseEnv({
+    REQUIRE_AUTH_FOR_CHAT: 'true',
+    SUPABASE_URL: 'https://demo.supabase.co',
+    SUPABASE_ANON_KEY: 'anon-public-key',
+  });
+
+  let authCalls = 0;
+  let geminiCalls = 0;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('/auth/v1/user')) {
+      authCalls += 1;
+      return new Response(
+        JSON.stringify({
+          id: 'user-allow-1',
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }
+      );
+    }
+
+    geminiCalls += 1;
+    return new Response(
+      JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  text: '{"emotion":"normal","inner_heart":"","response":"인증된 응답"}',
+                },
+              ],
+            },
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }
+    );
+  };
+
+  const result = await handler(
+    makeEvent({
+      body: {
+        characterId: 'mika',
+        userMessage: '인증 후 대화',
+        messageHistory: [],
+      },
+      extraHeaders: {
+        authorization: 'Bearer valid-access-token',
+      },
+      ip: '198.51.100.203',
+    }),
+    {}
+  );
+
+  const payload = parseBody(result);
+  assert.equal(result.statusCode, 200);
+  assert.equal(payload?.message?.response, '인증된 응답');
+  assert.equal(authCalls, 1);
+  assert.equal(geminiCalls, 1);
 });
 
 test('reuses deduped successful response for same clientRequestId and payload', async () => {

@@ -7,15 +7,15 @@ import { loadRecentChats as loadRecentChatsFromRepository, type RecentChatItem }
 import { devError } from "@/lib/logger"
 
 export const HERO_SIGNALS = [
-  "지금 가장 많이 이어진 대화",
-  "감정선이 짙은 추천",
-  "가볍게 시작하기 좋은 분위기",
+  "빠르게 시작하기",
+  "대화 몰입도 높음",
+  "첫 대화에 적합",
 ]
 
 export const STORY_FLOW_STEPS = [
-  { title: "감정 시동", description: "캐릭터의 현재 무드로 대화를 시작해요." },
-  { title: "관계 확장", description: "속마음·겉말 대비로 대화 밀도를 올려요." },
-  { title: "장면 고정", description: "최근 대화 이어하기로 흐름을 유지해요." },
+  { title: "캐릭터 선택", description: "원하는 캐릭터를 고르고 바로 시작하세요." },
+  { title: "첫 메시지 입력", description: "짧은 한 문장으로 대화 톤을 정합니다." },
+  { title: "이어가기", description: "최근 대화를 불러와 흐름을 이어가세요." },
 ]
 
 export const formatRelativeTime = (updatedAt: string | null): string => {

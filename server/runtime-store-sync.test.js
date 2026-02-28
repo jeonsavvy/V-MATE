@@ -23,6 +23,9 @@ test('wrangler vars define default runtime store mode as memory', async () => {
 
   assert.ok(wranglerConfig.includes('"RATE_LIMIT_STORE": "memory"'));
   assert.ok(wranglerConfig.includes('"PROMPT_CACHE_STORE": "memory"'));
+  assert.ok(wranglerConfig.includes('"REQUIRE_AUTH_FOR_CHAT": "true"'));
+  assert.ok(wranglerConfig.includes('"AUTH_PROVIDER_TIMEOUT_MS": "3500"'));
+  assert.ok(wranglerConfig.includes('"AUTH_PROVIDER_RETRY_COUNT": "1"'));
   assert.ok(wranglerConfig.includes('"CLIENT_REQUEST_DEDUPE_WINDOW_MS": "15000"'));
   assert.ok(wranglerConfig.includes('"CLIENT_REQUEST_DEDUPE_MAX_ENTRIES": "2000"'));
 });

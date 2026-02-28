@@ -77,12 +77,17 @@ export function HomeHeaderBar({
               </DropdownMenuContent>
             </DropdownMenu>
           ) : (
-            <Button
-              onClick={onAuthRequest}
-              className="h-10 rounded-full bg-[#7b5cb8] px-5 text-white shadow-[0_12px_24px_-16px_rgba(123,92,184,0.92)] transition hover:bg-[#6b4fa6]"
-            >
-              로그인
-            </Button>
+            <div className="flex items-center gap-2">
+              <span className="hidden rounded-full border border-[#d3c6b4] bg-white/80 px-3 py-1 text-[11px] font-semibold text-[#665f56] md:inline-flex">
+                회원 전용 채팅
+              </span>
+              <Button
+                onClick={onAuthRequest}
+                className="h-10 rounded-full bg-[#7b5cb8] px-5 text-white shadow-[0_12px_24px_-16px_rgba(123,92,184,0.92)] transition hover:bg-[#6b4fa6]"
+              >
+                로그인
+              </Button>
+            </div>
           )}
         </div>
       </div>

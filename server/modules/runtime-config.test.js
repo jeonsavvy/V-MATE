@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import {
   getChatRuntimeLimits,
+  getChatAuthConfig,
   getClientRequestDedupeConfig,
   getPromptCacheStoreMode,
   getRateLimitConfig,
@@ -32,6 +33,18 @@ const KEYS = [
   'PROMPT_CACHE_STORE',
   'CLIENT_REQUEST_DEDUPE_WINDOW_MS',
   'CLIENT_REQUEST_DEDUPE_MAX_ENTRIES',
+  'REQUIRE_AUTH_FOR_CHAT',
+  'AUTH_PROVIDER_TIMEOUT_MS',
+  'AUTH_PROVIDER_RETRY_COUNT',
+  'SUPABASE_URL',
+  'SUPABASE_ANON_KEY',
+  'SUPABASE_PUBLISHABLE_KEY',
+  'VITE_SUPABASE_URL',
+  'VITE_SUPABASE_ANON_KEY',
+  'VITE_SUPABASE_PUBLISHABLE_KEY',
+  'VITE_PUBLIC_SUPABASE_URL',
+  'VITE_PUBLIC_SUPABASE_ANON_KEY',
+  'VITE_PUBLIC_SUPABASE_PUBLISHABLE_KEY',
 ];
 
 const ORIGINAL = Object.fromEntries(KEYS.map((key) => [key, process.env[key]]));
@@ -173,5 +186,53 @@ test('parses client request dedupe config with bounds', () => {
   assert.deepEqual(getClientRequestDedupeConfig(), {
     windowMs: 0,
     maxEntries: 20000,
+  });
+});
+
+test('parses chat auth config with secure defaults and env fallback', () => {
+  delete process.env.REQUIRE_AUTH_FOR_CHAT;
+  delete process.env.AUTH_PROVIDER_TIMEOUT_MS;
+  delete process.env.AUTH_PROVIDER_RETRY_COUNT;
+  delete process.env.SUPABASE_URL;
+  delete process.env.SUPABASE_ANON_KEY;
+  delete process.env.SUPABASE_PUBLISHABLE_KEY;
+  delete process.env.VITE_SUPABASE_URL;
+  delete process.env.VITE_SUPABASE_ANON_KEY;
+  delete process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+  delete process.env.VITE_PUBLIC_SUPABASE_URL;
+  delete process.env.VITE_PUBLIC_SUPABASE_ANON_KEY;
+  delete process.env.VITE_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+
+  assert.deepEqual(getChatAuthConfig(), {
+    requireAuth: true,
+    authProviderTimeoutMs: 3500,
+    authProviderRetryCount: 1,
+    supabaseUrl: '',
+    supabaseAnonKey: '',
+  });
+
+  process.env.REQUIRE_AUTH_FOR_CHAT = 'false';
+  process.env.AUTH_PROVIDER_TIMEOUT_MS = '2500';
+  process.env.AUTH_PROVIDER_RETRY_COUNT = '2';
+  process.env.SUPABASE_URL = 'https://example.supabase.co/';
+  process.env.SUPABASE_ANON_KEY = 'public-anon-key';
+  assert.deepEqual(getChatAuthConfig(), {
+    requireAuth: false,
+    authProviderTimeoutMs: 2500,
+    authProviderRetryCount: 2,
+    supabaseUrl: 'https://example.supabase.co',
+    supabaseAnonKey: 'public-anon-key',
+  });
+
+  delete process.env.SUPABASE_URL;
+  delete process.env.SUPABASE_ANON_KEY;
+  process.env.VITE_PUBLIC_SUPABASE_URL = 'https://public-url.supabase.co';
+  process.env.VITE_PUBLIC_SUPABASE_PUBLISHABLE_KEY = 'publishable-key';
+  assert.deepEqual(getChatAuthConfig(), {
+    requireAuth: false,
+    authProviderTimeoutMs: 2500,
+    authProviderRetryCount: 2,
+    supabaseUrl: 'https://public-url.supabase.co',
+    supabaseAnonKey: 'publishable-key',
   });
 });

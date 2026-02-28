@@ -2,7 +2,7 @@ import { useCallback, type Dispatch, type KeyboardEvent, type RefObject, type Se
 import type { User as SupabaseUser } from "@supabase/supabase-js"
 import { toast } from "sonner"
 import type { Character, Message } from "@/lib/data"
-import { sendChatMessage } from "@/lib/chat/apiClient"
+import { createChatApiError, sendChatMessage } from "@/lib/chat/apiClient"
 import {
   clearChatHistory,
   getPromptCacheKey,
@@ -48,9 +48,37 @@ export const useChatActions = ({
   finishRequest,
   abortInFlight,
 }: UseChatActionsParams) => {
+  const resolveAccessToken = useCallback(async () => {
+    if (!user) {
+      throw createChatApiError("채팅은 로그인 후 이용할 수 있습니다.", "AUTH_REQUIRED")
+    }
+
+    const supabaseModule = await import("@/lib/supabase")
+    if (!supabaseModule.isSupabaseConfigured()) {
+      throw createChatApiError("인증 서버 설정이 완료되지 않았습니다.", "AUTH_PROVIDER_NOT_CONFIGURED")
+    }
+
+    const supabase = await supabaseModule.resolveSupabaseClient()
+    if (!supabase) {
+      throw createChatApiError("인증 클라이언트를 초기화하지 못했습니다.", "AUTH_PROVIDER_NOT_CONFIGURED")
+    }
+
+    const { data, error } = await supabase.auth.getSession()
+    if (error || !data?.session?.access_token) {
+      throw createChatApiError("로그인 세션이 만료되었습니다. 다시 로그인해주세요.", "AUTH_UNAUTHORIZED")
+    }
+
+    return data.session.access_token
+  }, [user])
+
   const handleSendMessage = useCallback(async () => {
     const text = inputValue.trim()
     if (!text || isLoading) return
+
+    if (!user) {
+      toast.error("채팅은 로그인 후 이용할 수 있습니다.")
+      return
+    }
 
     const requestCharacterId = character.id
     const { requestId, controller } = beginRequest(requestCharacterId)
@@ -91,6 +119,7 @@ export const useChatActions = ({
       const cacheStorageKey = getPromptCacheKey(requestCharacterId)
       const cachedContent = readPromptCache(cacheStorageKey)
       const clientRequestId = `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+      const accessToken = await resolveAccessToken()
       const { message, cachedContent: nextCachedContent } = await sendChatMessage({
         payload: {
           characterId: requestCharacterId,
@@ -100,6 +129,7 @@ export const useChatActions = ({
           clientRequestId,
         },
         signal: controller.signal,
+        accessToken,
       })
 
       if (isRequestStale(requestId, requestCharacterId)) {
@@ -151,6 +181,9 @@ export const useChatActions = ({
         content: parsed,
       }
       setMessages((prev) => [...prev, assistantErrorMessage])
+      if (errorCode === "AUTH_REQUIRED" || errorCode === "AUTH_UNAUTHORIZED") {
+        toast.error("로그인 상태를 확인해주세요.")
+      }
     } finally {
       clearTimeout(timeoutId)
       const shouldUnsetLoading = !isRequestStale(requestId, requestCharacterId)
@@ -159,9 +192,14 @@ export const useChatActions = ({
         setIsLoading(false)
       }
     }
-  }, [beginRequest, character.id, finishRequest, inputValue, isLoading, isRequestStale, messagesRef, setInputValue, setIsLoading, setMessages, user])
+  }, [beginRequest, character.id, finishRequest, inputValue, isLoading, isRequestStale, messagesRef, resolveAccessToken, setInputValue, setIsLoading, setMessages, user])
 
   const handleClearChat = useCallback(async () => {
+    if (!user) {
+      toast.error("로그인 후 대화를 관리할 수 있습니다.")
+      return false
+    }
+
     abortInFlight()
     setIsLoading(false)
 

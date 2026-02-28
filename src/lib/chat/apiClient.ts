@@ -50,6 +50,13 @@ export const CONFIGURATION_ERROR_CODES = new Set([
 export const REQUEST_POLICY_ERROR_CODES = new Set([
   "METHOD_NOT_ALLOWED",
   "ORIGIN_NOT_ALLOWED",
+  "AUTH_REQUIRED",
+  "AUTH_UNAUTHORIZED",
+  "AUTH_PROVIDER_NOT_CONFIGURED",
+  "AUTH_PROVIDER_TIMEOUT",
+  "AUTH_PROVIDER_UNAVAILABLE",
+  "AUTH_PROVIDER_ERROR",
+  "AUTH_PROVIDER_INVALID_RESPONSE",
   "REQUEST_BODY_TOO_LARGE",
   "UNSUPPORTED_CONTENT_TYPE",
   "INVALID_REQUEST_BODY",
@@ -215,6 +222,18 @@ export const mapChatApiErrorMessage = (errorCode: string, fallbackMessage: strin
       return "지원하지 않는 요청 방식입니다. 앱을 새로고침 후 다시 시도해주세요."
     case "ORIGIN_NOT_ALLOWED":
       return "현재 접속한 도메인에서는 API 호출이 허용되지 않습니다."
+    case "AUTH_REQUIRED":
+      return "채팅은 로그인 후 이용할 수 있습니다."
+    case "AUTH_UNAUTHORIZED":
+      return "로그인 세션이 만료되었습니다. 다시 로그인해주세요."
+    case "AUTH_PROVIDER_NOT_CONFIGURED":
+      return "인증 서버 설정이 완료되지 않았습니다. 관리자에게 문의해주세요."
+    case "AUTH_PROVIDER_TIMEOUT":
+    case "AUTH_PROVIDER_UNAVAILABLE":
+      return "인증 서버 연결이 불안정합니다. 잠시 후 다시 시도해주세요."
+    case "AUTH_PROVIDER_ERROR":
+    case "AUTH_PROVIDER_INVALID_RESPONSE":
+      return "인증 검증 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
     case "SERVER_API_KEY_NOT_CONFIGURED":
       return "서버 설정 문제로 요청을 처리할 수 없습니다. 관리자에게 문의해주세요."
     case "INTERNAL_SERVER_ERROR":
@@ -244,23 +263,27 @@ interface SendChatMessageParams {
   payload: ChatRequestV2
   signal: AbortSignal
   apiVersion?: "1" | "2"
+  accessToken?: string
 }
 
 export const sendChatMessage = async ({
   payload,
   signal,
   apiVersion = "2",
+  accessToken = "",
 }: SendChatMessageParams): Promise<ChatResponseV2> => {
   const chatApiUrl = resolveChatApiUrl()
   const normalizedPayload = normalizeChatRequestPayload(payload)
   let response: Response
 
   try {
+    const normalizedAccessToken = String(accessToken || "").trim()
     response = await fetch(chatApiUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-V-MATE-API-Version": apiVersion,
+        ...(normalizedAccessToken ? { Authorization: `Bearer ${normalizedAccessToken}` } : {}),
       },
       body: JSON.stringify({
         ...normalizedPayload,

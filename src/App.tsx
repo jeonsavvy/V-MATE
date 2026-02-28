@@ -1,5 +1,6 @@
 import { useState, useEffect, lazy, Suspense } from "react"
 import { Toaster } from "@/components/ui/sonner"
+import { toast } from "sonner"
 import { CHARACTERS, isCharacterId } from "@/lib/data"
 import type { Character, CharacterId } from "@/lib/data"
 import type { User } from "@supabase/supabase-js"
@@ -62,6 +63,7 @@ function App() {
   const [user, setUser] = useState<User | null>(null)
   const [isAuthDialogOpen, setIsAuthDialogOpen] = useState(false)
   const [shouldInitializeAuth, setShouldInitializeAuth] = useState<boolean>(hasPersistedSupabaseSession)
+  const [isAuthResolved, setIsAuthResolved] = useState<boolean>(() => !hasPersistedSupabaseSession())
 
   useEffect(() => {
     const handlePopState = () => {
@@ -83,6 +85,7 @@ function App() {
 
   useEffect(() => {
     if (!shouldInitializeAuth) {
+      setIsAuthResolved(true)
       return
     }
 
@@ -107,9 +110,13 @@ function App() {
 
         if (mounted) {
           setUser(session?.user ?? null)
+          setIsAuthResolved(true)
         }
       } catch (error) {
         devError("Failed to get session:", error)
+        if (mounted) {
+          setIsAuthResolved(true)
+        }
       }
 
       try {
@@ -135,6 +142,25 @@ function App() {
     }
   }, [shouldInitializeAuth])
 
+  useEffect(() => {
+    if (route.view !== "chat") {
+      return
+    }
+
+    if (user) {
+      return
+    }
+
+    if (!isAuthResolved) {
+      return
+    }
+
+    setShouldInitializeAuth(true)
+    setIsAuthDialogOpen(true)
+    toast.error("채팅은 로그인 후 이용할 수 있습니다.")
+    navigateTo({ view: "home" }, { replace: true })
+  }, [isAuthResolved, route, user])
+
   const navigateTo = (nextRoute: RouteState, options?: { replace?: boolean }) => {
     const nextPath = toPathname(nextRoute)
     const currentPath = normalizePathname(window.location.pathname)
@@ -151,10 +177,26 @@ function App() {
   }
 
   const handleCharacterSelect = (character: Character) => {
+    if (!user) {
+      setShouldInitializeAuth(true)
+      setIsAuthDialogOpen(true)
+      toast.message("회원 전용 기능", {
+        description: "채팅은 로그인 후 시작할 수 있습니다.",
+      })
+      return
+    }
+
     navigateTo({ view: "chat", charId: character.id })
   }
 
   const handleCharacterChange = (charId: string) => {
+    if (!user) {
+      setShouldInitializeAuth(true)
+      setIsAuthDialogOpen(true)
+      toast.error("채팅은 로그인 후 이용할 수 있습니다.")
+      return
+    }
+
     const normalizedCharId = String(charId || "").toLowerCase()
     if (!isCharacterId(normalizedCharId)) {
       return
@@ -170,6 +212,7 @@ function App() {
 
   const openAuthDialog = () => {
     setShouldInitializeAuth(true)
+    setIsAuthResolved(false)
     setIsAuthDialogOpen(true)
   }
 

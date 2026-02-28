@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { afterEach, test } from 'node:test';
+import { afterEach, beforeEach, test } from 'node:test';
 import worker, { createWorker } from './worker.js';
 
 const TRACKED_ENV_KEYS = [
@@ -10,6 +10,7 @@ const TRACKED_ENV_KEYS = [
   'GOOGLE_API_KEY',
   'RATE_LIMIT_STORE',
   'PROMPT_CACHE_STORE',
+  'REQUIRE_AUTH_FOR_CHAT',
 ];
 
 const ORIGINAL_ENV = Object.fromEntries(TRACKED_ENV_KEYS.map((key) => [key, process.env[key]]));
@@ -27,6 +28,10 @@ const restoreEnv = () => {
 
 afterEach(() => {
   restoreEnv();
+});
+
+beforeEach(() => {
+  process.env.REQUIRE_AUTH_FOR_CHAT = 'false';
 });
 
 test('routes /api/chat OPTIONS preflight request to chat handler', async () => {
