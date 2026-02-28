@@ -80,7 +80,29 @@ const buildApiKeyError = (characterId: CharacterId, traceSuffix: string): AIResp
       ? `선생님, 서버 API 키 설정에 문제가 있어 보여. 관리자에게 확인 요청해줘.${traceSuffix}`
       : characterId === "alice"
         ? `API 키 설정 오류로 요청이 거절되었다. 관리자에게 확인을 요청해달라.${traceSuffix}`
-        : `서버 API 키 설정 문제로 요청 실패. 관리자 확인 필요.${traceSuffix}`,
+      : `서버 API 키 설정 문제로 요청 실패. 관리자 확인 필요.${traceSuffix}`,
+})
+
+const buildAuthError = (characterId: CharacterId, traceSuffix: string, isSessionExpired: boolean): AIResponse => ({
+  emotion: "normal",
+  inner_heart:
+    characterId === "mika"
+      ? "로그인이 필요한 상태야..."
+      : characterId === "alice"
+        ? "인증 상태를 다시 확인해야 한다."
+        : "인증 필요.",
+  response:
+    characterId === "mika"
+      ? isSessionExpired
+        ? `선생님, 로그인 세션이 만료됐어. 다시 로그인해줘.${traceSuffix}`
+        : `선생님, 채팅은 로그인 후에 이용할 수 있어.${traceSuffix}`
+      : characterId === "alice"
+        ? isSessionExpired
+          ? `로그인 세션이 만료되었다. 다시 로그인해달라.${traceSuffix}`
+          : `채팅 기능은 로그인 이후 사용할 수 있다.${traceSuffix}`
+        : isSessionExpired
+          ? `로그인 세션 만료됨. 다시 로그인해줘.${traceSuffix}`
+          : `채팅은 로그인 후 이용 가능해.${traceSuffix}`,
 })
 
 const buildTimeoutError = (characterId: CharacterId, traceSuffix: string): AIResponse => ({
@@ -142,6 +164,8 @@ export const buildPersonaErrorResponse = ({
   error,
 }: BuildPersonaErrorResponseParams): { response: AIResponse; errorCode: string; traceId: string; errorMessage: string } => {
   const context = toErrorContext(error)
+  const isAuthRequired = context.errorCode === "AUTH_REQUIRED"
+  const isAuthUnauthorized = context.errorCode === "AUTH_UNAUTHORIZED"
 
   if (
     NETWORK_ERROR_CODES.has(context.errorCode) ||
@@ -167,7 +191,20 @@ export const buildPersonaErrorResponse = ({
     return { ...context, response: buildFormatError(characterId, context.traceSuffix) }
   }
 
-  if (context.errorMessage.includes("API 키") || context.errorMessage.includes("만료")) {
+  if (isAuthRequired || isAuthUnauthorized) {
+    return {
+      ...context,
+      response: buildAuthError(characterId, context.traceSuffix, isAuthUnauthorized),
+    }
+  }
+
+  if (
+    context.errorCode === "SERVER_API_KEY_NOT_CONFIGURED" ||
+    context.errorMessage.includes("API 키") ||
+    context.errorMessage.includes("API key") ||
+    context.errorMessage.includes("API_KEY") ||
+    context.errorMessage.includes("GOOGLE_API_KEY")
+  ) {
     return { ...context, response: buildApiKeyError(characterId, context.traceSuffix) }
   }
 
