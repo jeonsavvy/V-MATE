@@ -120,6 +120,31 @@ const parseUserIdFromPayload = (payload) => {
     return '';
 };
 
+const readAuthProviderErrorMessage = (payload) => {
+    if (!payload || typeof payload !== 'object') {
+        return '';
+    }
+
+    const candidates = [
+        payload.message,
+        payload.error_description,
+        payload.msg,
+        payload.error?.message,
+        payload.error,
+    ];
+
+    for (const candidate of candidates) {
+        if (typeof candidate === 'string' && candidate.trim()) {
+            return candidate.trim();
+        }
+    }
+
+    return '';
+};
+
+const looksLikeMissingApiKeyError = (message) =>
+    /(api[_\s-]?key|apikey|publishable key|anon key|missing key)/i.test(String(message || ''));
+
 const verifyAccessTokenWithAuthProvider = async ({
     supabaseUrl,
     supabaseAnonKey,
@@ -170,6 +195,15 @@ const verifyAccessTokenWithAuthProvider = async ({
             }
 
             if (response.status === 401 || response.status === 403) {
+                const providerErrorMessage = readAuthProviderErrorMessage(payload);
+                if (looksLikeMissingApiKeyError(providerErrorMessage)) {
+                    return toAuthFailure({
+                        statusCode: 503,
+                        errorCode: 'AUTH_PROVIDER_NOT_CONFIGURED',
+                        error: 'Authentication provider API key is not configured.',
+                    });
+                }
+
                 return toAuthFailure({
                     statusCode: 401,
                     errorCode: 'AUTH_UNAUTHORIZED',
@@ -283,6 +317,14 @@ export const resolveAuthenticatedUser = async ({
             statusCode: 503,
             errorCode: 'AUTH_PROVIDER_NOT_CONFIGURED',
             error: 'Authentication provider is not configured.',
+        });
+    }
+
+    if (!String(supabaseAnonKey || '').trim()) {
+        return toAuthFailure({
+            statusCode: 503,
+            errorCode: 'AUTH_PROVIDER_NOT_CONFIGURED',
+            error: 'Authentication provider key is not configured.',
         });
     }
 

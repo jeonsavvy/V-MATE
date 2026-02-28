@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "./ui/dialog"
 import { Button } from "./ui/button"
 import { Input } from "./ui/input"
@@ -33,12 +33,31 @@ const resolveErrorMessage = (error: unknown, fallback: string) => {
 export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
   const [isLoading, setIsLoading] = useState(false)
   const [isResetLoading, setIsResetLoading] = useState(false)
+  const [isResetConfirmArmed, setIsResetConfirmArmed] = useState(false)
   const [activeTab, setActiveTab] = useState("signin")
   
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
   const [name, setName] = useState("")
+
+  useEffect(() => {
+    if (!isResetConfirmArmed) {
+      return
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setIsResetConfirmArmed(false)
+    }, 5000)
+
+    return () => {
+      window.clearTimeout(timeoutId)
+    }
+  }, [isResetConfirmArmed])
+
+  useEffect(() => {
+    setIsResetConfirmArmed(false)
+  }, [email])
 
   const getSupabaseClient = async () => {
     const module = await import("@/lib/supabase")
@@ -156,6 +175,14 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
       return
     }
 
+    if (!isResetConfirmArmed) {
+      setIsResetConfirmArmed(true)
+      toast.message("재설정 메일 발송 확인", {
+        description: `${email.trim()} 주소로 메일을 보내려면 한 번 더 눌러주세요.`,
+      })
+      return
+    }
+
     setIsResetLoading(true)
     try {
       const redirectTo = buildBrowserRedirectUrl("/")
@@ -165,6 +192,7 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
 
       if (error) throw error
       toast.success("비밀번호 재설정 메일을 발송했습니다.")
+      setIsResetConfirmArmed(false)
     } catch (error: unknown) {
       toast.error(resolveErrorMessage(error, "비밀번호 재설정 메일 발송에 실패했습니다"))
     } finally {
@@ -221,7 +249,7 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
                 disabled={isResetLoading || isLoading}
                 className="text-xs font-semibold text-[#7a6757] underline-offset-2 transition hover:text-[#6b4fa6] hover:underline disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {isResetLoading ? "재설정 메일 발송 중..." : "비밀번호를 잊으셨나요?"}
+                {isResetLoading ? "재설정 메일 발송 중..." : isResetConfirmArmed ? "한 번 더 누르면 메일 발송" : "비밀번호를 잊으셨나요?"}
               </button>
               <Button type="submit" className="w-full bg-[#7b5cb8] text-white shadow-[0_14px_26px_-18px_rgba(123,92,184,0.95)] transition hover:bg-[#6b4fa6]" disabled={isLoading}>
                 {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}

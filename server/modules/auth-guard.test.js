@@ -140,6 +140,7 @@ test('resolveAuthenticatedUser verifies token and returns user id on success', a
 test('resolveAuthenticatedUser retries once for transient auth provider failure', async () => {
   process.env.REQUIRE_AUTH_FOR_CHAT = 'true';
   process.env.SUPABASE_URL = 'https://demo-project.supabase.co';
+  process.env.SUPABASE_ANON_KEY = 'anon-key';
   process.env.AUTH_PROVIDER_RETRY_COUNT = '1';
 
   let fetchCallCount = 0;
@@ -175,6 +176,7 @@ test('resolveAuthenticatedUser retries once for transient auth provider failure'
 test('resolveAuthenticatedUser maps invalid token to AUTH_UNAUTHORIZED', async () => {
   process.env.REQUIRE_AUTH_FOR_CHAT = 'true';
   process.env.SUPABASE_URL = 'https://demo-project.supabase.co';
+  process.env.SUPABASE_ANON_KEY = 'anon-key';
 
   const result = await resolveAuthenticatedUser({
     event: {
@@ -188,4 +190,30 @@ test('resolveAuthenticatedUser maps invalid token to AUTH_UNAUTHORIZED', async (
   assert.equal(result.ok, false);
   assert.equal(result.statusCode, 401);
   assert.equal(result.errorCode, 'AUTH_UNAUTHORIZED');
+});
+
+test('resolveAuthenticatedUser returns AUTH_PROVIDER_NOT_CONFIGURED when anon key is missing', async () => {
+  process.env.REQUIRE_AUTH_FOR_CHAT = 'true';
+  process.env.SUPABASE_URL = 'https://demo-project.supabase.co';
+  delete process.env.SUPABASE_ANON_KEY;
+  delete process.env.SUPABASE_PUBLISHABLE_KEY;
+  delete process.env.VITE_SUPABASE_ANON_KEY;
+  delete process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+  delete process.env.VITE_PUBLIC_SUPABASE_ANON_KEY;
+  delete process.env.VITE_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+
+  const result = await resolveAuthenticatedUser({
+    event: {
+      headers: {
+        authorization: 'Bearer user-access-token',
+      },
+    },
+    fetchImpl: async () => {
+      throw new Error('fetch should not be called when anon key is missing');
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.statusCode, 503);
+  assert.equal(result.errorCode, 'AUTH_PROVIDER_NOT_CONFIGURED');
 });

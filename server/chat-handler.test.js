@@ -490,6 +490,7 @@ test('returns 401 when auth provider rejects access token', async () => {
   applyBaseEnv({
     REQUIRE_AUTH_FOR_CHAT: 'true',
     SUPABASE_URL: 'https://demo.supabase.co',
+    SUPABASE_ANON_KEY: 'anon-public-key',
   });
   globalThis.fetch = async (url) => {
     assert.match(String(url), /auth\/v1\/user/);
