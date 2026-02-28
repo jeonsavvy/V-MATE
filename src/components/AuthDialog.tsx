@@ -33,31 +33,20 @@ const resolveErrorMessage = (error: unknown, fallback: string) => {
 export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
   const [isLoading, setIsLoading] = useState(false)
   const [isResetLoading, setIsResetLoading] = useState(false)
-  const [isResetConfirmArmed, setIsResetConfirmArmed] = useState(false)
+  const [isResetFormOpen, setIsResetFormOpen] = useState(false)
   const [activeTab, setActiveTab] = useState("signin")
   
   const [email, setEmail] = useState("")
+  const [resetEmail, setResetEmail] = useState("")
   const [password, setPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
   const [name, setName] = useState("")
 
   useEffect(() => {
-    if (!isResetConfirmArmed) {
-      return
+    if (activeTab !== "signin") {
+      setIsResetFormOpen(false)
     }
-
-    const timeoutId = window.setTimeout(() => {
-      setIsResetConfirmArmed(false)
-    }, 5000)
-
-    return () => {
-      window.clearTimeout(timeoutId)
-    }
-  }, [isResetConfirmArmed])
-
-  useEffect(() => {
-    setIsResetConfirmArmed(false)
-  }, [email])
+  }, [activeTab])
 
   const getSupabaseClient = async () => {
     const module = await import("@/lib/supabase")
@@ -170,34 +159,38 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
       return
     }
 
-    if (!email.trim()) {
-      toast.error("비밀번호 재설정을 위해 이메일을 입력해주세요.")
+    const normalizedResetEmail = resetEmail.trim()
+    if (!normalizedResetEmail) {
+      toast.error("아이디(이메일)를 입력해주세요.")
       return
     }
 
-    if (!isResetConfirmArmed) {
-      setIsResetConfirmArmed(true)
-      toast.message("재설정 메일 발송 확인", {
-        description: `${email.trim()} 주소로 메일을 보내려면 한 번 더 눌러주세요.`,
-      })
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedResetEmail)) {
+      toast.error("올바른 이메일 형식을 입력해주세요.")
       return
     }
 
     setIsResetLoading(true)
     try {
       const redirectTo = buildBrowserRedirectUrl("/")
-      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      const { error } = await supabase.auth.resetPasswordForEmail(normalizedResetEmail, {
         redirectTo,
       })
 
       if (error) throw error
       toast.success("비밀번호 재설정 메일을 발송했습니다.")
-      setIsResetConfirmArmed(false)
+      setIsResetFormOpen(false)
+      setResetEmail("")
     } catch (error: unknown) {
       toast.error(resolveErrorMessage(error, "비밀번호 재설정 메일 발송에 실패했습니다"))
     } finally {
       setIsResetLoading(false)
     }
+  }
+
+  const handleOpenResetForm = () => {
+    setIsResetFormOpen(true)
+    setResetEmail((prev) => prev || email.trim())
   }
 
   return (
@@ -245,12 +238,45 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
               </div>
               <button
                 type="button"
-                onClick={handleResetPassword}
+                onClick={handleOpenResetForm}
                 disabled={isResetLoading || isLoading}
                 className="text-xs font-semibold text-[#7a6757] underline-offset-2 transition hover:text-[#6b4fa6] hover:underline disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {isResetLoading ? "재설정 메일 발송 중..." : isResetConfirmArmed ? "한 번 더 누르면 메일 발송" : "비밀번호를 잊으셨나요?"}
+                비밀번호를 잊으셨나요?
               </button>
+              {isResetFormOpen && (
+                <div className="space-y-2 rounded-lg border border-[#d9cebf] bg-[#f4eee4] p-3">
+                  <Label htmlFor="reset-email" className="text-[#6f6a61]">아이디(이메일)</Label>
+                  <Input
+                    id="reset-email"
+                    type="email"
+                    placeholder="가입한 이메일을 입력하세요"
+                    value={resetEmail}
+                    onChange={(event) => setResetEmail(event.target.value)}
+                    disabled={isResetLoading || isLoading}
+                    className="border-[#d1c4b3] bg-white/85 text-[#22242b] placeholder:text-[#8f8b82] focus-visible:border-[#8b6cc7]"
+                  />
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      onClick={handleResetPassword}
+                      disabled={isResetLoading || isLoading}
+                      className="h-9 bg-[#7b5cb8] px-3 text-white hover:bg-[#6b4fa6]"
+                    >
+                      {isResetLoading ? "발송 중..." : "재설정 메일 발송"}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={() => setIsResetFormOpen(false)}
+                      disabled={isResetLoading || isLoading}
+                      className="h-9 px-3 text-[#6f6a61] hover:bg-[#ece2d5]"
+                    >
+                      취소
+                    </Button>
+                  </div>
+                </div>
+              )}
               <Button type="submit" className="w-full bg-[#7b5cb8] text-white shadow-[0_14px_26px_-18px_rgba(123,92,184,0.95)] transition hover:bg-[#6b4fa6]" disabled={isLoading}>
                 {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 로그인
