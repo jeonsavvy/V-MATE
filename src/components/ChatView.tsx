@@ -74,7 +74,7 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
 
       <div
         className={cn(
-          "relative z-10 mx-auto grid h-full w-full max-w-[1680px] lg:grid-cols-[300px_minmax(0,1fr)]",
+          "relative z-10 mx-auto grid h-full min-h-0 w-full max-w-[1680px] lg:grid-cols-[300px_minmax(0,1fr)]",
           isInfoPanelOpen && "xl:grid-cols-[300px_minmax(0,1fr)_320px]"
         )}
       >
@@ -84,7 +84,7 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
           onCharacterChange={onCharacterChange}
         />
 
-        <div className="flex h-full min-w-0 flex-col">
+        <div className="flex h-full min-h-0 min-w-0 flex-col">
           <ChatTopBar
             character={character}
             characterTags={characterMeta.tags}

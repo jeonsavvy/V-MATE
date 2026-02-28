@@ -29,7 +29,7 @@ export function MessageTimeline({
       role="log"
       aria-live="polite"
       aria-relevant="additions text"
-      className="flex-1 overflow-y-auto px-3 py-4 scroll-smooth sm:px-4 lg:px-8 lg:py-6"
+      className="min-h-0 flex-1 overflow-y-auto px-3 py-4 scroll-smooth sm:px-4 lg:px-8 lg:py-6"
     >
       <div className="mx-auto w-full max-w-[980px] space-y-5">
         <p className="mx-auto w-fit rounded-full border border-white/45 bg-white/58 px-3 py-1 text-center text-xs font-semibold text-[#70695f]">
