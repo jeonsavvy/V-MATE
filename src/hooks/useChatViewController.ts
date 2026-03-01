@@ -51,7 +51,6 @@ export const useChatViewController = ({
   const {
     handleSendMessage,
     handleClearChat,
-    handleCompressChat,
     handleInputKeyDown,
     handleQuickReplyClick,
   } = useChatActions({
@@ -108,7 +107,6 @@ export const useChatViewController = ({
     activeEmotion,
     handleSendMessage,
     handleClearChat,
-    handleCompressChat,
     handleInputKeyDown,
     handleQuickReplyClick,
   }

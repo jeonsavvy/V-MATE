@@ -47,7 +47,6 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
     activeEmotion,
     handleSendMessage,
     handleClearChat,
-    handleCompressChat,
     handleInputKeyDown,
     handleQuickReplyClick,
   } = useChatViewController({ character, user })
@@ -147,16 +146,6 @@ export function ChatView({ character, onCharacterChange, user, onBack }: ChatVie
         open={isClearDialogOpen}
         isSubmitting={isClearSubmitting}
         onOpenChange={setIsClearDialogOpen}
-        onCompress={() => {
-          void (async () => {
-            setIsClearSubmitting(true)
-            const success = await handleCompressChat()
-            setIsClearSubmitting(false)
-            if (success) {
-              setIsClearDialogOpen(false)
-            }
-          })()
-        }}
         onConfirm={() => {
           void (async () => {
             setIsClearSubmitting(true)

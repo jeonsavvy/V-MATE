@@ -7,7 +7,6 @@ import {
   clearChatHistory,
   getPromptCacheKey,
   saveChatMessage,
-  toPreviewText,
   type HistoryPreview,
 } from "@/lib/chat/historyRepository"
 import { readPromptCache, removePromptCache, writePromptCache } from "@/lib/chat/promptCacheStore"
@@ -49,29 +48,30 @@ export const useChatActions = ({
   finishRequest,
   abortInFlight,
 }: UseChatActionsParams) => {
-  const buildCompressedContextText = useCallback((messages: Message[]) => {
-    const lines = messages
-      .map((message) => {
-        const speaker = message.role === "user" ? "사용자" : character.name
-        const text = toPreviewText(message.content).replace(/\s+/g, " ").trim()
-        if (!text) {
-          return ""
-        }
-        return `${speaker}: ${text}`
-      })
+  const buildAutoCompressedRequestHistory = useCallback((
+    history: Array<{ role: "user" | "assistant"; content: string }>
+  ) => {
+    const hardLimit = CHAT_REQUEST_LIMITS.frontendHistoryMaxItems
+    if (history.length <= hardLimit) {
+      return history
+    }
+
+    const reserveTailCount = Math.max(6, hardLimit - 1)
+    const tail = history.slice(-reserveTailCount)
+    const older = history.slice(0, -reserveTailCount)
+    const summarySource = older.slice(-24)
+    const summaryBody = summarySource
+      .map((item) => `${item.role === "user" ? "사용자" : character.name}: ${String(item.content || "").replace(/\s+/g, " ").trim()}`)
       .filter(Boolean)
+      .join(" / ")
+      .slice(0, CHAT_REQUEST_LIMITS.historyContentMaxChars - 32)
 
-    const compact = lines.slice(-12).join(" / ")
-    if (!compact) {
-      return "이전 대화의 핵심 맥락을 압축해 이어갑니다."
+    const summaryMessage = {
+      role: "assistant" as const,
+      content: `[압축 요약] ${summaryBody || "이전 대화 맥락을 압축해 이어갑니다."}`,
     }
 
-    const maxChars = 700
-    if (compact.length <= maxChars) {
-      return compact
-    }
-
-    return `${compact.slice(0, maxChars)}…`
+    return [summaryMessage, ...tail].slice(-hardLimit)
   }, [character.name])
 
   const resolveAccessToken = useCallback(async () => {
@@ -130,13 +130,13 @@ export const useChatActions = ({
     setIsLoading(true)
 
     try {
-      const messageHistory = baselineMessages
+      const normalizedHistory = baselineMessages
         .filter((msg) => msg.id !== "greeting")
         .map((msg) => ({
           role: msg.role,
           content: typeof msg.content === "string" ? msg.content : msg.content.response,
         }))
-        .slice(-CHAT_REQUEST_LIMITS.frontendHistoryMaxItems)
+      const messageHistory = buildAutoCompressedRequestHistory(normalizedHistory)
 
       if (isRequestStale(requestId, requestCharacterId)) {
         return
@@ -218,7 +218,7 @@ export const useChatActions = ({
         setIsLoading(false)
       }
     }
-  }, [beginRequest, character.id, finishRequest, inputValue, isLoading, isRequestStale, messagesRef, resolveAccessToken, setInputValue, setIsLoading, setMessages, user])
+  }, [beginRequest, buildAutoCompressedRequestHistory, character.id, finishRequest, inputValue, isLoading, isRequestStale, messagesRef, resolveAccessToken, setInputValue, setIsLoading, setMessages, user])
 
   const handleClearChat = useCallback(async () => {
     if (!user) {
@@ -255,65 +255,6 @@ export const useChatActions = ({
     return true
   }, [abortInFlight, character, setHistoryPreviews, setInputValue, setIsLoading, setMessages, user])
 
-  const handleCompressChat = useCallback(async () => {
-    if (!user) {
-      toast.error("로그인 후 대화를 관리할 수 있습니다.")
-      return false
-    }
-
-    const snapshotMessages = (messagesRef.current || []).filter((message) => message.id !== "greeting")
-    if (snapshotMessages.length < 8) {
-      toast.message("압축할 대화가 충분하지 않습니다.", {
-        description: "최소 8개 이상의 메시지에서 압축이 의미 있습니다.",
-      })
-      return false
-    }
-
-    abortInFlight()
-    setIsLoading(false)
-
-    const tailMessages = snapshotMessages.slice(-6)
-    const olderMessages = snapshotMessages.slice(0, -6)
-    const compressedContext = buildCompressedContextText(olderMessages)
-
-    const summaryMessage: Message = {
-      id: `${Date.now()}-summary`,
-      role: "assistant",
-      content: {
-        emotion: "normal",
-        inner_heart: "이전 대화 핵심을 압축해 기억해둘게.",
-        response: `[대화 요약]\n${compressedContext}`,
-        narration: "이전 대화를 정리하고 최근 흐름 중심으로 전환했습니다.",
-      },
-    }
-
-    const compactMessages = [summaryMessage, ...tailMessages]
-
-    try {
-      await clearChatHistory({
-        user,
-        characterId: character.id,
-      })
-
-      for (const message of compactMessages) {
-        await saveChatMessage({
-          user,
-          message,
-          characterId: character.id,
-        })
-      }
-    } catch (error) {
-      devError("Failed to compress chat history", error)
-      toast.error("대화 압축에 실패했습니다. 잠시 후 다시 시도해주세요.")
-      return false
-    }
-
-    setInputValue("")
-    setMessages([createGreetingMessage(character), ...compactMessages])
-    toast.success("대화를 요약해 최근 맥락 중심으로 정리했습니다.")
-    return true
-  }, [abortInFlight, buildCompressedContextText, character, messagesRef, setInputValue, setIsLoading, setMessages, user])
-
   const handleInputKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== "Enter" || event.shiftKey) {
       return
@@ -333,7 +274,6 @@ export const useChatActions = ({
   return {
     handleSendMessage,
     handleClearChat,
-    handleCompressChat,
     handleInputKeyDown,
     handleQuickReplyClick,
   }
