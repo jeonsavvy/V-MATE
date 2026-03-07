@@ -239,11 +239,7 @@ const serveStaticAsset = async (request, env) => {
     assetResponse = await env.ASSETS.fetch(new Request(url.toString(), request));
   }
 
-  if (isHtmlRequest(request)) {
-    return injectRuntimeEnvIntoHtml(assetResponse, env);
-  }
-
-  return assetResponse;
+  return injectRuntimeEnvIntoHtml(assetResponse, env);
 };
 
 export const createWorker = ({ chatHandlerImpl = chatHandler, chatHandlerContext = {} } = {}) => ({

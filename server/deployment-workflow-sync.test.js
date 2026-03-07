@@ -26,6 +26,13 @@ test('github ci workflow deploys worker only after quality succeeds on main push
   assert.match(workflow, /CLOUDFLARE_ACCOUNT_ID/);
 });
 
+
+test('wrangler config preserves dashboard vars during deploy', async () => {
+  const wranglerConfig = await readUtf8('wrangler.jsonc');
+
+  assert.match(wranglerConfig, /"keep_vars"\s*:\s*true/);
+});
+
 test('README documents worker auto-deploy, required secrets, runtime prerequisites, and rollback', async () => {
   const readme = await readUtf8('README.md');
 

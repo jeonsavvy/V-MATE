@@ -500,6 +500,33 @@ test('injects runtime env script into html responses', async () => {
   assert.match(html, /VITE_CHAT_API_BASE_URL/);
 });
 
+
+test('injects runtime env script into html responses even without html accept header', async () => {
+  const request = new Request('https://example.com/', {
+    method: 'GET',
+    headers: {
+      accept: '*/*',
+    },
+  });
+
+  const response = await worker.fetch(request, {
+    ASSETS: {
+      fetch: async () =>
+        new Response('<html><head></head><body>Hello</body></html>', {
+          status: 200,
+          headers: { 'content-type': 'text/html; charset=utf-8' },
+        }),
+    },
+    VITE_SUPABASE_URL: 'https://example.supabase.co',
+    VITE_SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_example',
+  });
+
+  const html = await response.text();
+  assert.match(html, /window\.__V_MATE_RUNTIME_ENV__=/);
+  assert.match(html, /VITE_SUPABASE_URL/);
+  assert.match(html, /VITE_SUPABASE_PUBLISHABLE_KEY/);
+});
+
 test('serves index.html fallback for html route miss', async () => {
   const calledPaths = [];
   const request = new Request('https://example.com/chat/mika', {
