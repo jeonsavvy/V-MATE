@@ -8,6 +8,7 @@ import { getRequestBodyLimitBytes } from './modules/runtime-config.js';
 import { resolveRuntimeChatHandlerContext } from './modules/runtime-chat-context.js';
 import { logServerInfo, logServerWarn } from './modules/server-logger.js';
 import { createTraceId } from './modules/trace-id.js';
+import { handlePlatformApi } from './platform/api.js';
 
 const DEFAULT_HEADERS = {
     'Content-Type': 'application/json',
@@ -83,9 +84,11 @@ const readRawBody = (req) =>
         req.on('error', rejectOnce);
     });
 
-const toEvent = async (req) => ({
+const toEvent = async (req, url) => ({
     httpMethod: req.method || 'GET',
     headers: normalizeHeaders(req.headers),
+    path: url.pathname,
+    queryStringParameters: Object.fromEntries(url.searchParams.entries()),
     body: await readRawBody(req),
 });
 
@@ -111,7 +114,10 @@ export const createCloudRunServer = ({
             return;
         }
 
-        if (url.pathname !== '/api/chat' && url.pathname !== '/api/chat/') {
+        const isChatPath = url.pathname === '/api/chat' || url.pathname === '/api/chat/';
+        const isApiPath = url.pathname.startsWith('/api/');
+
+        if (!isApiPath) {
             res.writeHead(404, DEFAULT_HEADERS);
             res.end(JSON.stringify({ error: 'Not found' }));
             return;
@@ -139,23 +145,34 @@ export const createCloudRunServer = ({
         }
 
         try {
-            const event = await toEvent(req);
-            const configuredContext = await resolveChatHandlerContext({
-                chatHandlerContext,
-                resolverInput: { req },
-                onError: (error) => {
-                    logServerWarn('[V-MATE] Cloud Run chatHandlerContext resolver failed, using empty context', {
-                        traceId: requestTraceId,
-                        message: error?.message || String(error),
-                    });
-                },
-            });
-            const runtimeContext = resolveRuntimeChatHandlerContext({
-                env: runtimeEnv,
-                traceId: requestTraceId,
-            });
-            const handlerContext = mergeChatHandlerContexts(runtimeContext, configuredContext);
-            const result = await chatHandlerImpl(event, handlerContext);
+            const event = await toEvent(req, url);
+            let result;
+
+            if (isChatPath) {
+                const configuredContext = await resolveChatHandlerContext({
+                    chatHandlerContext,
+                    resolverInput: { req },
+                    onError: (error) => {
+                        logServerWarn('[V-MATE] Cloud Run chatHandlerContext resolver failed, using empty context', {
+                            traceId: requestTraceId,
+                            message: error?.message || String(error),
+                        });
+                    },
+                });
+                const runtimeContext = resolveRuntimeChatHandlerContext({
+                    env: runtimeEnv,
+                    traceId: requestTraceId,
+                });
+                const handlerContext = mergeChatHandlerContexts(runtimeContext, configuredContext);
+                result = await chatHandlerImpl(event, handlerContext);
+            } else {
+                result = await handlePlatformApi({
+                    event,
+                    headers: responseHeaders,
+                    startedAtMs: requestStartedAt,
+                    traceId: requestTraceId,
+                });
+            }
             sendResult(res, result, responseHeaders);
         } catch (error) {
             if (error?.code === 'REQUEST_BODY_TOO_LARGE') {

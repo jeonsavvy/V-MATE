@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { afterEach, test } from 'node:test';
 import { createCloudRunServer } from './cloud-run-server.js';
+import { resetPlatformStoreForTests } from './platform/content-store.js';
 
 const TRACKED_ENV_KEYS = [
   'REQUEST_BODY_MAX_BYTES',
@@ -98,6 +99,7 @@ const sendRawHttpRequest = ({ baseUrl, method = 'GET', path = '/', headers = {},
 
 afterEach(() => {
   restoreEnv();
+  resetPlatformStoreForTests();
 });
 
 test('healthz endpoint returns ok payload', async () => {
@@ -112,6 +114,106 @@ test('healthz endpoint returns ok payload', async () => {
     assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
     const payload = await response.json();
     assert.deepEqual(payload, { ok: true });
+  } finally {
+    await close();
+  }
+});
+
+test('returns public character detail payload from /api/characters/:slug', async () => {
+  process.env.ALLOW_NON_BROWSER_ORIGIN = 'false';
+  process.env.ALLOW_ALL_ORIGINS = 'false';
+  process.env.ALLOWED_ORIGINS = 'http://localhost:5173';
+
+  const { baseUrl, close } = await startServer(async () => {
+    throw new Error('chat handler should not be called for public character detail route');
+  });
+
+  try {
+    const response = await fetch(`${baseUrl}/api/characters/mika`, {
+      headers: {
+        Origin: 'http://localhost:5173',
+      },
+    });
+
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.item?.slug, 'mika');
+    assert.equal(payload.item?.entityType, 'character');
+    assert.equal(Array.isArray(payload.item?.worlds), true);
+    assert.equal(response.headers.get('access-control-allow-origin'), 'http://localhost:5173');
+  } finally {
+    await close();
+  }
+});
+
+test('creates and reads a room payload through platform room routes', async () => {
+  process.env.ALLOW_NON_BROWSER_ORIGIN = 'false';
+  process.env.ALLOW_ALL_ORIGINS = 'false';
+  process.env.ALLOWED_ORIGINS = 'http://localhost:5173';
+  process.env.REQUIRE_AUTH_FOR_CHAT = 'false';
+
+  const { baseUrl, close } = await startServer(async () => {
+    throw new Error('legacy chat handler should not be called during room route smoke test');
+  });
+
+  try {
+    const createResponse = await fetch(`${baseUrl}/api/rooms`, {
+      method: 'POST',
+      headers: {
+        Origin: 'http://localhost:5173',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        characterSlug: 'mika',
+        worldSlug: 'sao',
+        userAlias: '유민',
+      }),
+    });
+
+    assert.equal(createResponse.status, 201);
+    const created = await createResponse.json();
+    assert.equal(created.room?.character?.slug, 'mika');
+    assert.equal(created.room?.world?.slug, 'sao');
+    assert.equal(created.room?.userAlias, '유민');
+    assert.equal(typeof created.room?.bridgeProfile?.meetingTrigger, 'string');
+
+    const getResponse = await fetch(`${baseUrl}/api/rooms/${created.room.id}`, {
+      headers: {
+        Origin: 'http://localhost:5173',
+      },
+    });
+
+    assert.equal(getResponse.status, 200);
+    const fetched = await getResponse.json();
+    assert.equal(fetched.room?.id, created.room.id);
+    assert.equal(Array.isArray(fetched.room?.messages), true);
+    assert.equal(typeof fetched.room?.state?.relationshipState, 'string');
+  } finally {
+    await close();
+  }
+});
+
+test('owner ops endpoint is exposed separately from commercial moderation/reporting flows', async () => {
+  process.env.ALLOW_NON_BROWSER_ORIGIN = 'false';
+  process.env.ALLOW_ALL_ORIGINS = 'false';
+  process.env.ALLOWED_ORIGINS = 'http://localhost:5173';
+  process.env.REQUIRE_AUTH_FOR_CHAT = 'false';
+
+  const { baseUrl, close } = await startServer(async () => {
+    throw new Error('legacy chat handler should not be called during ops route smoke test');
+  });
+
+  try {
+    const response = await fetch(`${baseUrl}/api/ops/dashboard`, {
+      headers: {
+        Origin: 'http://localhost:5173',
+      },
+    });
+
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(Array.isArray(payload.items?.visibleCharacters), true);
+    assert.equal('reports' in payload, false);
   } finally {
     await close();
   }

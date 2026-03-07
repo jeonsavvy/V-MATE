@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-labelledby="title desc">
+  <title id="title">소드아트온라인 스타일 월드 커버</title>
+  <desc id="desc">청록빛 디지털 하늘과 검은 탑이 있는 가상 MMO 세계 배경</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#071a2f"/>
+      <stop offset="52%" stop-color="#0c4c7f"/>
+      <stop offset="100%" stop-color="#86f0ff"/>
+    </linearGradient>
+    <linearGradient id="tower" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#d6fbff" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#0d2740" stop-opacity="0.15"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="720" fill="url(#bg)" rx="36"/>
+  <circle cx="980" cy="120" r="140" fill="#bffcff" opacity="0.18"/>
+  <circle cx="210" cy="180" r="180" fill="#66d6ff" opacity="0.14"/>
+  <path d="M0 520C160 470 300 510 430 446C588 367 664 305 838 330C990 352 1124 454 1200 438V720H0Z" fill="#0b1730" opacity="0.78"/>
+  <path d="M620 100 690 610 530 610Z" fill="url(#tower)" opacity="0.95"/>
+  <path d="M610 90 635 610 565 610Z" fill="#f2ffff" opacity="0.3"/>
+  <g stroke="#d7fbff" stroke-opacity="0.45">
+    <path d="M74 128H448"/>
+    <path d="M782 234H1106"/>
+    <path d="M804 268H1128" stroke-opacity="0.25"/>
+    <path d="M102 162H386" stroke-opacity="0.2"/>
+  </g>
+  <text x="78" y="584" fill="#eefcff" font-size="72" font-family="Pretendard, Arial, sans-serif" font-weight="700">소드아트온라인</text>
+  <text x="80" y="640" fill="#c9f8ff" font-size="28" font-family="Pretendard, Arial, sans-serif">로그아웃할 수 없는 가상 MMO · 공중 도시 · 검과 레이드</text>
+</svg>

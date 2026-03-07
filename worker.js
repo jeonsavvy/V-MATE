@@ -5,6 +5,7 @@ import { mergeChatHandlerContexts, resolveChatHandlerContext } from "./server/mo
 import { getRequestBodyLimitBytes } from "./server/modules/runtime-config.js";
 import { resolveRuntimeChatHandlerContext } from "./server/modules/runtime-chat-context.js";
 import { createTraceId } from "./server/modules/trace-id.js";
+import { handlePlatformApi } from "./server/platform/api.js";
 
 const CHAT_API_PATH = "/api/chat";
 const CLIENT_RUNTIME_ENV_KEYS = [
@@ -19,6 +20,9 @@ const CLIENT_RUNTIME_ENV_KEYS = [
 
 const isChatApiRequest = (pathname) =>
   pathname === CHAT_API_PATH || pathname === `${CHAT_API_PATH}/`;
+
+const isPlatformApiRequest = (pathname) =>
+  pathname.startsWith("/api/") && !isChatApiRequest(pathname);
 
 const createRequestBodyTooLargeError = (maxBodyBytes) => {
   const error = new Error(`Request body exceeds ${maxBodyBytes} bytes.`);
@@ -96,12 +100,15 @@ const readRequestBodyWithLimit = async (request, maxBodyBytes) => {
 
 const toEvent = async (request, maxBodyBytes) => {
   let body = "";
+  const url = new URL(request.url);
 
   body = await readRequestBodyWithLimit(request, maxBodyBytes);
 
   return {
     httpMethod: request.method,
     headers: Object.fromEntries(request.headers.entries()),
+    path: url.pathname,
+    queryStringParameters: Object.fromEntries(url.searchParams.entries()),
     body,
   };
 };
@@ -154,6 +161,70 @@ const handleChatApi = async (request, env, chatHandlerImpl, chatHandlerContext) 
     });
     const handlerContext = mergeChatHandlerContexts(runtimeContext, configuredContext);
     const result = await chatHandlerImpl(event, handlerContext);
+    return toWorkerResponse(result, headers);
+  } catch (error) {
+    if (error?.code === "REQUEST_BODY_TOO_LARGE") {
+      return toWorkerResponse(
+        buildApiErrorResult({
+          statusCode: 413,
+          headers,
+          startedAtMs: requestStartedAt,
+          traceId: requestTraceId,
+          error: "Request body is too large.",
+          errorCode: "REQUEST_BODY_TOO_LARGE",
+        }),
+        headers
+      );
+    }
+
+    return toWorkerResponse(
+      buildApiErrorResult({
+        statusCode: 500,
+        headers,
+        startedAtMs: requestStartedAt,
+        traceId: requestTraceId,
+        error: "Internal server error.",
+        errorCode: "INTERNAL_SERVER_ERROR",
+        details: process.env.CLOUDFLARE_DEV ? error?.message || String(error) : undefined,
+      }),
+      headers
+    );
+  }
+};
+
+const handlePlatformApiRequest = async (request, env) => {
+  syncWorkerEnvToProcessEnv(env);
+  const requestStartedAt = Date.now();
+  const requestTraceId = createTraceId();
+  const origin = request.headers.get("origin");
+  const originAllowed = isOriginAllowed(origin);
+  const headers = {
+    ...buildHeaders(originAllowed, origin),
+    "X-V-MATE-Trace-Id": requestTraceId,
+  };
+
+  if (!originAllowed) {
+    return toWorkerResponse(
+      buildApiErrorResult({
+        statusCode: 403,
+        headers,
+        startedAtMs: requestStartedAt,
+        traceId: requestTraceId,
+        error: "Origin is not allowed.",
+        errorCode: "ORIGIN_NOT_ALLOWED",
+      }),
+      headers
+    );
+  }
+
+  try {
+    const event = await toEvent(request, getRequestBodyLimitBytes());
+    const result = await handlePlatformApi({
+      event,
+      headers,
+      startedAtMs: requestStartedAt,
+      traceId: requestTraceId,
+    });
     return toWorkerResponse(result, headers);
   } catch (error) {
     if (error?.code === "REQUEST_BODY_TOO_LARGE") {
@@ -250,6 +321,10 @@ export const createWorker = ({ chatHandlerImpl = chatHandler, chatHandlerContext
 
     if (isChatApiRequest(url.pathname)) {
       return handleChatApi(request, env, chatHandlerImpl, chatHandlerContext);
+    }
+
+    if (isPlatformApiRequest(url.pathname)) {
+      return handlePlatformApiRequest(request, env);
     }
 
     return serveStaticAsset(request, env);

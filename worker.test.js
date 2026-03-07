@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
 import worker, { createWorker } from './worker.js';
+import { resetPlatformStoreForTests } from './server/platform/content-store.js';
 
 const TRACKED_ENV_KEYS = [
   'ALLOWED_ORIGINS',
@@ -28,6 +29,7 @@ const restoreEnv = () => {
 
 afterEach(() => {
   restoreEnv();
+  resetPlatformStoreForTests();
 });
 
 beforeEach(() => {
@@ -50,6 +52,30 @@ test('routes /api/chat OPTIONS preflight request to chat handler', async () => {
 
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('access-control-allow-origin'), 'http://localhost:5173');
+});
+
+test('serves platform home api payload from /api/home', async () => {
+  const request = new Request('https://example.com/api/home', {
+    method: 'GET',
+    headers: {
+      Origin: 'http://localhost:5173',
+    },
+  });
+
+  const response = await worker.fetch(request, {
+    ALLOWED_ORIGINS: 'http://localhost:5173',
+    ALLOW_ALL_ORIGINS: 'false',
+    ALLOW_NON_BROWSER_ORIGIN: 'false',
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('access-control-allow-origin'), 'http://localhost:5173');
+  const payload = await response.json();
+  assert.equal(payload.home?.defaultTab, 'characters');
+  assert.deepEqual(payload.home?.filterChips, ['신작', '태그']);
+  assert.equal(Array.isArray(payload.home?.characterFeed?.items), true);
+  assert.equal(Array.isArray(payload.home?.worldFeed?.items), true);
+  assert.equal('presetShelves' in payload, false);
 });
 
 test('returns structured 405 when /api/chat is requested with GET', async () => {

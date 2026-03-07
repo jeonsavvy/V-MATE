@@ -45,3 +45,9 @@ test('vite config keeps supabase-related chunks out of html modulepreload list',
   assert.ok(viteConfig.includes("!dependency.includes('vendor-supabase')"));
   assert.ok(viteConfig.includes("!dependency.includes('historySupabaseStore')"));
 });
+
+test('.gitignore no longer ignores tracked sql migrations globally', async () => {
+  const gitignore = await readUtf8('.gitignore');
+
+  assert.equal(gitignore.includes('*.sql'), false);
+});

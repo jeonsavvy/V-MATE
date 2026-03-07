@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-labelledby="title desc">
+  <title id="title">판타지 이세계 월드 커버</title>
+  <desc id="desc">석양이 비치는 성벽과 초원, 마법 오라가 감도는 판타지 도시 배경</desc>
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#28155a"/>
+      <stop offset="46%" stop-color="#8b5cf6"/>
+      <stop offset="100%" stop-color="#f9c46b"/>
+    </linearGradient>
+    <linearGradient id="field" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#254b2d"/>
+      <stop offset="100%" stop-color="#7fc06d"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="720" rx="36" fill="url(#sky)"/>
+  <circle cx="910" cy="160" r="130" fill="#ffe7af" opacity="0.32"/>
+  <path d="M0 496C170 460 308 510 470 444C628 380 726 326 904 356C1062 382 1148 452 1200 432V720H0Z" fill="url(#field)"/>
+  <g fill="#fff0d3" opacity="0.78">
+    <rect x="428" y="252" width="38" height="210" rx="10"/>
+    <rect x="468" y="206" width="46" height="256" rx="12"/>
+    <rect x="516" y="160" width="58" height="302" rx="14"/>
+    <rect x="576" y="228" width="42" height="234" rx="12"/>
+    <rect x="620" y="274" width="34" height="188" rx="10"/>
+  </g>
+  <g stroke="#f6e8ff" stroke-opacity="0.34">
+    <path d="M210 124C284 92 324 92 410 134" stroke-width="3" fill="none"/>
+    <path d="M766 98C844 68 914 74 1010 120" stroke-width="3" fill="none"/>
+    <circle cx="354" cy="184" r="8" fill="#f6e8ff" stroke="none"/>
+    <circle cx="814" cy="164" r="10" fill="#f6e8ff" stroke="none"/>
+  </g>
+  <text x="76" y="584" fill="#fff7ea" font-size="76" font-family="Pretendard, Arial, sans-serif" font-weight="700">판타지 이세계</text>
+  <text x="80" y="642" fill="#fff0d5" font-size="28" font-family="Pretendard, Arial, sans-serif">모험 길드 · 마법 도시 · 낯선 이방인으로 깨어나는 첫날</text>
+</svg>

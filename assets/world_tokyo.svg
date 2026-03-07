@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-labelledby="title desc">
+  <title id="title">도쿄 나이트 월드 커버</title>
+  <desc id="desc">네온 간판과 비오는 거리, 푸른빛 도시 야경이 있는 현실 도쿄 배경</desc>
+  <defs>
+    <linearGradient id="night" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0a1229"/>
+      <stop offset="52%" stop-color="#1b2f56"/>
+      <stop offset="100%" stop-color="#111827"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="720" rx="36" fill="url(#night)"/>
+  <path d="M0 522C136 470 286 520 452 464C612 408 736 382 944 420C1050 438 1138 470 1200 454V720H0Z" fill="#08101f" opacity="0.86"/>
+  <g opacity="0.92">
+    <rect x="128" y="188" width="116" height="286" rx="14" fill="#16223f"/>
+    <rect x="258" y="142" width="138" height="332" rx="14" fill="#12203b"/>
+    <rect x="418" y="210" width="108" height="264" rx="14" fill="#1f3159"/>
+    <rect x="554" y="128" width="158" height="346" rx="16" fill="#142645"/>
+    <rect x="730" y="174" width="124" height="300" rx="14" fill="#1b2b4d"/>
+    <rect x="872" y="154" width="152" height="320" rx="16" fill="#101c36"/>
+  </g>
+  <g fill="#7de8ff" opacity="0.78">
+    <rect x="158" y="224" width="50" height="14" rx="7"/>
+    <rect x="286" y="182" width="80" height="18" rx="8"/>
+    <rect x="582" y="168" width="102" height="22" rx="10"/>
+    <rect x="900" y="198" width="90" height="20" rx="10" fill="#ff6ad5"/>
+    <rect x="768" y="220" width="58" height="16" rx="8" fill="#98ff9d"/>
+  </g>
+  <path d="M72 582C312 558 554 642 824 594C974 568 1060 532 1140 512" stroke="#9cf6ff" stroke-opacity="0.24" stroke-width="6" fill="none"/>
+  <text x="74" y="590" fill="#f4fbff" font-size="76" font-family="Pretendard, Arial, sans-serif" font-weight="700">현실의 도쿄</text>
+  <text x="78" y="646" fill="#d5ecff" font-size="28" font-family="Pretendard, Arial, sans-serif">비 오는 골목 · 심야 편의점 · 친구와 귀가 전 마지막 대화</text>
+</svg>
