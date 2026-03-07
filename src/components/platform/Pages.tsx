@@ -493,6 +493,8 @@ const splitCommaValues = (value: string) =>
     .map((item) => item.trim())
     .filter(Boolean)
 
+const selectStyle = { colorScheme: 'dark' as const }
+
 export function CreateCharacterPage({ chrome }: { chrome: PlatformPageChromeProps }) {
   const [name, setName] = useState('')
   const [headline, setHeadline] = useState('')
@@ -504,7 +506,6 @@ export function CreateCharacterPage({ chrome }: { chrome: PlatformPageChromeProp
   const [voice, setVoice] = useState('')
   const [relationship, setRelationship] = useState('')
   const [forbiddenTone, setForbiddenTone] = useState('')
-  const [defaultHonorific, setDefaultHonorific] = useState('')
   const [coreArchetype, setCoreArchetype] = useState('')
   const [speechStyle, setSpeechStyle] = useState('')
   const [socialDistanceDefault, setSocialDistanceDefault] = useState('')
@@ -518,12 +519,10 @@ export function CreateCharacterPage({ chrome }: { chrome: PlatformPageChromeProp
   const [linkedWorldReason, setLinkedWorldReason] = useState('')
   const [defaultOpeningContext, setDefaultOpeningContext] = useState('')
   const [defaultRelationshipContext, setDefaultRelationshipContext] = useState('')
-  const [advancedCoverImageUrl, setAdvancedCoverImageUrl] = useState('')
   const [processingSlotId, setProcessingSlotId] = useState<string | null>(null)
   const [availableWorlds, setAvailableWorlds] = useState<WorldSummary[]>([])
   const [imageSlots, setImageSlots] = useState<ImageSlotDraft[]>([
     createInitialCharacterSlot('main', '대표 이미지', '기본 대표 비주얼', '100'),
-    createInitialCharacterSlot('normal', '기본 표정 / 기본 장면', '특수 감정이 없을 때', '90'),
     createInitialCharacterSlot('happy', '긍정적 분위기', '반가움, 편안함, 만족감이 드러날 때', '80'),
     createInitialCharacterSlot('angry', '갈등 / 감정 고조', '감정이 높아지거나 대치가 생길 때', '80'),
   ])
@@ -570,53 +569,47 @@ export function CreateCharacterPage({ chrome }: { chrome: PlatformPageChromeProp
             <div className="grid gap-4">
               <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="캐릭터 이름" className="bg-white/5 text-white placeholder:text-white/35" />
               <Input value={headline} onChange={(event) => setHeadline(event.target.value)} placeholder="한 줄 소개" className="bg-white/5 text-white placeholder:text-white/35" />
-              <textarea value={summary} onChange={(event) => setSummary(event.target.value)} placeholder="캐릭터 설명" className="min-h-[180px] rounded-[1.5rem] border border-white/10 bg-white/5 px-4 py-4 text-[15px] leading-7 text-white outline-none placeholder:text-white/35" />
+              <textarea value={summary} onChange={(event) => setSummary(event.target.value)} placeholder="캐릭터 소개와 핵심 매력을 적어주세요." className="min-h-[180px] rounded-[1.5rem] border border-white/10 bg-white/5 px-4 py-4 text-[15px] leading-7 text-white outline-none placeholder:text-white/35" />
               <Input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="태그 (쉼표로 구분)" className="bg-white/5 text-white placeholder:text-white/35" />
               <div className="grid gap-4 md:grid-cols-2">
                 <label className="space-y-2 text-sm text-white/62">
                   <span>공개 상태</span>
-                  <select value={visibility} onChange={(event) => setVisibility(event.target.value as typeof visibility)} className="h-12 w-full rounded-[1rem] border border-white/10 bg-white/5 px-4 text-white outline-none">
-                    <option value="private">비공개</option>
-                    <option value="unlisted">링크 공개</option>
-                    <option value="public">전체 공개</option>
+                  <select value={visibility} onChange={(event) => setVisibility(event.target.value as typeof visibility)} className="h-12 w-full rounded-[1rem] border border-white/10 bg-[#15181d] px-4 text-white outline-none" style={selectStyle}>
+                    <option className="bg-[#15181d] text-white" value="private">비공개</option>
+                    <option className="bg-[#15181d] text-white" value="unlisted">링크 공개</option>
+                    <option className="bg-[#15181d] text-white" value="public">전체 공개</option>
                   </select>
                 </label>
                 <label className="space-y-2 text-sm text-white/62">
                   <span>원작 여부</span>
-                  <select value={sourceType} onChange={(event) => setSourceType(event.target.value as typeof sourceType)} className="h-12 w-full rounded-[1rem] border border-white/10 bg-white/5 px-4 text-white outline-none">
-                    <option value="original">오리지널</option>
-                    <option value="derivative">2차창작</option>
+                  <select value={sourceType} onChange={(event) => setSourceType(event.target.value as typeof sourceType)} className="h-12 w-full rounded-[1rem] border border-white/10 bg-[#15181d] px-4 text-white outline-none" style={selectStyle}>
+                    <option className="bg-[#15181d] text-white" value="original">오리지널</option>
+                    <option className="bg-[#15181d] text-white" value="derivative">2차창작</option>
                   </select>
                 </label>
               </div>
             </div>
           </PageSection>
 
-          <PageSection title="캐릭터 프로필">
-            <div className="grid gap-4 md:grid-cols-2">
-              <textarea value={personality} onChange={(event) => setPersonality(event.target.value)} placeholder="성격" className="min-h-[120px] rounded-[1.3rem] border border-white/10 bg-white/5 px-4 py-3 text-white outline-none placeholder:text-white/35" />
-              <textarea value={voice} onChange={(event) => setVoice(event.target.value)} placeholder="말투" className="min-h-[120px] rounded-[1.3rem] border border-white/10 bg-white/5 px-4 py-3 text-white outline-none placeholder:text-white/35" />
-              <textarea value={relationship} onChange={(event) => setRelationship(event.target.value)} placeholder="관계 기본선" className="min-h-[120px] rounded-[1.3rem] border border-white/10 bg-white/5 px-4 py-3 text-white outline-none placeholder:text-white/35 md:col-span-2" />
-              <textarea value={forbiddenTone} onChange={(event) => setForbiddenTone(event.target.value)} placeholder="금지 어조 / 피해야 할 말투" className="min-h-[120px] rounded-[1.3rem] border border-white/10 bg-white/5 px-4 py-3 text-white outline-none placeholder:text-white/35" />
-              <Input value={defaultHonorific} onChange={(event) => setDefaultHonorific(event.target.value)} placeholder="기본 호칭" className="bg-white/5 text-white placeholder:text-white/35" />
-            </div>
-          </PageSection>
-
-          <PageSection title="프롬프트 엔지니어링">
+          <PageSection title="캐릭터 설정">
             <div className="grid gap-4 md:grid-cols-3">
-              <Input value={coreArchetype} onChange={(event) => setCoreArchetype(event.target.value)} placeholder="core_archetype" className="bg-white/5 text-white placeholder:text-white/35" />
-              <Input value={speechStyle} onChange={(event) => setSpeechStyle(event.target.value)} placeholder="speech_style" className="bg-white/5 text-white placeholder:text-white/35" />
-              <Input value={socialDistanceDefault} onChange={(event) => setSocialDistanceDefault(event.target.value)} placeholder="social_distance_default" className="bg-white/5 text-white placeholder:text-white/35" />
-              <Input value={roleTendency} onChange={(event) => setRoleTendency(event.target.value)} placeholder="role_tendency" className="bg-white/5 text-white placeholder:text-white/35" />
-              <Input value={conflictStyle} onChange={(event) => setConflictStyle(event.target.value)} placeholder="conflict_style" className="bg-white/5 text-white placeholder:text-white/35" />
-              <Input value={warmthLevel} onChange={(event) => setWarmthLevel(event.target.value)} placeholder="warmth_level" className="bg-white/5 text-white placeholder:text-white/35" />
-              <Input value={romanceTendency} onChange={(event) => setRomanceTendency(event.target.value)} placeholder="romance_tendency" className="bg-white/5 text-white placeholder:text-white/35" />
-              <Input value={tabooTopics} onChange={(event) => setTabooTopics(event.target.value)} placeholder="taboo_topics (쉼표로 구분)" className="bg-white/5 text-white placeholder:text-white/35 md:col-span-2" />
-              <Input value={worldFitTags} onChange={(event) => setWorldFitTags(event.target.value)} placeholder="world_fit_tags (쉼표로 구분)" className="bg-white/5 text-white placeholder:text-white/35 md:col-span-3" />
+              <textarea value={personality} onChange={(event) => setPersonality(event.target.value)} placeholder="성격과 기본 매력을 적어주세요. 예) 무심한 척 챙기고, 가까워질수록 장난이 늘어남" className="min-h-[120px] rounded-[1.3rem] border border-white/10 bg-white/5 px-4 py-3 text-white outline-none placeholder:text-white/35 md:col-span-2" />
+              <textarea value={voice} onChange={(event) => setVoice(event.target.value)} placeholder="말투를 적어주세요. 예) 짧은 문장, 반말, 무심한 어투" className="min-h-[120px] rounded-[1.3rem] border border-white/10 bg-white/5 px-4 py-3 text-white outline-none placeholder:text-white/35" />
+              <textarea value={relationship} onChange={(event) => setRelationship(event.target.value)} placeholder="처음 대화할 때 어느 정도 거리에서 시작할지 적어주세요. 예) 낯설지만 금방 가까워질 수 있는 거리" className="min-h-[120px] rounded-[1.3rem] border border-white/10 bg-white/5 px-4 py-3 text-white outline-none placeholder:text-white/35 md:col-span-2" />
+              <textarea value={forbiddenTone} onChange={(event) => setForbiddenTone(event.target.value)} placeholder="피해야 할 말투나 깨지면 안 되는 설정이 있으면 적어주세요." className="min-h-[120px] rounded-[1.3rem] border border-white/10 bg-white/5 px-4 py-3 text-white outline-none placeholder:text-white/35" />
+              <Input value={coreArchetype} onChange={(event) => setCoreArchetype(event.target.value)} placeholder="캐릭터 한 줄 정체성" className="bg-white/5 text-white placeholder:text-white/35" />
+              <Input value={speechStyle} onChange={(event) => setSpeechStyle(event.target.value)} placeholder="말투 요약" className="bg-white/5 text-white placeholder:text-white/35" />
+              <Input value={socialDistanceDefault} onChange={(event) => setSocialDistanceDefault(event.target.value)} placeholder="초기 거리감" className="bg-white/5 text-white placeholder:text-white/35" />
+              <Input value={roleTendency} onChange={(event) => setRoleTendency(event.target.value)} placeholder="월드 안 역할" className="bg-white/5 text-white placeholder:text-white/35" />
+              <Input value={conflictStyle} onChange={(event) => setConflictStyle(event.target.value)} placeholder="갈등 반응 방식" className="bg-white/5 text-white placeholder:text-white/35" />
+              <Input value={warmthLevel} onChange={(event) => setWarmthLevel(event.target.value)} placeholder="따뜻함 정도" className="bg-white/5 text-white placeholder:text-white/35" />
+              <Input value={romanceTendency} onChange={(event) => setRomanceTendency(event.target.value)} placeholder="로맨스 결" className="bg-white/5 text-white placeholder:text-white/35" />
+              <Input value={tabooTopics} onChange={(event) => setTabooTopics(event.target.value)} placeholder="피해야 할 주제 (쉼표로 구분)" className="bg-white/5 text-white placeholder:text-white/35 md:col-span-2" />
+              <Input value={worldFitTags} onChange={(event) => setWorldFitTags(event.target.value)} placeholder="잘 맞는 월드 태그 (쉼표로 구분)" className="bg-white/5 text-white placeholder:text-white/35 md:col-span-3" />
             </div>
           </PageSection>
 
-          <PageSection title="이미지 세트">
+          <PageSection title="캐릭터 이미지">
             <div className="space-y-4">
               <div className="flex items-center justify-between gap-3">
                 <div>
@@ -674,7 +667,7 @@ export function CreateCharacterPage({ chrome }: { chrome: PlatformPageChromeProp
                       </div>
                       <div className="md:col-span-2 flex justify-end">
                         {slot.slot !== 'main' ? (
-                          <Button variant="ghost" onClick={() => setImageSlots((prev) => prev.filter((item) => item.id !== slot.id))}>
+                          <Button variant="outline" className="border-[#d92c63]/40 text-[#ff8ab2] hover:bg-[#d92c63]/10 hover:text-white" onClick={() => setImageSlots((prev) => prev.filter((item) => item.id !== slot.id))}>
                             <Trash2 className="h-4 w-4" />슬롯 삭제
                           </Button>
                         ) : null}
@@ -683,21 +676,16 @@ export function CreateCharacterPage({ chrome }: { chrome: PlatformPageChromeProp
                   </div>
                 ))}
               </div>
-
-              <details className="rounded-[1.3rem] border border-white/10 bg-white/[0.04] p-4 text-sm text-white/62">
-                <summary className="cursor-pointer font-semibold text-white">고급 옵션</summary>
-                <Input value={advancedCoverImageUrl} onChange={(event) => setAdvancedCoverImageUrl(event.target.value)} placeholder="고급 이미지 URL (선택)" className="mt-3 bg-white/5 text-white placeholder:text-white/35" />
-              </details>
             </div>
           </PageSection>
 
-          <PageSection title="월드 연결">
+          <PageSection title="연결할 월드">
             <div className="grid gap-4 md:grid-cols-2">
               <label className="space-y-2 text-sm text-white/62">
                 <span>추천 월드</span>
-                <select value={linkedWorldSlug} onChange={(event) => setLinkedWorldSlug(event.target.value)} className="h-12 w-full rounded-[1rem] border border-white/10 bg-white/5 px-4 text-white outline-none">
-                  <option value="">선택 안 함</option>
-                  {availableWorlds.map((world) => <option key={world.id} value={world.slug}>{world.name}</option>)}
+                <select value={linkedWorldSlug} onChange={(event) => setLinkedWorldSlug(event.target.value)} className="h-12 w-full rounded-[1rem] border border-white/10 bg-[#15181d] px-4 text-white outline-none" style={selectStyle}>
+                  <option className="bg-[#15181d] text-white" value="">선택 안 함</option>
+                  {availableWorlds.map((world) => <option className="bg-[#15181d] text-white" key={world.id} value={world.slug}>{world.name}</option>)}
                 </select>
               </label>
               <Input value={linkedWorldReason} onChange={(event) => setLinkedWorldReason(event.target.value)} placeholder="연결 이유" className="bg-white/5 text-white placeholder:text-white/35" />
@@ -706,7 +694,7 @@ export function CreateCharacterPage({ chrome }: { chrome: PlatformPageChromeProp
             </div>
           </PageSection>
 
-          <Button disabled={processingSlotId !== null || !name.trim() || !summary.trim() || (!(mainSlot?.assets.length) && !advancedCoverImageUrl.trim())} onClick={() => {
+          <Button disabled={processingSlotId !== null || !name.trim() || !summary.trim() || !mainSlot?.assets.length} onClick={() => {
             void (async () => {
               const slotAssets = imageSlots.flatMap((slot) => slot.assets)
               const uploadedAssets = slotAssets.length > 0
@@ -722,7 +710,7 @@ export function CreateCharacterPage({ chrome }: { chrome: PlatformPageChromeProp
                   width: asset.width,
                   height: asset.height,
                 }))
-              const detailUrl = mainRecord?.detailUrl || advancedCoverImageUrl
+              const detailUrl = mainRecord?.detailUrl || ''
               const cardUrl = mainRecord?.cardUrl || detailUrl
               const { item } = await platformApi.createCharacter({
                 name,
@@ -738,12 +726,10 @@ export function CreateCharacterPage({ chrome }: { chrome: PlatformPageChromeProp
                   personality,
                   relationship,
                   forbiddenTone,
-                  defaultHonorific,
                 },
                 speechStyleJson: {
                   voice,
                   forbiddenTone,
-                  defaultHonorific,
                 },
                 promptProfileJson: {
                   coreArchetype,
@@ -779,7 +765,7 @@ export function CreateCharacterPage({ chrome }: { chrome: PlatformPageChromeProp
         <div className="space-y-4">
           <UploadHint title="업로드 규격" body="캐릭터 이미지는 3:4 비율, 최소 1440×1920 기준으로 준비합니다. 정사각형이나 세로가 짧은 이미지는 자동 크롭됩니다." />
           <UploadHint title="이미지 세트 운영" body="대표 이미지 외에 happy / angry / night / battle 같은 감정·상황 슬롯을 추가하고, 각 이미지가 언제 쓰여야 하는지 규칙을 같이 입력할 수 있습니다." />
-          <UploadHint title="프롬프트 엔지니어링 팁" body="성격/말투와 별개로 사회적 거리감, 갈등 방식, 금기 주제, 월드 적합 태그를 분리해서 적어두면 월드와 결합될 때 더 안정적으로 동작합니다." />
+          <UploadHint title="대화 설정 팁" body="성격/말투와 별개로 초기 거리감, 갈등 반응, 피해야 할 설정, 잘 맞는 월드 태그를 분리해서 적어두면 월드와 결합될 때 더 안정적으로 동작합니다." />
         </div>
       </div>
     </PageFrame>
@@ -806,7 +792,6 @@ export function CreateWorldPage({ chrome }: { chrome: PlatformPageChromeProps })
   const [worldTerms, setWorldTerms] = useState('')
   const [recommendedCharacterSlug, setRecommendedCharacterSlug] = useState('')
   const [recommendedCharacterReason, setRecommendedCharacterReason] = useState('')
-  const [advancedCoverImageUrl, setAdvancedCoverImageUrl] = useState('')
   const [isProcessingImage, setIsProcessingImage] = useState(false)
   const [imageAssets, setImageAssets] = useState<ResizedImageAsset[]>([])
   const [availableCharacters, setAvailableCharacters] = useState<CharacterSummary[]>([])
@@ -836,17 +821,17 @@ export function CreateWorldPage({ chrome }: { chrome: PlatformPageChromeProps })
               <div className="grid gap-4 md:grid-cols-2">
                 <label className="space-y-2 text-sm text-white/62">
                   <span>공개 상태</span>
-                  <select value={visibility} onChange={(event) => setVisibility(event.target.value as typeof visibility)} className="h-12 w-full rounded-[1rem] border border-white/10 bg-white/5 px-4 text-white outline-none">
-                    <option value="private">비공개</option>
-                    <option value="unlisted">링크 공개</option>
-                    <option value="public">전체 공개</option>
+                  <select value={visibility} onChange={(event) => setVisibility(event.target.value as typeof visibility)} className="h-12 w-full rounded-[1rem] border border-white/10 bg-[#15181d] px-4 text-white outline-none" style={selectStyle}>
+                    <option className="bg-[#15181d] text-white" value="private">비공개</option>
+                    <option className="bg-[#15181d] text-white" value="unlisted">링크 공개</option>
+                    <option className="bg-[#15181d] text-white" value="public">전체 공개</option>
                   </select>
                 </label>
                 <label className="space-y-2 text-sm text-white/62">
                   <span>원작 여부</span>
-                  <select value={sourceType} onChange={(event) => setSourceType(event.target.value as typeof sourceType)} className="h-12 w-full rounded-[1rem] border border-white/10 bg-white/5 px-4 text-white outline-none">
-                    <option value="original">오리지널</option>
-                    <option value="derivative">2차창작</option>
+                  <select value={sourceType} onChange={(event) => setSourceType(event.target.value as typeof sourceType)} className="h-12 w-full rounded-[1rem] border border-white/10 bg-[#15181d] px-4 text-white outline-none" style={selectStyle}>
+                    <option className="bg-[#15181d] text-white" value="original">오리지널</option>
+                    <option className="bg-[#15181d] text-white" value="derivative">2차창작</option>
                   </select>
                 </label>
               </div>
@@ -855,22 +840,22 @@ export function CreateWorldPage({ chrome }: { chrome: PlatformPageChromeProps })
 
           <PageSection title="월드 설명">
             <div className="grid gap-4 md:grid-cols-2">
-              <Input value={genre} onChange={(event) => setGenre(event.target.value)} placeholder="genre" className="bg-white/5 text-white placeholder:text-white/35" />
-              <Input value={settingPeriod} onChange={(event) => setSettingPeriod(event.target.value)} placeholder="setting_period" className="bg-white/5 text-white placeholder:text-white/35" />
-              <Input value={powerSystem} onChange={(event) => setPowerSystem(event.target.value)} placeholder="power_system" className="bg-white/5 text-white placeholder:text-white/35" />
-              <Input value={socialStructure} onChange={(event) => setSocialStructure(event.target.value)} placeholder="social_structure" className="bg-white/5 text-white placeholder:text-white/35" />
+              <Input value={genre} onChange={(event) => setGenre(event.target.value)} placeholder="장르" className="bg-white/5 text-white placeholder:text-white/35" />
+              <Input value={settingPeriod} onChange={(event) => setSettingPeriod(event.target.value)} placeholder="시대 / 배경 시간" className="bg-white/5 text-white placeholder:text-white/35" />
+              <Input value={powerSystem} onChange={(event) => setPowerSystem(event.target.value)} placeholder="힘의 규칙 (예: 마법, 초능력, 장비)" className="bg-white/5 text-white placeholder:text-white/35" />
+              <Input value={socialStructure} onChange={(event) => setSocialStructure(event.target.value)} placeholder="사회 구조 (예: 길드, 학교, 조직)" className="bg-white/5 text-white placeholder:text-white/35" />
               <textarea value={rules} onChange={(event) => setRules(event.target.value)} placeholder="월드 규칙" className="min-h-[140px] rounded-[1.2rem] border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none placeholder:text-white/35 md:col-span-2" />
             </div>
           </PageSection>
 
           <PageSection title="장르 / 무드 / 장소">
             <div className="grid gap-4 md:grid-cols-2">
-              <Input value={starterLocations} onChange={(event) => setStarterLocations(event.target.value)} placeholder="starter_locations (쉼표로 구분)" className="bg-white/5 text-white placeholder:text-white/35" />
-              <Input value={dangerLevel} onChange={(event) => setDangerLevel(event.target.value)} placeholder="danger_level" className="bg-white/5 text-white placeholder:text-white/35" />
-              <Input value={toneKeywords} onChange={(event) => setToneKeywords(event.target.value)} placeholder="tone_keywords (쉼표로 구분)" className="bg-white/5 text-white placeholder:text-white/35" />
-              <Input value={roleSlots} onChange={(event) => setRoleSlots(event.target.value)} placeholder="role_slots (쉼표로 구분)" className="bg-white/5 text-white placeholder:text-white/35" />
-              <textarea value={forbiddenBreaks} onChange={(event) => setForbiddenBreaks(event.target.value)} placeholder="forbidden_breaks" className="min-h-[120px] rounded-[1.2rem] border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none placeholder:text-white/35" />
-              <textarea value={worldTerms} onChange={(event) => setWorldTerms(event.target.value)} placeholder="world_terms (쉼표로 구분하거나 설명)" className="min-h-[120px] rounded-[1.2rem] border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none placeholder:text-white/35" />
+              <Input value={starterLocations} onChange={(event) => setStarterLocations(event.target.value)} placeholder="첫 장면 장소 (쉼표로 구분)" className="bg-white/5 text-white placeholder:text-white/35" />
+              <Input value={dangerLevel} onChange={(event) => setDangerLevel(event.target.value)} placeholder="위험도 / 긴장감" className="bg-white/5 text-white placeholder:text-white/35" />
+              <Input value={toneKeywords} onChange={(event) => setToneKeywords(event.target.value)} placeholder="무드 키워드 (쉼표로 구분)" className="bg-white/5 text-white placeholder:text-white/35" />
+              <Input value={roleSlots} onChange={(event) => setRoleSlots(event.target.value)} placeholder="어울리는 역할 (쉼표로 구분)" className="bg-white/5 text-white placeholder:text-white/35" />
+              <textarea value={forbiddenBreaks} onChange={(event) => setForbiddenBreaks(event.target.value)} placeholder="깨지면 안 되는 월드 규칙 / 금지 전개" className="min-h-[120px] rounded-[1.2rem] border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none placeholder:text-white/35" />
+              <textarea value={worldTerms} onChange={(event) => setWorldTerms(event.target.value)} placeholder="월드 안에서 자주 쓰는 용어, 조직명, 장소명" className="min-h-[120px] rounded-[1.2rem] border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none placeholder:text-white/35" />
             </div>
           </PageSection>
 
@@ -878,19 +863,19 @@ export function CreateWorldPage({ chrome }: { chrome: PlatformPageChromeProps })
             <div className="grid gap-4 md:grid-cols-2">
               <label className="space-y-2 text-sm text-white/62">
                 <span>추천 캐릭터</span>
-                <select value={recommendedCharacterSlug} onChange={(event) => setRecommendedCharacterSlug(event.target.value)} className="h-12 w-full rounded-[1rem] border border-white/10 bg-white/5 px-4 text-white outline-none">
-                  <option value="">선택 안 함</option>
-                  {availableCharacters.map((character) => <option key={character.id} value={character.slug}>{character.name}</option>)}
+                <select value={recommendedCharacterSlug} onChange={(event) => setRecommendedCharacterSlug(event.target.value)} className="h-12 w-full rounded-[1rem] border border-white/10 bg-[#15181d] px-4 text-white outline-none" style={selectStyle}>
+                  <option className="bg-[#15181d] text-white" value="">선택 안 함</option>
+                  {availableCharacters.map((character) => <option className="bg-[#15181d] text-white" key={character.id} value={character.slug}>{character.name}</option>)}
                 </select>
               </label>
               <Input value={recommendedCharacterReason} onChange={(event) => setRecommendedCharacterReason(event.target.value)} placeholder="연결 이유" className="bg-white/5 text-white placeholder:text-white/35" />
             </div>
           </PageSection>
 
-          <PageSection title="이미지 / 커버">
+          <PageSection title="월드 이미지">
             <div className="space-y-4">
               <label className="rounded-[1.5rem] border border-dashed border-white/12 bg-white/[0.03] px-4 py-4 text-sm text-white/62">
-                <span className="font-semibold text-white">월드 커버 업로드</span>
+                <span className="font-semibold text-white">월드 이미지 업로드</span>
                 <input
                   type="file"
                   accept="image/*"
@@ -909,19 +894,15 @@ export function CreateWorldPage({ chrome }: { chrome: PlatformPageChromeProps })
                   }}
                 />
               </label>
-              <details className="rounded-[1.3rem] border border-white/10 bg-white/[0.04] p-4 text-sm text-white/62">
-                <summary className="cursor-pointer font-semibold text-white">고급 옵션</summary>
-                <Input value={advancedCoverImageUrl} onChange={(event) => setAdvancedCoverImageUrl(event.target.value)} placeholder="고급 이미지 URL (선택)" className="mt-3 bg-white/5 text-white placeholder:text-white/35" />
-              </details>
             </div>
           </PageSection>
 
-          <Button disabled={isProcessingImage || !name.trim() || !summary.trim()} onClick={() => {
+          <Button disabled={isProcessingImage || !name.trim() || !summary.trim() || imageAssets.length === 0} onClick={() => {
               void (async () => {
                 const uploadedAssets = imageAssets.length > 0
                   ? await uploadPreparedAssets({ entityType: 'world', assets: imageAssets })
                   : []
-                const heroUrl = uploadedAssets.find((asset) => asset.kind === 'hero')?.url || advancedCoverImageUrl
+                const heroUrl = uploadedAssets.find((asset) => asset.kind === 'hero')?.url || ''
                 const { item } = await platformApi.createWorld({
                   name,
                   headline,
@@ -1093,7 +1074,7 @@ export function OpsPage({ chrome }: { chrome: PlatformPageChromeProps }) {
           </div>
           <div className="flex justify-end gap-3">
             <Button variant="outline" onClick={() => setPendingDelete(null)}>취소</Button>
-            <Button onClick={() => {
+            <Button className="bg-[#d92c63] text-white hover:bg-[#c12358]" onClick={() => {
               if (!pendingDelete) return
               void platformApi.deleteContent(pendingDelete.entityType, pendingDelete.id)
                 .then(() => {
@@ -1121,7 +1102,7 @@ export function OpsPage({ chrome }: { chrome: PlatformPageChromeProps }) {
                     <p className="mt-1 text-sm text-white/56">자동이면 실제 사용지표 상위 콘텐츠를, 수동이면 선택한 대상만 배너로 씁니다.</p>
                   </div>
                   <div className="flex gap-2">
-                    <Button variant={dashboard.home.heroMode === 'auto' ? 'default' : 'outline'} onClick={() => {
+                    <Button className={dashboard.home.heroMode === 'auto' ? 'bg-[#d92c63] text-white hover:bg-[#c12358]' : 'border-white/14 bg-[#15181d] text-white hover:bg-white/8'} variant={dashboard.home.heroMode === 'auto' ? 'default' : 'outline'} onClick={() => {
                       void platformApi.setBannerMode('auto')
                         .then(() => {
                           toast.success('배너를 자동 모드로 전환했습니다.')
@@ -1131,7 +1112,7 @@ export function OpsPage({ chrome }: { chrome: PlatformPageChromeProps }) {
                     }}>
                       <LayoutTemplate className="h-4 w-4" />자동
                     </Button>
-                    <Button variant={dashboard.home.heroMode === 'manual' ? 'default' : 'outline'} onClick={() => {
+                    <Button className={dashboard.home.heroMode === 'manual' ? 'bg-[#d92c63] text-white hover:bg-[#c12358]' : 'border-white/14 bg-[#15181d] text-white hover:bg-white/8'} variant={dashboard.home.heroMode === 'manual' ? 'default' : 'outline'} onClick={() => {
                       void platformApi.setBannerMode('manual')
                         .then(() => {
                           toast.success('배너를 수동 모드로 전환했습니다.')
@@ -1155,7 +1136,7 @@ export function OpsPage({ chrome }: { chrome: PlatformPageChromeProps }) {
                           <p className="font-semibold text-white">{item.name}</p>
                           <p className="mt-1 text-sm text-white/52">{item.summary}</p>
                         </div>
-                        <Button variant="outline" onClick={() => {
+                        <Button variant="outline" className="border-white/14 bg-[#15181d] text-white hover:bg-white/8" onClick={() => {
                           void platformApi.setBannerTarget(targetPath)
                             .then(() => {
                               toast.success('배너 대상을 변경했습니다.')
@@ -1186,7 +1167,7 @@ export function OpsPage({ chrome }: { chrome: PlatformPageChromeProps }) {
                                 <p className="mt-2 text-sm text-white/56">{item.summary}</p>
                               </div>
                               <div className="flex gap-2">
-                                <Button variant="outline" onClick={() => {
+                                <Button variant="outline" className={section.visible ? 'border-[#ffcc88]/40 text-[#ffd9a8] hover:bg-[#ffcc88]/10 hover:text-white' : 'border-[#62d0ff]/40 text-[#8edfff] hover:bg-[#62d0ff]/10 hover:text-white'} onClick={() => {
                                   const action = section.visible ? platformApi.hideContent : platformApi.showContent
                                   const verb = section.visible ? '숨김' : '복구'
                                   void action('character', item.id)
@@ -1198,7 +1179,7 @@ export function OpsPage({ chrome }: { chrome: PlatformPageChromeProps }) {
                                 }}>
                                   {section.visible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}{section.visible ? '숨김' : '복구'}
                                 </Button>
-                                <Button variant="ghost" onClick={() => setPendingDelete({ entityType: 'character', id: item.id, name: item.name })}>
+                                <Button variant="outline" className="border-[#d92c63]/40 text-[#ff8ab2] hover:bg-[#d92c63]/10 hover:text-white" onClick={() => setPendingDelete({ entityType: 'character', id: item.id, name: item.name })}>
                                   <Trash2 className="h-4 w-4" />삭제
                                 </Button>
                               </div>
@@ -1224,7 +1205,7 @@ export function OpsPage({ chrome }: { chrome: PlatformPageChromeProps }) {
                                 <p className="mt-2 text-sm text-white/56">{item.summary}</p>
                               </div>
                               <div className="flex gap-2">
-                                <Button variant="outline" onClick={() => {
+                                <Button variant="outline" className={section.visible ? 'border-[#ffcc88]/40 text-[#ffd9a8] hover:bg-[#ffcc88]/10 hover:text-white' : 'border-[#62d0ff]/40 text-[#8edfff] hover:bg-[#62d0ff]/10 hover:text-white'} onClick={() => {
                                   const action = section.visible ? platformApi.hideContent : platformApi.showContent
                                   const verb = section.visible ? '숨김' : '복구'
                                   void action('world', item.id)
@@ -1236,7 +1217,7 @@ export function OpsPage({ chrome }: { chrome: PlatformPageChromeProps }) {
                                 }}>
                                   {section.visible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}{section.visible ? '숨김' : '복구'}
                                 </Button>
-                                <Button variant="ghost" onClick={() => setPendingDelete({ entityType: 'world', id: item.id, name: item.name })}>
+                                <Button variant="outline" className="border-[#d92c63]/40 text-[#ff8ab2] hover:bg-[#d92c63]/10 hover:text-white" onClick={() => setPendingDelete({ entityType: 'world', id: item.id, name: item.name })}>
                                   <Trash2 className="h-4 w-4" />삭제
                                 </Button>
                               </div>

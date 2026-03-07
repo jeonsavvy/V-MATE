@@ -17,8 +17,7 @@ export default defineConfig({
         if (context.hostType === 'html') {
           return deps.filter(
             (dependency) =>
-              !dependency.includes('vendor-supabase') &&
-              !dependency.includes('historySupabaseStore')
+              !dependency.includes('vendor-supabase')
           )
         }
 

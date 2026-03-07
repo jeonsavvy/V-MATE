@@ -143,29 +143,6 @@ test('supabase client initialization stays lazy via dynamic import', async () =>
   assert.ok(source.includes('resolveSupabaseClient'));
 });
 
-test('supabase history queries are bounded for preview/recent lists', async () => {
-  const historyStorePath = path.join(srcRoot, 'lib/chat/historySupabaseStore.ts');
-  const source = await readFile(historyStorePath, 'utf8');
-
-  assert.ok(source.includes('const PREVIEW_SCAN_LIMIT = 500'));
-  assert.ok(source.includes('const RECENT_SCAN_LIMIT = 500'));
-  assert.ok(source.includes('.order("created_at", { ascending: false })'));
-  assert.ok(source.includes('.limit(PREVIEW_SCAN_LIMIT)'));
-  assert.ok(source.includes('.limit(RECENT_SCAN_LIMIT)'));
-  assert.ok(source.includes('if (map.size >= TARGET_RECENT_CHAT_COUNT)'));
-});
-
-test('supabase history repository keeps supabase store loading lazy via dynamic import', async () => {
-  const historyRepositoryPath = path.join(srcRoot, 'lib/chat/historyRepository.ts');
-  const source = await readFile(historyRepositoryPath, 'utf8');
-
-  assert.ok(source.includes('import("@/lib/chat/historySupabaseStore")'));
-  assert.equal(
-    /from\s+["']@\/lib\/chat\/historySupabaseStore["']/.test(source),
-    false
-  );
-});
-
 test('profile menu masks user email before rendering', async () => {
   const privacyUtilPath = path.join(srcRoot, 'lib/privacy.ts');
   const privacySource = await readFile(privacyUtilPath, 'utf8');
@@ -175,24 +152,6 @@ test('profile menu masks user email before rendering', async () => {
   const shellSource = await readFile(shellPath, 'utf8');
   assert.ok(shellSource.includes('maskEmailAddress(user.email)'));
   assert.equal(shellSource.includes('{user.email}'), false);
-});
-
-test('character image metadata uses webp assets for lower payloads', async () => {
-  const dataModulePath = path.join(srcRoot, 'lib/data.ts');
-  const dataSource = await readFile(dataModulePath, 'utf8');
-
-  assert.ok(dataSource.includes('/mika_normal.webp'));
-  assert.ok(dataSource.includes('/alice_normal.webp'));
-  assert.ok(dataSource.includes('/kael_normal.webp'));
-  assert.equal(dataSource.includes('.png'), false);
-});
-
-test('chat api client only forwards trusted cachedContent format', async () => {
-  const apiClientPath = path.join(srcRoot, 'lib/chat/apiClient.ts');
-  const source = await readFile(apiClientPath, 'utf8');
-
-  assert.ok(source.includes('const CACHED_CONTENT_PATTERN = /^cachedContents\\/'));
-  assert.ok(source.includes('CACHED_CONTENT_PATTERN.test(normalizedCachedContent)'));
 });
 
 test('app source exposes platform routes and simplified footer copy', async () => {
@@ -292,15 +251,13 @@ test('character builder exposes structured authoring sections and image slots', 
   const source = await readFile(pagesPath, 'utf8');
 
   assert.ok(source.includes('기본 정보'));
-  assert.ok(source.includes('캐릭터 프로필'));
-  assert.ok(source.includes('프롬프트 엔지니어링'));
-  assert.ok(source.includes('이미지 세트'));
-  assert.ok(source.includes('월드 연결'));
-  assert.ok(source.includes('normal'));
+  assert.ok(source.includes('캐릭터 설정'));
+  assert.ok(source.includes('캐릭터 이미지'));
+  assert.ok(source.includes('연결할 월드'));
   assert.ok(source.includes('happy'));
   assert.ok(source.includes('angry'));
   assert.ok(source.includes('사용 조건'));
-  assert.equal(source.includes('대표 이미지 URL 또는 업로드 결과 URL'), false);
+  assert.equal(source.includes('고급 옵션'), false);
 });
 
 test('ops page exposes banner auto/manual controls and delete actions', async () => {

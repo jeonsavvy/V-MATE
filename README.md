@@ -94,13 +94,7 @@ CLIENT_REQUEST_DEDUPE_MAX_ENTRIES=2000
 Supabase SQL Editor에서 아래 파일을 실행하세요.
 
 ```sql
-supabase/20260307_v3_character_world_reset.sql
-```
-
-같은 내용이 아래 canonical migration에도 있습니다.
-
-```sql
-supabase/migrations/20260307_v3_character_world_reset.sql
+supabase/schema.sql
 ```
 
 ### 5) 로컬 실행

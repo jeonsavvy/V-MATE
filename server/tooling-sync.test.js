@@ -43,7 +43,6 @@ test('vite config keeps supabase-related chunks out of html modulepreload list',
   assert.ok(viteConfig.includes('modulePreload'));
   assert.ok(viteConfig.includes("context.hostType === 'html'"));
   assert.ok(viteConfig.includes("!dependency.includes('vendor-supabase')"));
-  assert.ok(viteConfig.includes("!dependency.includes('historySupabaseStore')"));
 });
 
 test('.gitignore no longer ignores tracked sql migrations globally', async () => {
@@ -53,7 +52,7 @@ test('.gitignore no longer ignores tracked sql migrations globally', async () =>
 });
 
 test('platform migration upgrades existing schemas via alter-table steps', async () => {
-  const migration = await readUtf8('supabase/migrations/20260307_v3_character_world_reset.sql');
+  const migration = await readUtf8('supabase/schema.sql');
 
   assert.ok(migration.includes('alter table public.characters add column if not exists display_status'));
   assert.ok(migration.includes('alter table public.worlds add column if not exists display_status'));

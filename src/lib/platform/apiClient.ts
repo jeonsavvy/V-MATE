@@ -13,6 +13,7 @@ import type {
   WorldSummary,
 } from '@/lib/platform/types'
 import { demoPlatform } from '@/lib/platform/demoData'
+import { getBrowserOrigin } from '@/lib/browserRuntime'
 
 const resolveRuntimeEnv = () =>
   ((globalThis as { __V_MATE_RUNTIME_ENV__?: Record<string, string | undefined> }).__V_MATE_RUNTIME_ENV__ ?? {})
@@ -23,10 +24,29 @@ const resolveApiBaseUrl = () => {
     .trim()
     .replace(/\/+$/, '')
 
-  if (!configured) return '/api'
-  if (configured.endsWith('/api/chat')) return configured.slice(0, -'/api/chat'.length) + '/api'
-  if (configured.endsWith('/api')) return configured
-  return `${configured}/api`
+  const normalizeConfigured = (value: string) => {
+    if (!value) return '/api'
+    if (value.endsWith('/api/chat')) return value.slice(0, -'/api/chat'.length) + '/api'
+    if (value.endsWith('/api')) return value
+    return `${value}/api`
+  }
+
+  if (typeof window !== 'undefined') {
+    const currentOrigin = getBrowserOrigin()
+    if (!configured) return '/api'
+    try {
+      const normalized = normalizeConfigured(configured)
+      const resolved = new URL(normalized, currentOrigin)
+      if (resolved.origin !== currentOrigin) {
+        return '/api'
+      }
+      return resolved.pathname.endsWith('/api') ? resolved.pathname : '/api'
+    } catch {
+      return '/api'
+    }
+  }
+
+  return normalizeConfigured(configured)
 }
 
 const resolveAccessToken = async () => {
