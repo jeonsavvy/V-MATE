@@ -616,6 +616,34 @@ const buildGreetingMessage = ({ userAlias, characterName, bridgeProfile }) => ({
   },
 });
 
+const buildRoomSummaryFromContext = ({
+  roomRow,
+  character,
+  world,
+  bridgeProfile,
+  state,
+  greetingRow,
+  greeting,
+  userAlias,
+}) => ({
+  id: roomRow.id,
+  title: roomRow.title,
+  userAlias: userAlias || '나',
+  character: summarizeCharacter(character),
+  world: world ? summarizeWorld(world) : null,
+  bridgeProfile,
+  state,
+  messages: [{
+    id: greetingRow?.id || `assistant-${randomUUID()}`,
+    role: 'assistant',
+    createdAt: greetingRow?.created_at || nowIso(),
+    content: greeting.content_json,
+  }],
+  createdAt: roomRow.created_at,
+  updatedAt: roomRow.updated_at,
+  lastMessageAt: roomRow.last_message_at,
+});
+
 export const createRoom = async ({ event, userId, characterSlug, worldSlug = null, userAlias = '나' }) => {
   const client = await userClient(event);
   const publicReadClient = await publicClient();
@@ -659,7 +687,10 @@ export const createRoom = async ({ event, userId, characterSlug, worldSlug = nul
     resolved_prompt_snapshot_json: promptSnapshot,
     last_message_at: nowIso(),
   }).select('*').single();
-  if (roomError) throw roomError;
+  if (roomError) {
+    logServerWarn('[V-MATE] room insert failed', { message: roomError.message, code: roomError.code, userId, characterSlug, worldSlug });
+    throw roomError;
+  }
 
   const { error: stateError } = await client.from('room_state_summaries').insert({
     room_id: roomRow.id,
@@ -672,15 +703,34 @@ export const createRoom = async ({ event, userId, characterSlug, worldSlug = nul
     future_promises_json: state.futurePromises,
     world_notes_json: state.worldNotes,
   });
-  if (stateError) throw stateError;
+  if (stateError) {
+    logServerWarn('[V-MATE] room state insert failed', { message: stateError.message, code: stateError.code, roomId: roomRow.id });
+    throw stateError;
+  }
 
   const greeting = buildGreetingMessage({ userAlias, characterName: character.name, bridgeProfile });
-  const { error: messageError } = await client.from('room_messages').insert({ room_id: roomRow.id, ...greeting });
-  if (messageError) throw messageError;
+  const { data: greetingRow, error: messageError } = await client
+    .from('room_messages')
+    .insert({ room_id: roomRow.id, ...greeting })
+    .select('id, created_at')
+    .single();
+  if (messageError) {
+    logServerWarn('[V-MATE] room greeting insert failed', { message: messageError.message, code: messageError.code, roomId: roomRow.id });
+    throw messageError;
+  }
 
   await incrementChatStartCountsBestEffort({ client, character, world });
 
-  return hydrateRoom({ client, publicClientInstance: publicReadClient, row: roomRow });
+  return buildRoomSummaryFromContext({
+    roomRow,
+    character,
+    world,
+    bridgeProfile,
+    state,
+    greetingRow,
+    greeting,
+    userAlias,
+  });
 };
 
 export const getRoom = async ({ event, roomId }) => {
