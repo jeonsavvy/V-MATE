@@ -462,6 +462,49 @@ do $$ begin
     );
 exception when duplicate_object then null; end $$;
 
+do $$ begin
+  create policy "Users can insert their own character assets"
+    on public.character_assets for insert
+    with check (
+      exists (
+        select 1 from public.characters c
+        where c.id = character_assets.character_id
+          and c.owner_user_id = auth.uid()
+      )
+    );
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "Users can update their own character assets"
+    on public.character_assets for update
+    using (
+      exists (
+        select 1 from public.characters c
+        where c.id = character_assets.character_id
+          and c.owner_user_id = auth.uid()
+      )
+    )
+    with check (
+      exists (
+        select 1 from public.characters c
+        where c.id = character_assets.character_id
+          and c.owner_user_id = auth.uid()
+      )
+    );
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "Users can delete their own character assets"
+    on public.character_assets for delete
+    using (
+      exists (
+        select 1 from public.characters c
+        where c.id = character_assets.character_id
+          and c.owner_user_id = auth.uid()
+      )
+    );
+exception when duplicate_object then null; end $$;
+
 create table if not exists public.world_assets (
   id uuid primary key default gen_random_uuid(),
   world_id uuid references public.worlds on delete cascade not null,
@@ -484,6 +527,49 @@ do $$ begin
         select 1 from public.worlds w
         where w.id = world_assets.world_id
           and ((w.visibility = 'public' and w.display_status = 'visible') or w.owner_user_id = auth.uid())
+      )
+    );
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "Users can insert their own world assets"
+    on public.world_assets for insert
+    with check (
+      exists (
+        select 1 from public.worlds w
+        where w.id = world_assets.world_id
+          and w.owner_user_id = auth.uid()
+      )
+    );
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "Users can update their own world assets"
+    on public.world_assets for update
+    using (
+      exists (
+        select 1 from public.worlds w
+        where w.id = world_assets.world_id
+          and w.owner_user_id = auth.uid()
+      )
+    )
+    with check (
+      exists (
+        select 1 from public.worlds w
+        where w.id = world_assets.world_id
+          and w.owner_user_id = auth.uid()
+      )
+    );
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "Users can delete their own world assets"
+    on public.world_assets for delete
+    using (
+      exists (
+        select 1 from public.worlds w
+        where w.id = world_assets.world_id
+          and w.owner_user_id = auth.uid()
       )
     );
 exception when duplicate_object then null; end $$;

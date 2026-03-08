@@ -60,4 +60,6 @@ test('platform migration upgrades existing schemas via alter-table steps', async
   assert.ok(migration.includes('create table if not exists public.app_settings'));
   assert.ok(migration.includes('create or replace function public.is_owner_user()'));
   assert.ok(migration.includes('create policy "Owner users can write app settings"'));
+  assert.ok(migration.includes('create policy "Users can insert their own character assets"'));
+  assert.ok(migration.includes('create policy "Users can insert their own world assets"'));
 });
