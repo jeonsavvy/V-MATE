@@ -352,14 +352,9 @@ export const getWorldDetail = async (slug) => {
   if (!world) return null;
   const characters = await getWorldCharacters(slug);
   const { data: assets } = await client.from('world_assets').select('url').eq('world_id', world.id).order('created_at', { ascending: true });
-  const sections = [
-    { title: '월드 소개', body: world.summary },
-    world.world_rules_markdown ? { title: '월드 규칙', body: world.world_rules_markdown } : null,
-    world.prompt_profile_json?.tone ? { title: '분위기', body: String(world.prompt_profile_json.tone) } : null,
-  ].filter(Boolean);
   return {
     ...summarizeWorld(world),
-    worldSections: sections,
+    worldSections: [{ title: '월드 소개', body: world.summary }],
     gallery: (assets || []).map((item) => item.url),
     characters,
     promptProfileJson: world.prompt_profile_json || {},

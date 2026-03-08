@@ -193,7 +193,7 @@ export const getWorldDetail = (slug) => {
 
   return {
     ...summarizeWorld(item),
-    worldSections: item.worldSections,
+    worldSections: item.worldSections.filter((section) => section.title === '월드 소개').slice(0, 1),
     gallery: item.gallery,
     characters,
     promptProfileJson: item.promptProfile || {},
