@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import { ArrowLeft, Eye, EyeOff, Image, ImagePlus, Loader2, MessageCircle, PlusCircle, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
-import type { CharacterDetail, CharacterSummary, CharacterWorldLinkSummary, LibraryPayload, OwnerOpsDashboard, RoomSummary, WorldDetail, WorldSummary } from '@/lib/platform/types'
+import type { CharacterDetail, CharacterSummary, LibraryPayload, OwnerOpsDashboard, RoomSummary, WorldDetail, WorldSummary } from '@/lib/platform/types'
 import { platformApi } from '@/lib/platform/apiClient'
 import { CHARACTER_VARIANTS, createImageVariants, type ResizedImageAsset, WORLD_VARIANTS } from '@/lib/platform/imagePipeline'
 import { Button } from '@/components/ui/button'
@@ -100,7 +100,6 @@ const AliasDialog = ({
 // 상세 화면은 공개 조회와 새 방 진입을 함께 책임진다.
 export function CharacterDetailPage({ chrome, slug }: { chrome: PlatformPageChromeProps; slug: string }) {
   const [item, setItem] = useState<CharacterDetail | null>(null)
-  const [links, setLinks] = useState<CharacterWorldLinkSummary[]>([])
   const [availableWorlds, setAvailableWorlds] = useState<WorldSummary[]>([])
   const [pickerOpen, setPickerOpen] = useState(false)
   const [pendingWorldSlug, setPendingWorldSlug] = useState<string | null | undefined>(undefined)
@@ -108,11 +107,10 @@ export function CharacterDetailPage({ chrome, slug }: { chrome: PlatformPageChro
 
   useEffect(() => {
     let mounted = true
-    void Promise.all([platformApi.fetchCharacter(slug), platformApi.fetchCharacterWorldLinks(slug), platformApi.fetchWorlds('', 'popular')])
-      .then(([character, worldLinks, worlds]) => {
+    void Promise.all([platformApi.fetchCharacter(slug), platformApi.fetchWorlds('', 'popular')])
+      .then(([character, worlds]) => {
         if (!mounted) return
         setItem(character.item)
-        setLinks(worldLinks.items)
         setAvailableWorlds(worlds.items)
       })
       .catch((error) => toast.error(error instanceof Error ? error.message : '캐릭터를 불러오지 못했습니다.'))
@@ -140,15 +138,12 @@ export function CharacterDetailPage({ chrome, slug }: { chrome: PlatformPageChro
     startRoom(selectedWorldSlug, displayName)
   }
 
-  const worldPickerItems = availableWorlds.map((world) => {
-    const linked = links.find((link) => link.worldSlug === world.slug)
-    return {
-      id: world.id,
-      title: world.name,
-      body: linked?.linkReason || world.headline || world.summary,
-      value: world.slug,
-    }
-  })
+  const worldPickerItems = availableWorlds.map((world) => ({
+    id: world.id,
+    title: world.name,
+    body: world.headline || world.summary,
+    value: world.slug,
+  }))
 
   if (!item) {
     return <PageFrame chrome={chrome}><EmptyState title="캐릭터를 불러오는 중" description="잠시만 기다려주세요." /></PageFrame>
@@ -1276,7 +1271,7 @@ export function OpsPage({ chrome }: { chrome: PlatformPageChromeProps }) {
         <DialogContent className="max-w-lg rounded-[2rem] bg-[#20242b] text-white">
           <DialogHeader>
             <DialogTitle className="text-white">정말 삭제할까요?</DialogTitle>
-            <DialogDescription className="text-white/56">삭제하면 연결된 자산과 링크, 관련 방이 함께 사라질 수 있습니다.</DialogDescription>
+            <DialogDescription className="text-white/56">삭제하면 연결된 자산과 관련 방이 함께 사라질 수 있습니다.</DialogDescription>
           </DialogHeader>
           <div className="rounded-[1.2rem] border border-[#d92c63]/30 bg-[#d92c63]/10 px-4 py-4 text-sm text-white/78">
             {pendingDelete?.name}

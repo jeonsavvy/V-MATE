@@ -255,72 +255,12 @@ do $$ begin
     using (auth.uid() = owner_user_id or public.is_owner_user());
 exception when duplicate_object then null; end $$;
 
--- Character / world links
-create table if not exists public.character_world_links (
-  id uuid primary key default gen_random_uuid(),
-  character_id uuid references public.characters on delete cascade not null,
-  world_id uuid references public.worlds on delete cascade not null,
-  owner_user_id uuid references auth.users on delete cascade not null,
-  is_recommended boolean not null default true,
-  sort_order integer not null default 0,
-  link_reason text not null default '',
-  default_opening_context text,
-  default_relationship_context text,
-  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
-  updated_at timestamp with time zone default timezone('utc'::text, now()) not null,
-  unique (character_id, world_id)
-);
-
-create index if not exists idx_character_world_links_character on public.character_world_links (character_id, sort_order asc, updated_at desc);
-create index if not exists idx_character_world_links_world on public.character_world_links (world_id, sort_order asc, updated_at desc);
-
-alter table public.character_world_links enable row level security;
-
-do $$ begin
-  create policy "Public can read links when both endpoints are visible or owners can read their own"
-    on public.character_world_links for select
-    using (
-      auth.uid() = owner_user_id
-      or exists (
-        select 1
-        from public.characters c
-        join public.worlds w on w.id = character_world_links.world_id
-        where c.id = character_world_links.character_id
-          and c.visibility = 'public'
-          and c.display_status = 'visible'
-          and w.visibility = 'public'
-          and w.display_status = 'visible'
-      )
-    );
-exception when duplicate_object then null; end $$;
-
-do $$ begin
-  create policy "Users can insert their own links"
-    on public.character_world_links for insert
-    with check (auth.uid() = owner_user_id);
-exception when duplicate_object then null; end $$;
-
-do $$ begin
-  create policy "Users can update their own links"
-    on public.character_world_links for update
-    using (auth.uid() = owner_user_id)
-    with check (auth.uid() = owner_user_id);
-exception when duplicate_object then null; end $$;
-
-do $$ begin
-  create policy "Owner users can manage all links"
-    on public.character_world_links for all
-    using (public.is_owner_user())
-    with check (public.is_owner_user());
-exception when duplicate_object then null; end $$;
-
 -- Rooms / messages / state
 create table if not exists public.rooms (
   id uuid primary key default gen_random_uuid(),
   user_id uuid references auth.users on delete cascade not null,
   character_id uuid references public.characters on delete cascade not null,
   world_id uuid references public.worlds on delete set null,
-  character_world_link_id uuid references public.character_world_links on delete set null,
   user_alias text not null default '나',
   title text not null,
   bridge_profile_json jsonb not null default '{}'::jsonb,
@@ -330,7 +270,6 @@ create table if not exists public.rooms (
   updated_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
-alter table public.rooms add column if not exists character_world_link_id uuid references public.character_world_links on delete set null;
 alter table public.rooms add column if not exists user_alias text not null default '나';
 alter table public.rooms add column if not exists title text not null default '';
 alter table public.rooms add column if not exists bridge_profile_json jsonb not null default '{}'::jsonb;

@@ -86,15 +86,6 @@ const normalizeWorldPayload = (payload) => ({
   creatorName: String(payload.creatorName || '').trim(),
 });
 
-const normalizeLinkPayload = (payload) => ({
-  characterSlug: String(payload.characterSlug || '').trim(),
-  worldSlug: String(payload.worldSlug || '').trim(),
-  linkReason: String(payload.linkReason || '').trim(),
-  defaultOpeningContext: String(payload.defaultOpeningContext || '').trim(),
-  defaultRelationshipContext: String(payload.defaultRelationshipContext || '').trim(),
-  isRecommended: payload.isRecommended !== false,
-});
-
 // 룸 채팅은 room 존재 확인, auth, 모델 호출, 메시지 정규화를 한 트랜잭션 흐름처럼 다룬다.
 const handleRoomChat = async ({ event, headers, startedAtMs, traceId, roomId }) => {
   const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable() });
@@ -189,18 +180,10 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
     return jsonOk({ headers, startedAtMs, body: { items: await getPlatformStore().listWorlds({ search: query.search, filter: query.filter }) } });
   }
 
-  if (method === 'GET' && segments[1] === 'characters' && segments[2] && segments[3] === 'world-links') {
-    return jsonOk({ headers, startedAtMs, body: { items: await getPlatformStore().getCharacterWorldLinks(segments[2]) } });
-  }
-
   if (method === 'GET' && segments[1] === 'characters' && segments[2]) {
     const item = await getPlatformStore().getCharacterDetail(segments[2]);
     if (!item) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Character not found.', errorCode: 'CHARACTER_NOT_FOUND' });
     return jsonOk({ headers, startedAtMs, body: { item } });
-  }
-
-  if (method === 'GET' && segments[1] === 'worlds' && segments[2] && segments[3] === 'characters') {
-    return jsonOk({ headers, startedAtMs, body: { items: await getPlatformStore().getWorldCharacters(segments[2]) } });
   }
 
   if (method === 'GET' && segments[1] === 'worlds' && segments[2]) {
@@ -283,16 +266,6 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
     const item = await getPlatformStore().updateWorld?.({ event, userId: authResult.userId, slug: segments[2], payload: { ...normalizeWorldPayload(body), assets: body.assets, promptProfileJson: body.promptProfileJson } });
     if (!item) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'World not found.', errorCode: 'WORLD_NOT_FOUND' });
     return jsonOk({ headers, startedAtMs, body: { item } });
-  }
-
-  if (method === 'POST' && segments[1] === 'character-world-links') {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable() });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
-    const body = parseJsonBody(event.body);
-    if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: 'Invalid request body.', errorCode: 'INVALID_REQUEST_BODY' });
-    const item = await getPlatformStore().createCharacterWorldLink({ event, userId: authResult.userId, payload: normalizeLinkPayload(body) });
-    if (!item) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Character or world not found.', errorCode: 'LINK_TARGET_NOT_FOUND' });
-    return jsonOk({ statusCode: 201, headers, startedAtMs, body: { item } });
   }
 
   if (method === 'POST' && segments[1] === 'uploads' && segments[2] === 'prepare') {

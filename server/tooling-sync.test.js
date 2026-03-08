@@ -70,6 +70,15 @@ test('platform migration upgrades existing schemas via alter-table steps', async
   assert.ok(migration.includes('create policy "Users can insert their own world assets"'));
 });
 
+test('schema no longer depends on character-world link tables for room creation', async () => {
+  const migration = await readUtf8('supabase/schema.sql');
+
+  assert.equal(migration.includes('create table if not exists public.character_world_links'), false);
+  assert.equal(migration.includes('character_world_link_id'), false);
+  assert.equal(migration.includes('default_opening_context'), false);
+  assert.equal(migration.includes('default_relationship_context'), false);
+});
+
 test('server source no longer references legacy local demo asset filenames', async () => {
   const repoFiles = [
     'server/platform/supabase-platform-repository.js',

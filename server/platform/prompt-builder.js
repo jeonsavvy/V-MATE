@@ -1,4 +1,4 @@
-export const generateBridgeProfile = ({ character, world, link }) => {
+export const generateBridgeProfile = ({ character, world }) => {
   const characterIntro = typeof character.promptProfile.characterIntro === 'string'
     ? character.promptProfile.characterIntro.trim()
     : ''
@@ -32,14 +32,13 @@ export const generateBridgeProfile = ({ character, world, link }) => {
     : worldKey === 'fantasy'
       ? '함께 움직이는 동료'
       : '캐릭터와 같은 장면을 공유하는 상대'
-  const meetingTrigger = link?.defaultOpeningContext
-    || worldIntro
+  const meetingTrigger = worldIntro
     || (worldKey === 'game'
       ? '레이드 시작 직전, 마지막 점검을 하고 있다.'
       : worldKey === 'fantasy'
         ? '길드 임무 배정 직전, 브리핑이 시작된다.'
         : '비가 막 그친 밤, 짧은 대화를 시작할 타이밍이 온다.')
-  const relationshipDistance = link?.defaultRelationshipContext || character.promptProfile.relationshipBaseline
+  const relationshipDistance = character.promptProfile.relationshipBaseline
   const currentGoal = worldKey === 'game'
     ? '협력과 긴장 속에서 역할 분담을 빠르게 잡는다.'
     : worldKey === 'fantasy'

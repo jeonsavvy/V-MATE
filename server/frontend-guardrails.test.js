@@ -196,6 +196,9 @@ test('platform types and api client are character-world only', async () => {
   const typesSource = await readFile(typesPath, 'utf8');
   assert.equal(typesSource.includes("'preset'"), false);
   assert.equal(typesSource.includes('PresetSummary'), false);
+  assert.equal(typesSource.includes('CharacterWorldLinkSummary'), false);
+  assert.equal(typesSource.includes('defaultOpeningContext'), false);
+  assert.equal(typesSource.includes('defaultRelationshipContext'), false);
 
   const apiPath = path.join(srcRoot, 'lib/platform/apiClient.ts');
   const apiSource = await readFile(apiPath, 'utf8');
@@ -204,6 +207,10 @@ test('platform types and api client are character-world only', async () => {
   assert.equal(apiSource.includes('createPreset'), false);
   assert.equal(apiSource.includes('demoPlatform'), false);
   assert.equal(apiSource.includes('fallback:'), false);
+  assert.equal(apiSource.includes('/world-links'), false);
+  assert.equal(apiSource.includes('/character-world-links'), false);
+  assert.equal(apiSource.includes('fetchCharacterWorldLinks'), false);
+  assert.equal(apiSource.includes('createCharacterWorldLink'), false);
   assert.ok(apiSource.includes('/api/ops') || apiSource.includes('/ops'));
 });
 
@@ -233,6 +240,8 @@ test('home and detail views avoid fake metrics and duplicated management section
   assert.equal(pagesSource.includes('월드 고르고 시작'), false);
   assert.equal(pagesSource.includes('chatStartCount.toLocaleString'), false);
   assert.equal(pagesSource.includes('favoriteCount.toLocaleString'), false);
+  assert.equal(pagesSource.includes('fetchCharacterWorldLinks'), false);
+  assert.equal(pagesSource.includes('linkReason'), false);
   assert.equal(pagesSource.includes('현재 상황'), false);
   assert.equal(pagesSource.includes('월드 메모'), false);
   assert.equal(pagesSource.includes('소지품'), false);

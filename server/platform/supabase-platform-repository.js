@@ -287,38 +287,11 @@ const getCharacterRowsByIds = async (client, ids) => {
   return data || [];
 };
 
-export const getCharacterWorldLinks = async (slug) => {
-  const client = await publicClient();
-  if (!client) return [];
-  const character = await getCharacterRowBySlug(client, slug);
-  if (!character) return [];
-  const { data: links, error: linkError } = await client
-    .from('character_world_links')
-    .select('*')
-    .eq('character_id', character.id)
-    .order('sort_order', { ascending: true });
-  if (linkError) throw linkError;
-  const worlds = await getWorldRowsByIds(client, (links || []).map((item) => item.world_id));
-  const worldMap = new Map(worlds.map((item) => [item.id, summarizeWorld(item)]));
-  return (links || [])
-    .filter((link) => worldMap.has(link.world_id))
-    .map((link) => ({
-      id: link.id,
-      characterSlug: slug,
-      worldSlug: worldMap.get(link.world_id).slug,
-      world: worldMap.get(link.world_id),
-      linkReason: link.link_reason,
-      defaultOpeningContext: link.default_opening_context || '',
-      defaultRelationshipContext: link.default_relationship_context || '',
-    }));
-};
-
 export const getCharacterDetail = async (slug) => {
   const client = await publicClient();
   if (!client) return null;
   const character = await getCharacterRowBySlug(client, slug);
   if (!character) return null;
-  const links = await getCharacterWorldLinks(slug);
   const { data: assets } = await client.from('character_assets').select('url').eq('character_id', character.id).order('created_at', { ascending: true });
   const profileJson = character.profile_json || {};
   const speechJson = character.speech_style_json || {};
@@ -331,22 +304,10 @@ export const getCharacterDetail = async (slug) => {
     ...summarizeCharacter(character),
     profileSections: sections.length ? sections : [{ title: '설정', body: character.summary }],
     gallery: (assets || []).map((item) => item.url),
-    worlds: links,
     profileJson,
     speechStyleJson: speechJson,
     promptProfileJson: character.prompt_profile_json || {},
   };
-};
-
-export const getWorldCharacters = async (slug) => {
-  const client = await publicClient();
-  if (!client) return [];
-  const world = await getWorldRowBySlug(client, slug);
-  if (!world) return [];
-  const { data: links, error } = await client.from('character_world_links').select('character_id').eq('world_id', world.id).order('sort_order', { ascending: true });
-  if (error) throw error;
-  const rows = await getCharacterRowsByIds(client, (links || []).map((item) => item.character_id));
-  return rows.map(summarizeCharacter);
 };
 
 export const getWorldDetail = async (slug) => {
@@ -354,13 +315,12 @@ export const getWorldDetail = async (slug) => {
   if (!client) return null;
   const world = await getWorldRowBySlug(client, slug);
   if (!world) return null;
-  const characters = await getWorldCharacters(slug);
   const { data: assets } = await client.from('world_assets').select('url').eq('world_id', world.id).order('created_at', { ascending: true });
   return {
     ...summarizeWorld(world),
     worldSections: [{ title: '월드 소개', body: world.summary }],
     gallery: (assets || []).map((item) => item.url),
-    characters,
+    characters: [],
     promptProfileJson: world.prompt_profile_json || {},
   };
 };
@@ -639,34 +599,6 @@ export const updateWorld = async ({ event, userId, slug, payload }) => {
   return summarizeWorld(data);
 };
 
-export const createCharacterWorldLink = async ({ event, userId, payload }) => {
-  const client = await userClient(event);
-  const publicReadClient = await publicClient();
-  if (!client || !publicReadClient) return null;
-  const character = await getCharacterRowBySlug(publicReadClient, payload.characterSlug);
-  const world = await getWorldRowBySlug(publicReadClient, payload.worldSlug);
-  if (!character || !world) return null;
-  const { data, error } = await client.from('character_world_links').insert({
-    character_id: character.id,
-    world_id: world.id,
-    owner_user_id: userId,
-    is_recommended: payload.isRecommended !== false,
-    link_reason: payload.linkReason,
-    default_opening_context: payload.defaultOpeningContext || null,
-    default_relationship_context: payload.defaultRelationshipContext || null,
-  }).select('*').single();
-  if (error) throw error;
-  return {
-    id: data.id,
-    characterSlug: payload.characterSlug,
-    worldSlug: payload.worldSlug,
-    world: summarizeWorld(world),
-    linkReason: data.link_reason,
-    defaultOpeningContext: data.default_opening_context || '',
-    defaultRelationshipContext: data.default_relationship_context || '',
-  };
-};
-
 const buildGreetingMessage = ({ userAlias, characterName, bridgeProfile }) => ({
   role: 'assistant',
   content_json: {
@@ -714,7 +646,6 @@ export const createRoom = async ({ event, userId, characterSlug, worldSlug = nul
   const character = await getCharacterRowBySlug(publicReadClient, characterSlug);
   const world = worldSlug ? await getWorldRowBySlug(publicReadClient, worldSlug) : null;
   if (!character) return null;
-  const link = world ? (await getCharacterWorldLinks(characterSlug)).find((item) => item.worldSlug === worldSlug) : null;
   const bridgeProfile = generateBridgeProfile({ character: {
     name: character.name,
     headline: character.headline,
@@ -725,7 +656,7 @@ export const createRoom = async ({ event, userId, characterSlug, worldSlug = nul
     headline: world.headline,
     summary: world.summary,
     promptProfile: world.prompt_profile_json,
-  } : null, link });
+  } : null });
   const state = createInitialRoomState({ bridgeProfile, world: world ? { promptProfile: world.prompt_profile_json } : null });
   const promptSnapshot = buildRoomPromptSnapshot({ character: {
     name: character.name,
@@ -743,7 +674,6 @@ export const createRoom = async ({ event, userId, characterSlug, worldSlug = nul
     user_id: userId,
     character_id: character.id,
     world_id: world?.id || null,
-    character_world_link_id: link?.id || null,
     user_alias: userAlias,
     title: world ? `${character.name} · ${world.name}` : character.name,
     bridge_profile_json: bridgeProfile,

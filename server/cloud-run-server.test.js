@@ -180,7 +180,7 @@ test('returns public character detail payload from /api/characters/:slug', async
     const payload = await response.json();
     assert.equal(payload.item?.slug, character.slug);
     assert.equal(payload.item?.entityType, 'character');
-    assert.equal(Array.isArray(payload.item?.worlds), true);
+    assert.equal(Object.prototype.hasOwnProperty.call(payload.item || {}, 'worlds'), false);
     assert.equal(response.headers.get('access-control-allow-origin'), 'http://localhost:5173');
   } finally {
     await close();

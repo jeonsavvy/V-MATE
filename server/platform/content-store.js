@@ -5,7 +5,6 @@ const clone = (value) => structuredClone(value);
 
 const createdCharacters = new Map();
 const createdWorlds = new Map();
-const createdLinks = new Map();
 const rooms = new Map();
 const recentViewsByUser = new Map();
 const bookmarksByUser = new Map();
@@ -67,7 +66,6 @@ const summarizeWorld = (item) => ({
 
 const allCharacters = () => [...createdCharacters.values()];
 const allWorlds = () => [...createdWorlds.values()];
-const allLinks = () => [...createdLinks.values()];
 
 const findCharacter = (ref) => {
   if (!ref) return null;
@@ -78,8 +76,6 @@ const findWorld = (ref) => {
   if (!ref) return null;
   return clone([...createdWorlds.values()].find((item) => item.id === ref || item.slug === ref) || null);
 };
-
-const findLink = ({ characterSlug, worldSlug }) => clone(allLinks().find((item) => item.characterSlug === characterSlug && item.worldSlug === worldSlug) || null);
 
 const ensureRecentBucket = (userId) => {
   if (!recentViewsByUser.has(userId)) recentViewsByUser.set(userId, []);
@@ -145,67 +141,28 @@ export const getHomePayload = ({ tab = 'characters', search = '', filter = '' } 
 export const getCharacterDetail = (slug) => {
   const item = findCharacter(slug);
   if (!item) return null;
-  const worlds = allLinks()
-    .filter((link) => link.characterSlug === item.slug)
-    .map((link) => ({
-      id: link.id,
-      characterSlug: link.characterSlug,
-      worldSlug: link.worldSlug,
-      world: summarizeWorld(findWorld(link.worldSlug)),
-      linkReason: link.linkReason,
-      defaultOpeningContext: link.defaultOpeningContext,
-      defaultRelationshipContext: link.defaultRelationshipContext,
-    }));
 
   return {
     ...summarizeCharacter(item),
     profileSections: item.profileSections,
     gallery: item.gallery,
-    worlds,
     profileJson: item.profileJson || {},
     speechStyleJson: item.speechStyleJson || {},
     promptProfileJson: item.promptProfile || {},
   };
 };
 
-export const getCharacterWorldLinks = (slug) => {
-  const item = findCharacter(slug);
-  if (!item) return [];
-  return allLinks()
-    .filter((link) => link.characterSlug === item.slug)
-    .map((link) => ({
-      id: link.id,
-      characterSlug: link.characterSlug,
-      worldSlug: link.worldSlug,
-      world: summarizeWorld(findWorld(link.worldSlug)),
-      linkReason: link.linkReason,
-      defaultOpeningContext: link.defaultOpeningContext,
-      defaultRelationshipContext: link.defaultRelationshipContext,
-    }));
-};
-
 export const getWorldDetail = (slug) => {
   const item = findWorld(slug);
   if (!item) return null;
-  const characters = allLinks()
-    .filter((link) => link.worldSlug === item.slug)
-    .map((link) => summarizeCharacter(findCharacter(link.characterSlug)));
 
   return {
     ...summarizeWorld(item),
     worldSections: item.worldSections.filter((section) => section.title === '월드 소개').slice(0, 1),
     gallery: item.gallery,
-    characters,
+    characters: [],
     promptProfileJson: item.promptProfile || {},
   };
-};
-
-export const getWorldCharacters = (slug) => {
-  const item = findWorld(slug);
-  if (!item) return [];
-  return allLinks()
-    .filter((link) => link.worldSlug === item.slug)
-    .map((link) => summarizeCharacter(findCharacter(link.characterSlug)));
 };
 
 export const addRecentView = ({ userId, entityType, ref }) => {
@@ -393,32 +350,6 @@ export const updateWorld = ({ userId, slug, payload }) => {
   return summarizeWorld(item);
 };
 
-export const createCharacterWorldLink = ({ userId, payload }) => {
-  const character = findCharacter(payload.characterSlug);
-  const world = findWorld(payload.worldSlug);
-  if (!character || !world) return null;
-  const item = {
-    id: `link-${randomUUID()}`,
-    characterSlug: character.slug,
-    worldSlug: world.slug,
-    ownerUserId: userId,
-    isRecommended: payload.isRecommended ?? true,
-    linkReason: payload.linkReason,
-    defaultOpeningContext: payload.defaultOpeningContext || '',
-    defaultRelationshipContext: payload.defaultRelationshipContext || '',
-  };
-  createdLinks.set(item.id, item);
-  return {
-    id: item.id,
-    characterSlug: item.characterSlug,
-    worldSlug: item.worldSlug,
-    world: summarizeWorld(world),
-    linkReason: item.linkReason,
-    defaultOpeningContext: item.defaultOpeningContext,
-    defaultRelationshipContext: item.defaultRelationshipContext,
-  };
-};
-
 const createGreetingMessage = ({ userAlias, character, bridgeProfile }) => ({
   id: `greeting-${randomUUID()}`,
   role: 'assistant',
@@ -437,8 +368,7 @@ export const createRoom = ({ userId, characterRef, characterSlug, worldRef, worl
   const character = findCharacter(characterRef || characterSlug);
   const world = worldRef || worldSlug ? findWorld(worldRef || worldSlug) : null;
   if (!character) return null;
-  const link = world ? findLink({ characterSlug: character.slug, worldSlug: world.slug }) : null;
-  const bridgeProfile = generateBridgeProfile({ character, world, link });
+  const bridgeProfile = generateBridgeProfile({ character, world });
   const state = createInitialRoomState({ bridgeProfile, world });
   const room = {
     id: `room-${randomUUID()}`,
@@ -537,15 +467,6 @@ export const deleteContent = async ({ entityType, id }) => {
     for (const [key, item] of collection.entries()) {
       if (item.id === id || item.slug === id) {
         collection.delete(key);
-        if (entityType === 'character') {
-          for (const [linkKey, link] of createdLinks.entries()) {
-            if (link.characterSlug === item.slug) createdLinks.delete(linkKey);
-          }
-        } else {
-          for (const [linkKey, link] of createdLinks.entries()) {
-            if (link.worldSlug === item.slug) createdLinks.delete(linkKey);
-          }
-        }
         return true;
       }
     }
@@ -584,7 +505,6 @@ export const prepareAssetUploads = async ({ userId, entityType, variants }) => (
 export const resetPlatformStoreForTests = () => {
   createdCharacters.clear();
   createdWorlds.clear();
-  createdLinks.clear();
   rooms.clear();
   recentViewsByUser.clear();
   bookmarksByUser.clear();

@@ -1,7 +1,6 @@
 import type {
   CharacterDetail,
   CharacterSummary,
-  CharacterWorldLinkSummary,
   EntityType,
   HomeFeedPayload,
   LibraryPayload,
@@ -103,7 +102,6 @@ export const platformApi = {
   fetchWorlds: (search = '', filter: 'new' | 'popular' | '' = '') => request<{ items: WorldSummary[] }>(`/worlds?search=${encodeURIComponent(search)}&filter=${encodeURIComponent(filter)}`),
   fetchCharacter: (slug: string) => request<{ item: CharacterDetail }>(`/characters/${slug}`),
   fetchWorld: (slug: string) => request<{ item: WorldDetail }>(`/worlds/${slug}`),
-  fetchCharacterWorldLinks: (slug: string) => request<{ items: CharacterWorldLinkSummary[] }>(`/characters/${slug}/world-links`),
   fetchRecentRooms: () => request<{ items: RoomSummary[] }>('/recent-rooms', { auth: true }),
   fetchLibrary: () => request<LibraryPayload>('/library', { auth: true }),
   fetchOpsDashboard: () => request<OwnerOpsDashboard>('/ops/dashboard', { auth: true }),
@@ -169,14 +167,6 @@ export const platformApi = {
     promptProfileJson?: Record<string, unknown>
     assets?: Array<{ kind: string; url: string; width: number; height: number }>
   }) => request<{ item: WorldSummary }>(`/worlds/${slug}`, { method: 'PATCH', auth: true, body: JSON.stringify(payload) }),
-  createCharacterWorldLink: (payload: {
-    characterSlug: string
-    worldSlug: string
-    linkReason: string
-    defaultOpeningContext?: string
-    defaultRelationshipContext?: string
-    isRecommended?: boolean
-  }) => request<{ item: CharacterWorldLinkSummary }>('/character-world-links', { method: 'POST', auth: true, body: JSON.stringify(payload) }),
   createRoom: (payload: { characterSlug: string; worldSlug?: string | null; userAlias?: string }) => request<{ room: RoomSummary }>('/rooms', { method: 'POST', auth: true, body: JSON.stringify(payload) }),
   fetchRoom: (roomId: string) => request<{ room: RoomSummary }>(`/rooms/${roomId}`, { auth: true }),
   sendRoomMessage: (roomId: string, userMessage: string) => request<RoomChatResponse>(`/rooms/${roomId}/chat`, { method: 'POST', auth: true, body: JSON.stringify({ userMessage }) }),

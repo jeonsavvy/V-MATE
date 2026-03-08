@@ -39,16 +39,6 @@ export interface WorldSummary extends EntitySummary {
   imageSlots?: CharacterImageSlot[]
 }
 
-export interface CharacterWorldLinkSummary {
-  id: string
-  characterSlug: string
-  worldSlug: string
-  world: WorldSummary
-  linkReason: string
-  defaultOpeningContext?: string
-  defaultRelationshipContext?: string
-}
-
 export interface CharacterImageSlot {
   id: string
   slot: string
@@ -82,7 +72,6 @@ export interface HomeFeedPayload {
 export interface CharacterDetail extends CharacterSummary {
   profileSections: Array<{ title: string; body: string }>
   gallery: string[]
-  worlds: CharacterWorldLinkSummary[]
   imageSlots: CharacterImageSlot[]
   profileJson?: Record<string, unknown>
   speechStyleJson?: Record<string, unknown>
