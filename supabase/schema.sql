@@ -323,6 +323,15 @@ create table if not exists public.rooms (
   updated_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
+alter table public.rooms add column if not exists character_world_link_id uuid references public.character_world_links on delete set null;
+alter table public.rooms add column if not exists user_alias text not null default '나';
+alter table public.rooms add column if not exists title text not null default '';
+alter table public.rooms add column if not exists bridge_profile_json jsonb not null default '{}'::jsonb;
+alter table public.rooms add column if not exists resolved_prompt_snapshot_json jsonb not null default '{}'::jsonb;
+alter table public.rooms add column if not exists last_message_at timestamp with time zone default timezone('utc'::text, now()) not null;
+alter table public.rooms add column if not exists created_at timestamp with time zone default timezone('utc'::text, now()) not null;
+alter table public.rooms add column if not exists updated_at timestamp with time zone default timezone('utc'::text, now()) not null;
+
 create index if not exists idx_rooms_user_updated on public.rooms (user_id, updated_at desc);
 
 alter table public.rooms enable row level security;
@@ -354,6 +363,10 @@ create table if not exists public.room_messages (
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
+alter table public.room_messages add column if not exists role text;
+alter table public.room_messages add column if not exists content_json jsonb not null default '{}'::jsonb;
+alter table public.room_messages add column if not exists created_at timestamp with time zone default timezone('utc'::text, now()) not null;
+
 create index if not exists idx_room_messages_room_created on public.room_messages (room_id, created_at asc);
 
 alter table public.room_messages enable row level security;
@@ -382,6 +395,16 @@ create table if not exists public.room_state_summaries (
   world_notes_json jsonb not null default '[]'::jsonb,
   updated_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
+
+alter table public.room_state_summaries add column if not exists current_situation text;
+alter table public.room_state_summaries add column if not exists location text;
+alter table public.room_state_summaries add column if not exists relationship_state text;
+alter table public.room_state_summaries add column if not exists inventory_json jsonb not null default '[]'::jsonb;
+alter table public.room_state_summaries add column if not exists appearance_json jsonb not null default '[]'::jsonb;
+alter table public.room_state_summaries add column if not exists pose_json jsonb not null default '[]'::jsonb;
+alter table public.room_state_summaries add column if not exists future_promises_json jsonb not null default '[]'::jsonb;
+alter table public.room_state_summaries add column if not exists world_notes_json jsonb not null default '[]'::jsonb;
+alter table public.room_state_summaries add column if not exists updated_at timestamp with time zone default timezone('utc'::text, now()) not null;
 
 alter table public.room_state_summaries enable row level security;
 

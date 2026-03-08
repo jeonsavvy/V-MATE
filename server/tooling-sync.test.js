@@ -57,6 +57,10 @@ test('platform migration upgrades existing schemas via alter-table steps', async
   assert.ok(migration.includes('alter table public.characters add column if not exists display_status'));
   assert.ok(migration.includes('alter table public.worlds add column if not exists display_status'));
   assert.ok(migration.includes('alter table public.profiles add column if not exists is_owner'));
+  assert.ok(migration.includes('alter table public.rooms add column if not exists bridge_profile_json'));
+  assert.ok(migration.includes('alter table public.rooms add column if not exists user_alias'));
+  assert.ok(migration.includes('alter table public.room_messages add column if not exists content_json'));
+  assert.ok(migration.includes('alter table public.room_state_summaries add column if not exists world_notes_json'));
   assert.ok(migration.includes('create table if not exists public.app_settings'));
   assert.ok(migration.includes('create or replace function public.is_owner_user()'));
   assert.ok(migration.includes('create policy "Owner users can write app settings"'));
