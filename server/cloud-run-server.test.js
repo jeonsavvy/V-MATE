@@ -244,6 +244,35 @@ test('allows same-host origin for cloud run platform api even when not explicitl
   }
 });
 
+test('allows originless same-origin browser metadata for platform api requests', async () => {
+  process.env.ALLOW_NON_BROWSER_ORIGIN = 'false';
+  process.env.ALLOW_ALL_ORIGINS = 'false';
+  process.env.ALLOWED_ORIGINS = 'http://localhost:5173';
+
+  const { baseUrl, close } = await startServer(async () => {
+    throw new Error('chat handler should not be called for same-origin platform route');
+  });
+
+  try {
+    const response = await sendRawHttpRequest({
+      baseUrl,
+      method: 'GET',
+      path: '/api/home?tab=characters&search=&filter=',
+      headers: {
+        'sec-fetch-site': 'same-origin',
+        'sec-fetch-mode': 'cors',
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.headers['access-control-allow-origin'], '*');
+    const payload = JSON.parse(response.body);
+    assert.equal(payload.home?.defaultTab, 'characters');
+  } finally {
+    await close();
+  }
+});
+
 test('owner ops can delete content through dedicated endpoint', async () => {
   process.env.ALLOW_NON_BROWSER_ORIGIN = 'false';
   process.env.ALLOW_ALL_ORIGINS = 'false';

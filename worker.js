@@ -132,7 +132,7 @@ const handleChatApi = async (request, env, chatHandlerImpl, chatHandlerContext) 
   const requestStartedAt = Date.now();
   const requestTraceId = createTraceId();
   const origin = request.headers.get("origin");
-  const originAllowed = isOriginAllowed(origin, new URL(request.url).origin);
+  const originAllowed = isOriginAllowed(origin, new URL(request.url).origin, request.headers);
   const headers = {
     ...buildHeaders(originAllowed, origin),
     "X-V-MATE-Trace-Id": requestTraceId,
@@ -200,7 +200,7 @@ const handlePlatformApiRequest = async (request, env) => {
   const requestStartedAt = Date.now();
   const requestTraceId = createTraceId();
   const origin = request.headers.get("origin");
-  const originAllowed = isOriginAllowed(origin, new URL(request.url).origin);
+  const originAllowed = isOriginAllowed(origin, new URL(request.url).origin, request.headers);
   const headers = {
     ...buildHeaders(originAllowed, origin),
     "X-V-MATE-Trace-Id": requestTraceId,

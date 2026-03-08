@@ -67,6 +67,27 @@ test('ALLOW_ALL_ORIGINS overrides allowlist and originless checks', () => {
   assert.equal(isOriginAllowed(undefined), true);
 });
 
+test('allows originless same-origin browser fetches with standard fetch metadata', () => {
+  process.env.ALLOW_ALL_ORIGINS = 'false';
+  process.env.ALLOW_NON_BROWSER_ORIGIN = 'false';
+  process.env.ALLOWED_ORIGINS = 'https://only-this-origin.example';
+
+  assert.equal(
+    isOriginAllowed(undefined, 'http://localhost:8787', {
+      'sec-fetch-site': 'same-origin',
+      'sec-fetch-mode': 'cors',
+    }),
+    true
+  );
+  assert.equal(
+    isOriginAllowed(undefined, 'http://localhost:8787', {
+      'sec-fetch-site': 'cross-site',
+      'sec-fetch-mode': 'cors',
+    }),
+    false
+  );
+});
+
 test('reuses parsed allowlist for same env value and refreshes when env changes', () => {
   process.env.ALLOWED_ORIGINS = 'https://a.example,https://b.example/';
   const first = parseAllowedOrigins();

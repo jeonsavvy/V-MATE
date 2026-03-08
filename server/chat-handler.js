@@ -52,7 +52,7 @@ export const handler = async (event, context) => {
     const requestTraceId = createTraceId();
     const origin = event.headers?.origin || event.headers?.Origin;
     const requestOrigin = event.headers?.['x-v-mate-request-origin'] || event.headers?.['X-V-MATE-Request-Origin'];
-    const originAllowed = isOriginAllowed(origin, requestOrigin);
+    const originAllowed = isOriginAllowed(origin, requestOrigin, event.headers);
     const headers = {
         ...buildHeaders(originAllowed, origin),
         'X-V-MATE-Trace-Id': requestTraceId,

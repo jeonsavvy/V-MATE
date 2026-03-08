@@ -246,18 +246,36 @@ test('home uses latest and popular filters only', async () => {
   assert.equal(source.includes('태그'), false);
 });
 
-test('character builder exposes structured authoring sections and image slots', async () => {
+test('character builder keeps a minimal authoring flow without world-link noise', async () => {
   const pagesPath = path.join(srcRoot, 'components/platform/Pages.tsx');
   const source = await readFile(pagesPath, 'utf8');
 
   assert.ok(source.includes('기본 정보'));
   assert.ok(source.includes('캐릭터 설정'));
   assert.ok(source.includes('캐릭터 이미지'));
-  assert.ok(source.includes('연결할 월드'));
-  assert.ok(source.includes('happy'));
-  assert.ok(source.includes('angry'));
-  assert.ok(source.includes('사용 조건'));
+  assert.ok(source.includes('성격 / 핵심 매력'));
+  assert.ok(source.includes('말투'));
+  assert.ok(source.includes('처음 관계 / 거리감'));
+  assert.equal(source.includes('연결할 월드'), false);
+  assert.equal(source.includes('추천 월드'), false);
+  assert.equal(source.includes('월드 안 역할'), false);
+  assert.equal(source.includes('로맨스 결'), false);
   assert.equal(source.includes('고급 옵션'), false);
+});
+
+test('world builder removes recommendation clutter and uses a custom image upload card', async () => {
+  const pagesPath = path.join(srcRoot, 'components/platform/Pages.tsx');
+  const source = await readFile(pagesPath, 'utf8');
+
+  assert.ok(source.includes('월드 설명'));
+  assert.ok(source.includes('월드 이미지'));
+  assert.ok(source.includes('world-image-upload-input'));
+  assert.ok(source.includes('이미지 선택'));
+  assert.equal(source.includes('추천 캐릭터 연결'), false);
+  assert.equal(source.includes('추천 캐릭터'), false);
+  assert.equal(source.includes('사회 구조'), false);
+  assert.equal(source.includes('어울리는 역할'), false);
+  assert.equal(source.includes('깨지면 안 되는 월드 규칙 / 금지 전개'), false);
 });
 
 test('ops page exposes banner auto/manual controls and delete actions', async () => {

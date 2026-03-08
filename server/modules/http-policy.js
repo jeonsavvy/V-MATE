@@ -66,13 +66,47 @@ export const parseAllowedOrigins = () => {
 
 export const normalizeOrigin = (origin) => String(origin || '').trim().replace(/\/+$/, '');
 
-export const isOriginAllowed = (origin, requestOrigin = '') => {
+const readHeader = (headers, name) => {
+    if (!headers) {
+        return '';
+    }
+
+    if (typeof headers.get === 'function') {
+        return String(headers.get(name) || headers.get(name.toLowerCase()) || '').trim();
+    }
+
+    return String(
+        headers[name] ||
+        headers[name.toLowerCase()] ||
+        headers[name.replace(/(^|-)([a-z])/g, (_, prefix, char) => `${prefix}${char.toUpperCase()}`)] ||
+        ''
+    ).trim();
+};
+
+const isOriginlessSameOriginBrowserRequest = (requestOrigin, requestHeaders) => {
+    if (!normalizeOrigin(requestOrigin)) {
+        return false;
+    }
+
+    const fetchSite = readHeader(requestHeaders, 'sec-fetch-site').toLowerCase();
+    if (!fetchSite) {
+        return false;
+    }
+
+    return fetchSite === 'same-origin';
+};
+
+export const isOriginAllowed = (origin, requestOrigin = '', requestHeaders = undefined) => {
     if (shouldAllowAllOrigins()) {
         return true;
     }
 
     if (!origin) {
-        return shouldAllowRequestsWithoutOrigin();
+        if (shouldAllowRequestsWithoutOrigin()) {
+            return true;
+        }
+
+        return isOriginlessSameOriginBrowserRequest(requestOrigin, requestHeaders);
     }
 
     const normalized = normalizeOrigin(origin);
