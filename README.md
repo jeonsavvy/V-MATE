@@ -160,18 +160,19 @@ do update set value_json = excluded.value_json;
 
 ### 캐릭터
 - 권장 비율: `3:4`
-- 최소: `1440x1920`
+- 최소: `768x1024`
 - 파생본: `thumb`, `card`, `detail`
 - 감정/상황별 이미지 슬롯 지원
   - 예: `main`, `normal`, `happy`, `angry`, `night`, `battle`
 
 ### 월드
 - 권장 비율: `16:9`
-- 최소: `1600x900`
+- 최소: `1280x720`
 - 파생본: `thumb`, `card`, `hero`
 
 ### 업로드 처리
 - 브라우저에서 리사이즈 후 업로드
+- 업로드 원본은 JPG/PNG여도 서비스 전달용은 `WebP` 변환 권장
 - 자동 크롭 적용
 - 원본 비율과 결과 비율을 제작기에서 확인 가능
 

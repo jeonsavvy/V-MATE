@@ -82,7 +82,7 @@ export const createImageVariants = async ({
 export const CHARACTER_VARIANTS: ResizeVariant[] = [
   { kind: 'thumb', width: 300, height: 400 },
   { kind: 'card', width: 600, height: 800 },
-  { kind: 'detail', width: 960, height: 1280 },
+  { kind: 'detail', width: 768, height: 1024 },
 ]
 
 export const WORLD_VARIANTS: ResizeVariant[] = [

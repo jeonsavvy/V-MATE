@@ -818,7 +818,7 @@ export function CreateCharacterPage({ chrome }: { chrome: PlatformPageChromeProp
 
         <PageSection title="캐릭터 이미지">
           <div className="rounded-[1.3rem] border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white/68">
-            권장 3:4 · 최소 1440×1920 · 세로형 인물 위주 이미지를 권장합니다.
+            권장 3:4 · 최소 768×1024 · 세로형 인물 이미지를 권장하며, 업로드 이미지는 서비스용으로 WebP 변환을 권장합니다.
           </div>
           <SituationImageSlotsEditor
             sectionTitle={name || '캐릭터'}
@@ -993,7 +993,7 @@ export function CreateWorldPage({ chrome }: { chrome: PlatformPageChromeProps })
 
         <PageSection title="월드 이미지">
           <div className="rounded-[1.3rem] border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white/68">
-            권장 16:9 · 최소 1600×900 · 가로형 배경/공간 이미지를 권장합니다.
+            권장 16:9 · 최소 1280×720 · 가로형 배경/공간 이미지를 권장하며, 업로드 이미지는 서비스용으로 WebP 변환을 권장합니다.
           </div>
           <SituationImageSlotsEditor
             sectionTitle={name || '월드'}

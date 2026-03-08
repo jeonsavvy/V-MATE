@@ -297,8 +297,8 @@ test('creator flows collapse description fields into practical prompt editors an
   assert.ok(source.includes('월드 프롬프트'));
   assert.ok(source.includes('월드 도입부'));
   assert.ok(source.includes('상황별 이미지 추가'));
-  assert.ok(source.includes('권장 3:4 · 최소 1440×1920'));
-  assert.ok(source.includes('권장 16:9 · 최소 1600×900'));
+  assert.ok(source.includes('권장 3:4 · 최소 768×1024'));
+  assert.ok(source.includes('권장 16:9 · 최소 1280×720'));
   assert.equal(source.includes('공개 상태'), false);
   assert.equal(source.includes('월드 설명'), false);
   assert.equal(source.includes('캐릭터 설정'), false);
