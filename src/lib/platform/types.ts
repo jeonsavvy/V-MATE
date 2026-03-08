@@ -84,12 +84,16 @@ export interface CharacterDetail extends CharacterSummary {
   gallery: string[]
   worlds: CharacterWorldLinkSummary[]
   imageSlots: CharacterImageSlot[]
+  profileJson?: Record<string, unknown>
+  speechStyleJson?: Record<string, unknown>
+  promptProfileJson?: Record<string, unknown>
 }
 
 export interface WorldDetail extends WorldSummary {
   worldSections: Array<{ title: string; body: string }>
   gallery: string[]
   characters: CharacterSummary[]
+  promptProfileJson?: Record<string, unknown>
 }
 
 export interface BridgeProfile {

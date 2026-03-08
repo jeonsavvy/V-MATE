@@ -126,6 +126,21 @@ export const platformApi = {
     promptProfileJson?: Record<string, unknown>
     assets?: Array<{ kind: string; url: string; width: number; height: number }>
   }) => request<{ item: CharacterSummary }>('/characters', { method: 'POST', auth: true, body: JSON.stringify(payload) }),
+  updateCharacter: (slug: string, payload: {
+    name: string
+    headline: string
+    summary: string
+    tags: string[]
+    visibility: Visibility
+    sourceType: string
+    creatorName?: string
+    coverImageUrl?: string
+    avatarImageUrl?: string
+    profileJson?: Record<string, unknown>
+    speechStyleJson?: Record<string, unknown>
+    promptProfileJson?: Record<string, unknown>
+    assets?: Array<{ kind: string; url: string; width: number; height: number }>
+  }) => request<{ item: CharacterSummary }>(`/characters/${slug}`, { method: 'PATCH', auth: true, body: JSON.stringify(payload) }),
   createWorld: (payload: {
     name: string
     headline: string
@@ -139,6 +154,19 @@ export const platformApi = {
     promptProfileJson?: Record<string, unknown>
     assets?: Array<{ kind: string; url: string; width: number; height: number }>
   }) => request<{ item: WorldSummary }>('/worlds', { method: 'POST', auth: true, body: JSON.stringify(payload) }),
+  updateWorld: (slug: string, payload: {
+    name: string
+    headline: string
+    summary: string
+    tags: string[]
+    visibility: Visibility
+    sourceType: string
+    creatorName?: string
+    coverImageUrl?: string
+    worldRulesMarkdown?: string
+    promptProfileJson?: Record<string, unknown>
+    assets?: Array<{ kind: string; url: string; width: number; height: number }>
+  }) => request<{ item: WorldSummary }>(`/worlds/${slug}`, { method: 'PATCH', auth: true, body: JSON.stringify(payload) }),
   createCharacterWorldLink: (payload: {
     characterSlug: string
     worldSlug: string

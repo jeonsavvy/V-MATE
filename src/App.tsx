@@ -27,6 +27,8 @@ type RouteState =
   | { view: 'room'; roomId: string }
   | { view: 'createCharacter' }
   | { view: 'createWorld' }
+  | { view: 'editCharacter'; slug: string }
+  | { view: 'editWorld'; slug: string }
   | { view: 'recent' }
   | { view: 'library' }
   | { view: 'ops' }
@@ -47,6 +49,8 @@ const parseRouteFromPathname = (pathname: string): RouteState => {
   if (segments[0] === 'rooms' && segments[1]) return { view: 'room', roomId: segments[1] }
   if (segments[0] === 'create' && segments[1] === 'character') return { view: 'createCharacter' }
   if (segments[0] === 'create' && segments[1] === 'world') return { view: 'createWorld' }
+  if (segments[0] === 'edit' && segments[1] === 'character' && segments[2]) return { view: 'editCharacter', slug: segments[2] }
+  if (segments[0] === 'edit' && segments[1] === 'world' && segments[2]) return { view: 'editWorld', slug: segments[2] }
   if (segments[0] === 'recent') return { view: 'recent' }
   if (segments[0] === 'library') return { view: 'library' }
   if (segments[0] === 'ops') return { view: 'ops' }
@@ -72,6 +76,10 @@ const toPathname = (route: RouteState) => {
       return '/create/character'
     case 'createWorld':
       return '/create/world'
+    case 'editCharacter':
+      return `/edit/character/${route.slug}`
+    case 'editWorld':
+      return `/edit/world/${route.slug}`
     case 'recent':
       return '/recent'
     case 'library':
@@ -219,6 +227,8 @@ function App() {
               {route.view === 'room' && <RoomPage chrome={chrome} roomId={route.roomId} />}
               {route.view === 'createCharacter' && <CreateCharacterPage chrome={chrome} />}
               {route.view === 'createWorld' && <CreateWorldPage chrome={chrome} />}
+              {route.view === 'editCharacter' && <CreateCharacterPage chrome={chrome} slug={route.slug} />}
+              {route.view === 'editWorld' && <CreateWorldPage chrome={chrome} slug={route.slug} />}
               {route.view === 'recent' && <RecentRoomsPage chrome={chrome} />}
               {route.view === 'library' && <LibraryPage chrome={chrome} />}
               {route.view === 'ops' && <OpsPage chrome={chrome} />}

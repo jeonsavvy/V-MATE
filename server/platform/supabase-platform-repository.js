@@ -328,6 +328,9 @@ export const getCharacterDetail = async (slug) => {
     profileSections: sections.length ? sections : [{ title: '설정', body: character.summary }],
     gallery: (assets || []).map((item) => item.url),
     worlds: links,
+    profileJson,
+    speechStyleJson: speechJson,
+    promptProfileJson: character.prompt_profile_json || {},
   };
 };
 
@@ -359,6 +362,7 @@ export const getWorldDetail = async (slug) => {
     worldSections: sections,
     gallery: (assets || []).map((item) => item.url),
     characters,
+    promptProfileJson: world.prompt_profile_json || {},
   };
 };
 
@@ -547,6 +551,37 @@ export const createCharacter = async ({ event, userId, payload }) => {
   return summarizeCharacter(data);
 };
 
+export const updateCharacter = async ({ event, userId, slug, payload }) => {
+  const client = await userClient(event);
+  if (!client) return null;
+  const creatorName = String(payload.creatorName || payload.profileJson?.creatorName || payload.promptProfileJson?.creatorName || '').trim();
+  const updatePayload = {
+    name: payload.name,
+    headline: payload.headline,
+    summary: payload.summary,
+    cover_image_url: payload.coverImageUrl,
+    avatar_image_url: payload.avatarImageUrl || payload.coverImageUrl,
+    visibility: payload.visibility,
+    display_status: payload.visibility === 'public' ? 'visible' : 'draft',
+    source_type: payload.sourceType,
+    tags: payload.tags,
+    profile_json: { creatorName, ...(payload.profileJson || {}) },
+    speech_style_json: payload.speechStyleJson || {},
+    prompt_profile_json: { creatorName, ...(payload.promptProfileJson || {}) },
+    updated_at: nowIso(),
+    published_at: payload.visibility === 'public' ? nowIso() : null,
+  };
+  const { data, error } = await client.from('characters').update(updatePayload).eq('owner_user_id', userId).eq('slug', slug).select('*').maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  if (Array.isArray(payload.assets) && payload.assets.length > 0) {
+    const assetRows = payload.assets.map((asset) => ({ character_id: data.id, asset_kind: asset.kind, url: asset.url, width: asset.width, height: asset.height }));
+    const { error: assetError } = await client.from('character_assets').insert(assetRows);
+    if (assetError) throw assetError;
+  }
+  return summarizeCharacter(data);
+};
+
 export const createWorld = async ({ event, userId, payload }) => {
   const client = await userClient(event);
   if (!client) return null;
@@ -568,6 +603,35 @@ export const createWorld = async ({ event, userId, payload }) => {
   };
   const { data, error } = await client.from('worlds').insert(insertPayload).select('*').single();
   if (error) throw error;
+  if (Array.isArray(payload.assets) && payload.assets.length > 0) {
+    const assetRows = payload.assets.map((asset) => ({ world_id: data.id, asset_kind: asset.kind, url: asset.url, width: asset.width, height: asset.height }));
+    const { error: assetError } = await client.from('world_assets').insert(assetRows);
+    if (assetError) throw assetError;
+  }
+  return summarizeWorld(data);
+};
+
+export const updateWorld = async ({ event, userId, slug, payload }) => {
+  const client = await userClient(event);
+  if (!client) return null;
+  const creatorName = String(payload.creatorName || payload.promptProfileJson?.creatorName || '').trim();
+  const updatePayload = {
+    name: payload.name,
+    headline: payload.headline,
+    summary: payload.summary,
+    cover_image_url: payload.coverImageUrl,
+    visibility: payload.visibility,
+    display_status: payload.visibility === 'public' ? 'visible' : 'draft',
+    source_type: payload.sourceType,
+    tags: payload.tags,
+    world_rules_markdown: payload.worldRulesMarkdown,
+    prompt_profile_json: { creatorName, ...(payload.promptProfileJson || {}) },
+    updated_at: nowIso(),
+    published_at: payload.visibility === 'public' ? nowIso() : null,
+  };
+  const { data, error } = await client.from('worlds').update(updatePayload).eq('owner_user_id', userId).eq('slug', slug).select('*').maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
   if (Array.isArray(payload.assets) && payload.assets.length > 0) {
     const assetRows = payload.assets.map((asset) => ({ world_id: data.id, asset_kind: asset.kind, url: asset.url, width: asset.width, height: asset.height }));
     const { error: assetError } = await client.from('world_assets').insert(assetRows);

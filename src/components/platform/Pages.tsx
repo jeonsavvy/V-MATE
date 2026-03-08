@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowLeft, Eye, EyeOff, ImagePlus, LayoutTemplate, Loader2, MessageCircle, PlusCircle, Trash2 } from 'lucide-react'
+import { ArrowLeft, Eye, EyeOff, ImagePlus, Loader2, MessageCircle, PlusCircle, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import type { CharacterDetail, CharacterSummary, CharacterWorldLinkSummary, LibraryPayload, OwnerOpsDashboard, RoomSummary, WorldDetail, WorldSummary } from '@/lib/platform/types'
 import { platformApi } from '@/lib/platform/apiClient'
@@ -191,6 +191,7 @@ export function CharacterDetailPage({ chrome, slug }: { chrome: PlatformPageChro
           <div className="flex flex-wrap gap-3">
             <Button onClick={() => handleStart(null)}><MessageCircle className="h-4 w-4" />캐릭터와 바로 대화</Button>
             <Button variant="outline" onClick={() => setPickerOpen(true)}>월드 선택 후 시작</Button>
+            {chrome.user?.id === item.creator.id ? <Button variant="outline" onClick={() => chrome.onNavigate(`/edit/character/${item.slug}`)}>수정</Button> : null}
           </div>
 
           <PageSection title="프로필" className="bg-white/[0.03]">
@@ -282,6 +283,7 @@ export function WorldDetailPage({ chrome, slug }: { chrome: PlatformPageChromePr
             </div>
             <div className="flex flex-wrap gap-3">
               <Button onClick={() => setPickerOpen(true)}><MessageCircle className="h-4 w-4" />캐릭터 선택 후 시작</Button>
+              {chrome.user?.id === item.creator.id ? <Button variant="outline" onClick={() => chrome.onNavigate(`/edit/world/${item.slug}`)}>수정</Button> : null}
             </div>
             <PageSection title="월드 정보" className="bg-white/[0.03]">
               <div className="grid gap-3 md:grid-cols-2">
@@ -519,6 +521,26 @@ const createImageSlotDraft = (slot: string, usage: string, trigger: string, prio
   sourceSize: '',
 })
 
+const createDraftFromExistingSlot = (slot: {
+  id: string
+  slot: string
+  usage?: string
+  trigger?: string
+  priority?: number
+  detailUrl?: string
+  cardUrl?: string
+  thumbUrl?: string
+}): ImageSlotDraft => ({
+  id: slot.id || createSlotId(),
+  slot: slot.slot || 'main',
+  usage: slot.usage || slot.slot || '',
+  trigger: slot.trigger || '',
+  priority: String(slot.priority ?? 100),
+  assets: [],
+  previewUrl: slot.detailUrl || slot.cardUrl || slot.thumbUrl || '',
+  sourceSize: '',
+})
+
 const uploadPreparedAssets = async ({
   entityType,
   assets,
@@ -712,7 +734,7 @@ const SituationImageSlotsEditor = ({
 
 const selectStyle = { colorScheme: 'dark' as const }
 
-export function CreateCharacterPage({ chrome }: { chrome: PlatformPageChromeProps }) {
+export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChromeProps; slug?: string }) {
   const [name, setName] = useState('')
   const [headline, setHeadline] = useState('')
   const [tags, setTags] = useState('')
@@ -720,6 +742,7 @@ export function CreateCharacterPage({ chrome }: { chrome: PlatformPageChromeProp
   const [characterPrompt, setCharacterPrompt] = useState('')
   const [characterIntro, setCharacterIntro] = useState('')
   const [processingSlotId, setProcessingSlotId] = useState<string | null>(null)
+  const [isHydrating, setIsHydrating] = useState(Boolean(slug))
   const [imageSlots, setImageSlots] = useState<ImageSlotDraft[]>(() => [
     createImageSlotDraft('main', '대표 이미지', '기본 대표 비주얼', '100'),
   ])
@@ -746,6 +769,26 @@ export function CreateCharacterPage({ chrome }: { chrome: PlatformPageChromeProp
 
   const mainSlot = imageSlots[0]!
   const creatorName = String(chrome.user?.user_metadata?.name || chrome.user?.email || '').trim()
+
+  useEffect(() => {
+    if (!slug) return
+    let mounted = true
+    setIsHydrating(true)
+    void platformApi.fetchCharacter(slug)
+      .then(({ item }) => {
+        if (!mounted) return
+        setName(item.name)
+        setHeadline(item.headline || '')
+        setTags(item.tags.join(', '))
+        setSourceType((item.sourceType as 'original' | 'derivative') || 'original')
+        setCharacterPrompt(String(item.promptProfileJson?.masterPrompt || item.summary || ''))
+        setCharacterIntro(String(item.promptProfileJson?.characterIntro || ''))
+        setImageSlots(item.imageSlots?.length ? item.imageSlots.map((slot) => createDraftFromExistingSlot(slot)) : [createImageSlotDraft('main', '대표 이미지', '기본 대표 비주얼', '100')])
+      })
+      .catch((error) => toast.error(error instanceof Error ? error.message : '캐릭터 정보를 불러오지 못했습니다.'))
+      .finally(() => { if (mounted) setIsHydrating(false) })
+    return () => { mounted = false }
+  }, [slug])
 
   if (!chrome.user) {
     return <ProtectedGate chrome={chrome} title="로그인 후 캐릭터를 만들 수 있습니다" description="만든 캐릭터는 바로 홈/상세/최근 대화 흐름에 연결됩니다." />
@@ -835,7 +878,7 @@ export function CreateCharacterPage({ chrome }: { chrome: PlatformPageChromeProp
         </PageSection>
 
         <div className="flex justify-end">
-          <Button disabled={processingSlotId !== null || !name.trim() || !headline.trim() || !characterPrompt.trim() || mainSlot.assets.length === 0} onClick={() => {
+          <Button disabled={isHydrating || processingSlotId !== null || !name.trim() || !headline.trim() || !characterPrompt.trim() || !mainSlot.previewUrl} onClick={() => {
             void (async () => {
               const slotAssets = imageSlots.flatMap((slot) => slot.assets)
               const uploadedAssets = slotAssets.length > 0
@@ -853,12 +896,12 @@ export function CreateCharacterPage({ chrome }: { chrome: PlatformPageChromeProp
                 }))
               const detailUrl = mainRecord?.detailUrl || ''
               const cardUrl = mainRecord?.cardUrl || detailUrl
-              const { item } = await platformApi.createCharacter({
+              const payload = {
                 name,
                 headline,
                 summary: derivedSummary,
                 tags: splitCommaValues(tags),
-                visibility: 'public',
+                visibility: 'public' as const,
                 sourceType,
                 creatorName,
                 coverImageUrl: detailUrl,
@@ -866,6 +909,7 @@ export function CreateCharacterPage({ chrome }: { chrome: PlatformPageChromeProp
                 assets: mainAssets,
                 profileJson: {
                   prompt: characterPrompt,
+                  creatorName,
                 },
                 speechStyleJson: {
                   prompt: characterPrompt,
@@ -877,19 +921,23 @@ export function CreateCharacterPage({ chrome }: { chrome: PlatformPageChromeProp
                   speechStyle: headline.trim() ? [headline.trim()] : [],
                   relationshipBaseline: '처음 관계는 캐릭터 프롬프트 지시를 따른다.',
                   imageSlots: imageSlotRecords,
+                  creatorName,
                 },
-              })
-              toast.success('캐릭터를 만들었습니다.')
+              }
+              const { item } = slug
+                ? await platformApi.updateCharacter(slug, payload)
+                : await platformApi.createCharacter(payload)
+              toast.success(slug ? '캐릭터를 수정했습니다.' : '캐릭터를 만들었습니다.')
               chrome.onNavigate(`/characters/${item.slug}`)
             })().catch((error) => toast.error(error instanceof Error ? error.message : '캐릭터 생성에 실패했습니다.'))
-          }}><PlusCircle className="h-4 w-4" />{processingSlotId ? '이미지 처리 중...' : '캐릭터 저장'}</Button>
+          }}><PlusCircle className="h-4 w-4" />{isHydrating ? '불러오는 중...' : processingSlotId ? '이미지 처리 중...' : slug ? '캐릭터 수정' : '캐릭터 저장'}</Button>
         </div>
       </div>
     </PageFrame>
   )
 }
 
-export function CreateWorldPage({ chrome }: { chrome: PlatformPageChromeProps }) {
+export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromeProps; slug?: string }) {
   const [name, setName] = useState('')
   const [headline, setHeadline] = useState('')
   const [tags, setTags] = useState('')
@@ -897,6 +945,7 @@ export function CreateWorldPage({ chrome }: { chrome: PlatformPageChromeProps })
   const [worldPrompt, setWorldPrompt] = useState('')
   const [worldIntro, setWorldIntro] = useState('')
   const [processingSlotId, setProcessingSlotId] = useState<string | null>(null)
+  const [isHydrating, setIsHydrating] = useState(Boolean(slug))
   const [imageSlots, setImageSlots] = useState<ImageSlotDraft[]>(() => [
     createImageSlotDraft('main', '대표 이미지', '기본 월드 비주얼', '100'),
   ])
@@ -928,6 +977,26 @@ export function CreateWorldPage({ chrome }: { chrome: PlatformPageChromeProps })
   const mainSlot = imageSlots[0]!
   const derivedSummary = deriveSummaryFromPrompt(headline, worldPrompt)
   const creatorName = String(chrome.user?.user_metadata?.name || chrome.user?.email || '').trim()
+
+  useEffect(() => {
+    if (!slug) return
+    let mounted = true
+    setIsHydrating(true)
+    void platformApi.fetchWorld(slug)
+      .then(({ item }) => {
+        if (!mounted) return
+        setName(item.name)
+        setHeadline(item.headline || '')
+        setTags(item.tags.join(', '))
+        setSourceType((item.sourceType as 'original' | 'derivative') || 'original')
+        setWorldPrompt(String(item.promptProfileJson?.masterPrompt || item.summary || ''))
+        setWorldIntro(String(item.promptProfileJson?.worldIntro || ''))
+        setImageSlots(item.imageSlots?.length ? item.imageSlots.map((slot) => createDraftFromExistingSlot(slot)) : [createImageSlotDraft('main', '대표 이미지', '기본 월드 비주얼', '100')])
+      })
+      .catch((error) => toast.error(error instanceof Error ? error.message : '월드 정보를 불러오지 못했습니다.'))
+      .finally(() => { if (mounted) setIsHydrating(false) })
+    return () => { mounted = false }
+  }, [slug])
 
   return (
     <PageFrame chrome={chrome}>
@@ -1010,7 +1079,7 @@ export function CreateWorldPage({ chrome }: { chrome: PlatformPageChromeProps })
         </PageSection>
 
         <div className="flex justify-end">
-          <Button disabled={processingSlotId !== null || !name.trim() || !headline.trim() || !worldPrompt.trim() || mainSlot.assets.length === 0} onClick={() => {
+          <Button disabled={isHydrating || processingSlotId !== null || !name.trim() || !headline.trim() || !worldPrompt.trim() || !mainSlot.previewUrl} onClick={() => {
             void (async () => {
               const slotAssets = imageSlots.flatMap((slot) => slot.assets)
               const uploadedAssets = slotAssets.length > 0
@@ -1019,12 +1088,12 @@ export function CreateWorldPage({ chrome }: { chrome: PlatformPageChromeProps })
               const imageSlotRecords = imageSlots.map((slot) => buildSlotRecord({ slot, uploadedAssets }))
               const mainRecord = imageSlotRecords[0]
               const heroUrl = mainRecord?.detailUrl || uploadedAssets.find((asset) => asset.kind === `${mainSlot.id}:hero`)?.url || ''
-              const { item } = await platformApi.createWorld({
+              const payload = {
                 name,
                 headline,
                 summary: derivedSummary,
                 tags: splitCommaValues(tags),
-                visibility: 'public',
+                visibility: 'public' as const,
                 sourceType,
                 creatorName,
                 coverImageUrl: heroUrl,
@@ -1038,12 +1107,16 @@ export function CreateWorldPage({ chrome }: { chrome: PlatformPageChromeProps })
                   starterLocations: [],
                   worldTerms: splitCommaValues(tags),
                   imageSlots: imageSlotRecords,
+                  creatorName,
                 },
-              })
-              toast.success('월드를 만들었습니다.')
+              }
+              const { item } = slug
+                ? await platformApi.updateWorld(slug, payload)
+                : await platformApi.createWorld(payload)
+              toast.success(slug ? '월드를 수정했습니다.' : '월드를 만들었습니다.')
               chrome.onNavigate(`/worlds/${item.slug}`)
             })().catch((error) => toast.error(error instanceof Error ? error.message : '월드 생성에 실패했습니다.'))
-          }}><PlusCircle className="h-4 w-4" />{processingSlotId ? '이미지 처리 중...' : '월드 저장'}</Button>
+          }}><PlusCircle className="h-4 w-4" />{isHydrating ? '불러오는 중...' : processingSlotId ? '이미지 처리 중...' : slug ? '월드 수정' : '월드 저장'}</Button>
         </div>
       </div>
     </PageFrame>
@@ -1221,65 +1294,7 @@ export function OpsPage({ chrome }: { chrome: PlatformPageChromeProps }) {
       ) : (
         <div className="space-y-6">
           <PageSection title="운영실">
-            <div className="grid gap-6 xl:grid-cols-[0.92fr_1.08fr]">
-              <div className="space-y-4 rounded-[1.5rem] border border-white/10 bg-white/[0.04] p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-lg font-semibold text-white">메인 배너</h3>
-                    <p className="mt-1 text-sm text-white/56">자동이면 실제 사용지표 상위 콘텐츠를, 수동이면 선택한 대상만 배너로 씁니다.</p>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button className={dashboard.home.heroMode === 'auto' ? 'bg-[#d92c63] text-white hover:bg-[#c12358]' : 'border-white/14 bg-[#15181d] text-white hover:bg-white/8'} variant={dashboard.home.heroMode === 'auto' ? 'default' : 'outline'} onClick={() => {
-                      void platformApi.setBannerMode('auto')
-                        .then(() => {
-                          toast.success('배너를 자동 모드로 전환했습니다.')
-                          loadDashboard()
-                        })
-                        .catch((error) => toast.error(error instanceof Error ? error.message : '배너 모드 변경에 실패했습니다.'))
-                    }}>
-                      <LayoutTemplate className="h-4 w-4" />자동
-                    </Button>
-                    <Button className={dashboard.home.heroMode === 'manual' ? 'bg-[#d92c63] text-white hover:bg-[#c12358]' : 'border-white/14 bg-[#15181d] text-white hover:bg-white/8'} variant={dashboard.home.heroMode === 'manual' ? 'default' : 'outline'} onClick={() => {
-                      void platformApi.setBannerMode('manual')
-                        .then(() => {
-                          toast.success('배너를 수동 모드로 전환했습니다.')
-                          loadDashboard()
-                        })
-                        .catch((error) => toast.error(error instanceof Error ? error.message : '배너 모드 변경에 실패했습니다.'))
-                    }}>
-                      <LayoutTemplate className="h-4 w-4" />수동
-                    </Button>
-                  </div>
-                </div>
-                <div className="rounded-[1.2rem] border border-white/10 bg-[#15181d] px-4 py-4 text-sm text-white/62">
-                  현재 타깃: {dashboard.home.heroTargetPath || '자동 상위 콘텐츠'}
-                </div>
-                <div className="grid gap-3">
-                  {[...dashboard.items.visibleCharacters, ...dashboard.items.visibleWorlds].slice(0, 8).map((item) => {
-                    const targetPath = item.entityType === 'character' ? `/characters/${item.slug}` : `/worlds/${item.slug}`
-                    return (
-                      <div key={targetPath} className="flex items-center justify-between gap-3 rounded-[1.2rem] border border-white/10 bg-[#15181d] px-4 py-4">
-                        <div>
-                          <p className="font-semibold text-white">{item.name}</p>
-                          <p className="mt-1 text-sm text-white/52">{item.summary}</p>
-                        </div>
-                        <Button variant="outline" className="border-white/14 bg-[#15181d] text-white hover:bg-white/8" onClick={() => {
-                          void platformApi.setBannerTarget(targetPath)
-                            .then(() => {
-                              toast.success('배너 대상을 변경했습니다.')
-                              loadDashboard()
-                            })
-                            .catch((error) => toast.error(error instanceof Error ? error.message : '배너 대상 변경에 실패했습니다.'))
-                        }}>
-                          배너 지정
-                        </Button>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-
-              <div className="space-y-4">
+            <div className="space-y-4">
                 <div className="space-y-3">
                   <h3 className="text-lg font-semibold text-white">캐릭터 운영</h3>
                   {[{ title: '노출 중', items: dashboard.items.visibleCharacters, entityType: 'character' as const, visible: true }, { title: '숨김', items: dashboard.items.hiddenCharacters, entityType: 'character' as const, visible: false }].map((section) => (
@@ -1355,7 +1370,6 @@ export function OpsPage({ chrome }: { chrome: PlatformPageChromeProps }) {
                     </div>
                   ))}
                 </div>
-              </div>
             </div>
           </PageSection>
         </div>

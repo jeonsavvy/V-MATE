@@ -163,6 +163,8 @@ test('app source exposes platform routes and simplified footer copy', async () =
   assert.ok(appSource.includes('/worlds/'));
   assert.ok(appSource.includes('/create/character'));
   assert.ok(appSource.includes('/create/world'));
+  assert.ok(appSource.includes('/edit/character'));
+  assert.ok(appSource.includes('/edit/world'));
   assert.ok(appSource.includes('/recent'));
   assert.ok(appSource.includes('/library'));
   assert.ok(appSource.includes('/ops'));
@@ -252,6 +254,9 @@ test('home uses latest and popular filters only', async () => {
 
   assert.ok(source.includes('신작'));
   assert.ok(source.includes('인기'));
+  assert.ok(source.includes('캐릭터 둘러보기'));
+  assert.ok(source.includes('월드 둘러보기'));
+  assert.equal(source.includes('PageSection title="둘러보기"'), false);
   assert.equal(source.includes('태그'), false);
 });
 
@@ -308,10 +313,8 @@ test('ops page exposes banner auto/manual controls and delete actions', async ()
   const pagesPath = path.join(srcRoot, 'components/platform/Pages.tsx');
   const source = await readFile(pagesPath, 'utf8');
 
-  assert.ok(source.includes('메인 배너'));
-  assert.ok(source.includes('자동'));
-  assert.ok(source.includes('수동'));
-  assert.ok(source.includes('배너 지정'));
+  assert.equal(source.includes('메인 배너'), false);
+  assert.equal(source.includes('배너 지정'), false);
   assert.ok(source.includes('삭제'));
 });
 

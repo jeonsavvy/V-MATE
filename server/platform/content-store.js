@@ -162,6 +162,9 @@ export const getCharacterDetail = (slug) => {
     profileSections: item.profileSections,
     gallery: item.gallery,
     worlds,
+    profileJson: item.profileJson || {},
+    speechStyleJson: item.speechStyleJson || {},
+    promptProfileJson: item.promptProfile || {},
   };
 };
 
@@ -193,6 +196,7 @@ export const getWorldDetail = (slug) => {
     worldSections: item.worldSections,
     gallery: item.gallery,
     characters,
+    promptProfileJson: item.promptProfile || {},
   };
 };
 
@@ -279,6 +283,8 @@ export const createCharacter = ({ userId, payload }) => {
     favoriteCount: 0,
     chatStartCount: 0,
     updatedAt: nowIso(),
+    profileJson: payload.profileJson || {},
+    speechStyleJson: payload.speechStyleJson || {},
     profileSections: [
       { title: '성격', body: payload.summary },
       { title: '말투', body: payload.headline || payload.summary },
@@ -296,6 +302,31 @@ export const createCharacter = ({ userId, payload }) => {
     },
   };
   createdCharacters.set(item.id, item);
+  return summarizeCharacter(item);
+};
+
+export const updateCharacter = ({ userId, slug, payload }) => {
+  const item = [...createdCharacters.values()].find((entry) => entry.slug === slug && entry.ownerUserId === userId);
+  if (!item) return null;
+  const creatorName = String(payload.creatorName || payload.profileJson?.creatorName || payload.promptProfileJson?.creatorName || '').trim() || item.creator.name;
+  item.name = payload.name;
+  item.headline = payload.headline || payload.summary;
+  item.summary = payload.summary;
+  item.tags = payload.tags || [];
+  item.visibility = payload.visibility || item.visibility;
+  item.displayStatus = payload.visibility === 'public' ? 'visible' : 'draft';
+  item.sourceType = payload.sourceType || item.sourceType;
+  item.coverImageUrl = payload.coverImageUrl || item.coverImageUrl;
+  item.avatarImageUrl = payload.avatarImageUrl || payload.coverImageUrl || item.avatarImageUrl;
+  item.creator = { ...item.creator, name: creatorName };
+  item.profileJson = payload.profileJson || item.profileJson || {};
+  item.speechStyleJson = payload.speechStyleJson || item.speechStyleJson || {};
+  item.profileSections = [{ title: '설정', body: payload.summary }];
+  item.promptProfile = { ...item.promptProfile, ...(payload.promptProfileJson || {}), creatorName };
+  if (Array.isArray(payload.assets) && payload.assets.length > 0) {
+    item.gallery = payload.assets.map((asset) => asset.url);
+  }
+  item.updatedAt = nowIso();
   return summarizeCharacter(item);
 };
 
@@ -334,6 +365,31 @@ export const createWorld = ({ userId, payload }) => {
     },
   };
   createdWorlds.set(item.id, item);
+  return summarizeWorld(item);
+};
+
+export const updateWorld = ({ userId, slug, payload }) => {
+  const item = [...createdWorlds.values()].find((entry) => entry.slug === slug && entry.ownerUserId === userId);
+  if (!item) return null;
+  const creatorName = String(payload.creatorName || payload.promptProfileJson?.creatorName || '').trim() || item.creator.name;
+  item.name = payload.name;
+  item.headline = payload.headline || payload.summary;
+  item.summary = payload.summary;
+  item.tags = payload.tags || [];
+  item.visibility = payload.visibility || item.visibility;
+  item.displayStatus = payload.visibility === 'public' ? 'visible' : 'draft';
+  item.sourceType = payload.sourceType || item.sourceType;
+  item.coverImageUrl = payload.coverImageUrl || item.coverImageUrl;
+  item.creator = { ...item.creator, name: creatorName };
+  item.worldSections = [
+    { title: '월드 소개', body: payload.summary },
+    { title: '월드 규칙', body: payload.worldRulesMarkdown || payload.summary },
+  ];
+  item.promptProfile = { ...item.promptProfile, ...(payload.promptProfileJson || {}), creatorName };
+  if (Array.isArray(payload.assets) && payload.assets.length > 0) {
+    item.gallery = payload.assets.map((asset) => asset.url);
+  }
+  item.updatedAt = nowIso();
   return summarizeWorld(item);
 };
 

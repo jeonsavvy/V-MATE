@@ -251,12 +251,32 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
     return jsonOk({ statusCode: 201, headers, startedAtMs, body: { item: await getPlatformStore().createCharacter({ event, userId: authResult.userId, payload: { ...normalizeCharacterPayload(body), assets: body.assets, profileJson: body.profileJson, speechStyleJson: body.speechStyleJson, promptProfileJson: body.promptProfileJson } }) } });
   }
 
+  if (method === 'PATCH' && segments[1] === 'characters' && segments[2]) {
+    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: true });
+    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
+    const body = parseJsonBody(event.body);
+    if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: 'Invalid request body.', errorCode: 'INVALID_REQUEST_BODY' });
+    const item = await getPlatformStore().updateCharacter?.({ event, userId: authResult.userId, slug: segments[2], payload: { ...normalizeCharacterPayload(body), assets: body.assets, profileJson: body.profileJson, speechStyleJson: body.speechStyleJson, promptProfileJson: body.promptProfileJson } });
+    if (!item) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Character not found.', errorCode: 'CHARACTER_NOT_FOUND' });
+    return jsonOk({ headers, startedAtMs, body: { item } });
+  }
+
   if (method === 'POST' && segments[1] === 'worlds') {
     const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable() });
     if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
     const body = parseJsonBody(event.body);
     if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: 'Invalid request body.', errorCode: 'INVALID_REQUEST_BODY' });
     return jsonOk({ statusCode: 201, headers, startedAtMs, body: { item: await getPlatformStore().createWorld({ event, userId: authResult.userId, payload: { ...normalizeWorldPayload(body), assets: body.assets, promptProfileJson: body.promptProfileJson } }) } });
+  }
+
+  if (method === 'PATCH' && segments[1] === 'worlds' && segments[2]) {
+    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: true });
+    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
+    const body = parseJsonBody(event.body);
+    if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: 'Invalid request body.', errorCode: 'INVALID_REQUEST_BODY' });
+    const item = await getPlatformStore().updateWorld?.({ event, userId: authResult.userId, slug: segments[2], payload: { ...normalizeWorldPayload(body), assets: body.assets, promptProfileJson: body.promptProfileJson } });
+    if (!item) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'World not found.', errorCode: 'WORLD_NOT_FOUND' });
+    return jsonOk({ headers, startedAtMs, body: { item } });
   }
 
   if (method === 'POST' && segments[1] === 'character-world-links') {

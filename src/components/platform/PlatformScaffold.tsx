@@ -192,16 +192,13 @@ export function EntityCard({ item, meta, onClick, cta = '상세 보기' }: { ite
     <button type="button" onClick={onClick} className="group overflow-hidden rounded-[1.75rem] border border-white/8 bg-[#17191d] text-left transition hover:-translate-y-1 hover:border-white/16">
       <div className="relative">
         <ArtworkFrame src={item.coverImageUrl} alt={item.name} aspectClassName={mediaAspectClassName} imageClassName="transition duration-500 group-hover:scale-[1.01]" />
-        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,rgba(0,0,0,0)_18%,rgba(0,0,0,0.82)_100%)]" />
         <div className="absolute left-4 top-4 flex flex-wrap gap-2">
           <span className="rounded-full bg-black/45 px-2.5 py-1 text-[10px] font-semibold tracking-[0.14em] text-white">{item.sourceType === 'original' ? '오리지널' : '2차창작'}</span>
           {item.displayStatus === 'hidden' ? <span className="rounded-full bg-[#d92c63] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-white">숨김</span> : null}
         </div>
-        <div className="absolute inset-x-0 bottom-0 p-4 text-white">
-          <p className="text-[1.45rem] font-semibold tracking-[-0.03em]">{item.name}</p>
-        </div>
       </div>
       <div className="space-y-4 p-4">
+        <p className="text-[1.3rem] font-semibold tracking-[-0.03em] text-white">{item.name}</p>
         <p className="line-clamp-2 text-sm leading-6 text-white/72">{item.summary}</p>
         <div className="flex flex-wrap gap-2">
           {item.tags.slice(0, 4).map((tag) => <span key={tag} className="rounded-full bg-white/7 px-2.5 py-1 text-[11px] text-white/62">{tag}</span>)}

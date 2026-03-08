@@ -18,16 +18,31 @@ interface HomeProps {
 export function Home({ user, userAvatarInitial, searchQuery, onSearchChange, onNavigate, onAuthRequest, onSignOut }: HomeProps) {
   void user
   void onAuthRequest
-  const [filter, setFilter] = useState<'new' | 'popular' | ''>('')
+  const [characterFilter, setCharacterFilter] = useState<'new' | 'popular' | ''>('')
+  const [worldFilter, setWorldFilter] = useState<'new' | 'popular' | ''>('')
   const [homePayload, setHomePayload] = useState<HomeFeedPayload | null>(null)
 
   useEffect(() => {
     let mounted = true
-    void platformApi.fetchHome('characters', searchQuery, filter)
-      .then((data) => { if (mounted) setHomePayload(data) })
+    void Promise.all([
+      platformApi.fetchCharacters(searchQuery, characterFilter),
+      platformApi.fetchWorlds(searchQuery, worldFilter),
+    ])
+      .then(([characters, worlds]) => {
+        if (!mounted) return
+        setHomePayload({
+          home: {
+            defaultTab: 'characters',
+            filterChips: ['신작', '인기'],
+            hero: { title: '', subtitle: '', coverImageUrl: '', targetPath: '' },
+            characterFeed: { items: characters.items },
+            worldFeed: { items: worlds.items },
+          },
+        })
+      })
       .catch((error) => toast.error(error instanceof Error ? error.message : '홈을 불러오지 못했습니다.'))
     return () => { mounted = false }
-  }, [filter, searchQuery])
+  }, [characterFilter, searchQuery, worldFilter])
 
   const characterItems = homePayload?.home.characterFeed.items || []
   const worldItems = homePayload?.home.worldFeed.items || []
@@ -43,14 +58,12 @@ export function Home({ user, userAvatarInitial, searchQuery, onSearchChange, onN
       onSignOut={onSignOut}
     >
       <div className="space-y-6" data-footer-copy="© V-MATE">
-        <PageSection title="둘러보기">
+        <PageSection title="캐릭터 둘러보기" action={
           <div className="flex flex-wrap gap-2">
-            <FilterChip active={filter === 'new'} onClick={() => setFilter((prev) => prev === 'new' ? '' : 'new')}>신작</FilterChip>
-            <FilterChip active={filter === 'popular'} onClick={() => setFilter((prev) => prev === 'popular' ? '' : 'popular')}>인기</FilterChip>
+            <FilterChip active={characterFilter === 'new'} onClick={() => setCharacterFilter((prev) => prev === 'new' ? '' : 'new')}>신작</FilterChip>
+            <FilterChip active={characterFilter === 'popular'} onClick={() => setCharacterFilter((prev) => prev === 'popular' ? '' : 'popular')}>인기</FilterChip>
           </div>
-        </PageSection>
-
-        <PageSection title="캐릭터 둘러보기">
+        }>
           {characterItems.length === 0 ? (
             <EmptyState title="캐릭터가 없습니다" description="검색어나 필터를 바꿔 다시 확인해보세요." />
           ) : (
@@ -66,7 +79,12 @@ export function Home({ user, userAvatarInitial, searchQuery, onSearchChange, onN
           )}
         </PageSection>
 
-        <PageSection title="월드 둘러보기">
+        <PageSection title="월드 둘러보기" action={
+          <div className="flex flex-wrap gap-2">
+            <FilterChip active={worldFilter === 'new'} onClick={() => setWorldFilter((prev) => prev === 'new' ? '' : 'new')}>신작</FilterChip>
+            <FilterChip active={worldFilter === 'popular'} onClick={() => setWorldFilter((prev) => prev === 'popular' ? '' : 'popular')}>인기</FilterChip>
+          </div>
+        }>
           {worldItems.length === 0 ? (
             <EmptyState title="월드가 없습니다" description="검색어나 필터를 바꿔 다시 확인해보세요." />
           ) : (
