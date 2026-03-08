@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { afterEach, test } from 'node:test';
 import { createCloudRunServer } from './cloud-run-server.js';
-import { resetPlatformStoreForTests } from './platform/content-store.js';
+import { createCharacter, createWorld, resetPlatformStoreForTests } from './platform/content-store.js';
 
 const TRACKED_ENV_KEYS = [
   'REQUEST_BODY_MAX_BYTES',
@@ -41,6 +41,46 @@ const startServer = async (chatHandlerImpl, chatHandlerContext = {}, runtimeEnv 
     });
 
   return { baseUrl, close };
+};
+
+const seedPlatformFixtures = () => {
+  const character = createCharacter({
+    userId: 'owner-user',
+    payload: {
+      name: 'test-character',
+      headline: '테스트 캐릭터 한 줄 소개',
+      summary: '테스트 캐릭터 요약',
+      visibility: 'public',
+      sourceType: 'original',
+      tags: ['테스트'],
+      coverImageUrl: '/test-character.webp',
+      avatarImageUrl: '/test-character.webp',
+      promptProfileJson: {
+        relationshipBaseline: '테스트 기본 관계',
+      },
+    },
+  });
+
+  const world = createWorld({
+    userId: 'owner-user',
+    payload: {
+      name: 'test-world',
+      headline: '테스트 월드 한 줄 설명',
+      summary: '테스트 월드 요약',
+      visibility: 'public',
+      sourceType: 'original',
+      tags: ['테스트'],
+      coverImageUrl: '/test-world.webp',
+      worldRulesMarkdown: '테스트 월드 규칙',
+      promptProfileJson: {
+        genreKey: 'city',
+        starterLocations: ['테스트 광장'],
+        worldTerms: ['테스트'],
+      },
+    },
+  });
+
+  return { character, world };
 };
 
 class MemoryKv {
@@ -123,13 +163,14 @@ test('returns public character detail payload from /api/characters/:slug', async
   process.env.ALLOW_NON_BROWSER_ORIGIN = 'false';
   process.env.ALLOW_ALL_ORIGINS = 'false';
   process.env.ALLOWED_ORIGINS = 'http://localhost:5173';
+  const { character } = seedPlatformFixtures();
 
   const { baseUrl, close } = await startServer(async () => {
     throw new Error('chat handler should not be called for public character detail route');
   });
 
   try {
-    const response = await fetch(`${baseUrl}/api/characters/mika`, {
+    const response = await fetch(`${baseUrl}/api/characters/${character.slug}`, {
       headers: {
         Origin: 'http://localhost:5173',
       },
@@ -137,7 +178,7 @@ test('returns public character detail payload from /api/characters/:slug', async
 
     assert.equal(response.status, 200);
     const payload = await response.json();
-    assert.equal(payload.item?.slug, 'mika');
+    assert.equal(payload.item?.slug, character.slug);
     assert.equal(payload.item?.entityType, 'character');
     assert.equal(Array.isArray(payload.item?.worlds), true);
     assert.equal(response.headers.get('access-control-allow-origin'), 'http://localhost:5173');
@@ -151,6 +192,7 @@ test('creates and reads a room payload through platform room routes', async () =
   process.env.ALLOW_ALL_ORIGINS = 'false';
   process.env.ALLOWED_ORIGINS = 'http://localhost:5173';
   process.env.REQUIRE_AUTH_FOR_CHAT = 'false';
+  const { character, world } = seedPlatformFixtures();
 
   const { baseUrl, close } = await startServer(async () => {
     throw new Error('legacy chat handler should not be called during room route smoke test');
@@ -164,16 +206,16 @@ test('creates and reads a room payload through platform room routes', async () =
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        characterSlug: 'mika',
-        worldSlug: 'sao',
+        characterSlug: character.slug,
+        worldSlug: world.slug,
         userAlias: '유민',
       }),
     });
 
     assert.equal(createResponse.status, 201);
     const created = await createResponse.json();
-    assert.equal(created.room?.character?.slug, 'mika');
-    assert.equal(created.room?.world?.slug, 'sao');
+    assert.equal(created.room?.character?.slug, character.slug);
+    assert.equal(created.room?.world?.slug, world.slug);
     assert.equal(created.room?.userAlias, '유민');
     assert.equal(typeof created.room?.bridgeProfile?.meetingTrigger, 'string');
 
@@ -278,13 +320,14 @@ test('owner ops can delete content through dedicated endpoint', async () => {
   process.env.ALLOW_ALL_ORIGINS = 'false';
   process.env.ALLOWED_ORIGINS = 'http://localhost:5173';
   process.env.REQUIRE_AUTH_FOR_CHAT = 'false';
+  const { character } = seedPlatformFixtures();
 
   const { baseUrl, close } = await startServer(async () => {
     throw new Error('legacy chat handler should not be called during ops delete route smoke test');
   });
 
   try {
-    const response = await fetch(`${baseUrl}/api/ops/content/character/mika`, {
+    const response = await fetch(`${baseUrl}/api/ops/content/character/${character.slug}`, {
       method: 'DELETE',
       headers: {
         Origin: 'http://localhost:5173',

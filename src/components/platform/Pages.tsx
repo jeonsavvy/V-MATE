@@ -700,6 +700,7 @@ export function CreateCharacterPage({ chrome }: { chrome: PlatformPageChromeProp
   const [tags, setTags] = useState('')
   const [sourceType, setSourceType] = useState<'original' | 'derivative'>('original')
   const [characterPrompt, setCharacterPrompt] = useState('')
+  const [characterIntro, setCharacterIntro] = useState('')
   const [processingSlotId, setProcessingSlotId] = useState<string | null>(null)
   const [imageSlots, setImageSlots] = useState<ImageSlotDraft[]>(() => [
     createImageSlotDraft('main', '대표 이미지', '기본 대표 비주얼', '100'),
@@ -784,6 +785,18 @@ export function CreateCharacterPage({ chrome }: { chrome: PlatformPageChromeProp
           </div>
         </PageSection>
 
+        <PageSection title="캐릭터 도입부">
+          <div className="space-y-3">
+            <p className="text-sm leading-6 text-white/62">처음 방을 열었을 때 캐릭터가 어떤 태도와 온도로 등장해야 하는지 짧고 명확하게 적어주세요.</p>
+            <textarea
+              value={characterIntro}
+              onChange={(event) => setCharacterIntro(event.target.value)}
+              placeholder="예) 사용자를 한 번 살핀 뒤 짧게 먼저 말을 건다. 경계는 있지만 무례하지 않고, 호기심이 먼저 보인다."
+              className="min-h-[120px] w-full rounded-[1.5rem] border border-white/10 bg-white/5 px-4 py-4 text-[15px] leading-7 text-white outline-none placeholder:text-white/35"
+            />
+          </div>
+        </PageSection>
+
         <PageSection title="캐릭터 이미지">
           <SituationImageSlotsEditor
             sectionTitle={name || '캐릭터'}
@@ -836,6 +849,7 @@ export function CreateCharacterPage({ chrome }: { chrome: PlatformPageChromeProp
                 },
                 promptProfileJson: {
                   masterPrompt: characterPrompt.trim(),
+                  characterIntro: characterIntro.trim(),
                   persona: characterPrompt.trim() ? [characterPrompt.trim()] : [],
                   speechStyle: headline.trim() ? [headline.trim()] : [],
                   relationshipBaseline: '처음 관계는 캐릭터 프롬프트 지시를 따른다.',
@@ -858,6 +872,7 @@ export function CreateWorldPage({ chrome }: { chrome: PlatformPageChromeProps })
   const [tags, setTags] = useState('')
   const [sourceType, setSourceType] = useState<'original' | 'derivative'>('original')
   const [worldPrompt, setWorldPrompt] = useState('')
+  const [worldIntro, setWorldIntro] = useState('')
   const [processingSlotId, setProcessingSlotId] = useState<string | null>(null)
   const [imageSlots, setImageSlots] = useState<ImageSlotDraft[]>(() => [
     createImageSlotDraft('main', '대표 이미지', '기본 월드 비주얼', '100'),
@@ -940,6 +955,18 @@ export function CreateWorldPage({ chrome }: { chrome: PlatformPageChromeProps })
           </div>
         </PageSection>
 
+        <PageSection title="월드 도입부">
+          <div className="space-y-3">
+            <p className="text-sm leading-6 text-white/62">사용자가 이 월드에 들어왔을 때 기본적으로 어떤 장소, 어떤 압력, 어떤 장면으로 시작해야 하는지 간결하게 적어주세요.</p>
+            <textarea
+              value={worldIntro}
+              onChange={(event) => setWorldIntro(event.target.value)}
+              placeholder="예) 비가 막 그친 편의점 앞에서 시작한다. 막차가 얼마 남지 않아 시간이 촉박하고, 주변 공기는 조용하지만 눅눅한 긴장감이 있다."
+              className="min-h-[120px] w-full rounded-[1.5rem] border border-white/10 bg-white/5 px-4 py-4 text-[15px] leading-7 text-white outline-none placeholder:text-white/35"
+            />
+          </div>
+        </PageSection>
+
         <PageSection title="월드 이미지">
           <SituationImageSlotsEditor
             sectionTitle={name || '월드'}
@@ -977,6 +1004,7 @@ export function CreateWorldPage({ chrome }: { chrome: PlatformPageChromeProps })
                 assets: uploadedAssets,
                 promptProfileJson: {
                   masterPrompt: worldPrompt.trim(),
+                  worldIntro: worldIntro.trim(),
                   rules: worldPrompt.trim() ? [worldPrompt.trim()] : [],
                   tone: headline.trim() || derivedSummary,
                   starterLocations: [],

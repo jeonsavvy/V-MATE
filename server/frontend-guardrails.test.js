@@ -200,6 +200,8 @@ test('platform types and api client are character-world only', async () => {
   assert.equal(apiSource.includes('/presets'), false);
   assert.equal(apiSource.includes('/rankings'), false);
   assert.equal(apiSource.includes('createPreset'), false);
+  assert.equal(apiSource.includes('demoPlatform'), false);
+  assert.equal(apiSource.includes('fallback:'), false);
   assert.ok(apiSource.includes('/api/ops') || apiSource.includes('/ops'));
 });
 
@@ -268,7 +270,9 @@ test('creator flows collapse description fields into practical prompt editors an
   const source = await readFile(pagesPath, 'utf8');
 
   assert.ok(source.includes('캐릭터 프롬프트'));
+  assert.ok(source.includes('캐릭터 도입부'));
   assert.ok(source.includes('월드 프롬프트'));
+  assert.ok(source.includes('월드 도입부'));
   assert.ok(source.includes('상황별 이미지 추가'));
   assert.equal(source.includes('공개 상태'), false);
   assert.equal(source.includes('월드 설명'), false);

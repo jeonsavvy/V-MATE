@@ -1,14 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { platformCharacters, platformCharacterWorldLinks, platformSeed, platformWorlds } from './catalog.js';
 import { buildRoomPromptSnapshot, createInitialRoomState, generateBridgeProfile, updateRoomStateFromMessages } from './prompt-builder.js';
 
 const clone = (value) => structuredClone(value);
-
-const seedCharacterMap = new Map(platformCharacters.map((item) => [item.id, clone(item)]));
-const seedCharacterSlugMap = new Map(platformCharacters.map((item) => [item.slug, seedCharacterMap.get(item.id)]));
-const seedWorldMap = new Map(platformWorlds.map((item) => [item.id, clone(item)]));
-const seedWorldSlugMap = new Map(platformWorlds.map((item) => [item.slug, seedWorldMap.get(item.id)]));
-const seedLinkMap = new Map(platformCharacterWorldLinks.map((item) => [item.id, clone(item)]));
 
 const createdCharacters = new Map();
 const createdWorlds = new Map();
@@ -18,7 +11,7 @@ const recentViewsByUser = new Map();
 const bookmarksByUser = new Map();
 const featuredHomeState = {
   heroMode: 'auto',
-  heroTargetPath: `/characters/${platformCharacters[0].slug}`,
+  heroTargetPath: '',
 };
 
 const nowIso = () => new Date().toISOString();
@@ -72,18 +65,18 @@ const summarizeWorld = (item) => ({
   imageSlots: Array.isArray(item.promptProfile?.imageSlots) ? clone(item.promptProfile.imageSlots) : [],
 });
 
-const allCharacters = () => [...seedCharacterMap.values(), ...createdCharacters.values()];
-const allWorlds = () => [...seedWorldMap.values(), ...createdWorlds.values()];
-const allLinks = () => [...seedLinkMap.values(), ...createdLinks.values()];
+const allCharacters = () => [...createdCharacters.values()];
+const allWorlds = () => [...createdWorlds.values()];
+const allLinks = () => [...createdLinks.values()];
 
 const findCharacter = (ref) => {
   if (!ref) return null;
-  return clone(seedCharacterMap.get(ref) || seedCharacterSlugMap.get(ref) || [...createdCharacters.values()].find((item) => item.id === ref || item.slug === ref) || null);
+  return clone([...createdCharacters.values()].find((item) => item.id === ref || item.slug === ref) || null);
 };
 
 const findWorld = (ref) => {
   if (!ref) return null;
-  return clone(seedWorldMap.get(ref) || seedWorldSlugMap.get(ref) || [...createdWorlds.values()].find((item) => item.id === ref || item.slug === ref) || null);
+  return clone([...createdWorlds.values()].find((item) => item.id === ref || item.slug === ref) || null);
 };
 
 const findLink = ({ characterSlug, worldSlug }) => clone(allLinks().find((item) => item.characterSlug === characterSlug && item.worldSlug === worldSlug) || null);
@@ -138,10 +131,10 @@ export const getHomePayload = ({ tab = 'characters', search = '', filter = '' } 
       defaultTab: 'characters',
       filterChips: ['신작', '인기'],
       hero: {
-        title: hero?.name || '지금 많이 보는 캐릭터',
+        title: hero?.name || '새 콘텐츠를 공개해보세요',
         subtitle: hero?.headline || hero?.summary || '',
-        coverImageUrl: hero?.coverImageUrl || '/world_tokyo.svg',
-        targetPath: hero?.entityType === 'world' ? `/worlds/${hero.slug}` : `/characters/${hero?.slug || platformCharacters[0].slug}`,
+        coverImageUrl: hero?.coverImageUrl || '',
+        targetPath: hero?.entityType === 'world' ? `/worlds/${hero.slug}` : hero?.slug ? `/characters/${hero.slug}` : '/create/character',
       },
       characterFeed: { items: characters },
       worldFeed: { items: worlds },
@@ -274,8 +267,8 @@ export const createCharacter = ({ userId, payload }) => {
     name: payload.name,
     headline: payload.headline || payload.summary,
     summary: payload.summary,
-    coverImageUrl: payload.coverImageUrl || '/mika_normal.webp',
-    avatarImageUrl: payload.avatarImageUrl || payload.coverImageUrl || '/mika_happy.webp',
+    coverImageUrl: payload.coverImageUrl || '',
+    avatarImageUrl: payload.avatarImageUrl || payload.coverImageUrl || '',
     tags: payload.tags || [],
     creator: { id: userId, slug: userId, name: '내 스튜디오' },
     ownerUserId: userId,
@@ -289,7 +282,7 @@ export const createCharacter = ({ userId, payload }) => {
       { title: '성격', body: payload.summary },
       { title: '말투', body: payload.headline || payload.summary },
     ],
-    gallery: [payload.coverImageUrl || '/mika_normal.webp'],
+    gallery: payload.coverImageUrl ? [payload.coverImageUrl] : [],
     promptProfile: {
       persona: [payload.summary],
       speechStyle: [payload.headline || payload.summary],
@@ -312,7 +305,7 @@ export const createWorld = ({ userId, payload }) => {
     name: payload.name,
     headline: payload.headline || payload.summary,
     summary: payload.summary,
-    coverImageUrl: payload.coverImageUrl || '/world_tokyo.svg',
+    coverImageUrl: payload.coverImageUrl || '',
     tags: payload.tags || [],
     creator: { id: userId, slug: userId, name: '내 스튜디오' },
     ownerUserId: userId,
@@ -326,7 +319,7 @@ export const createWorld = ({ userId, payload }) => {
       { title: '월드 소개', body: payload.summary },
       { title: '월드 규칙', body: payload.worldRulesMarkdown || payload.summary },
     ],
-    gallery: [payload.coverImageUrl || '/world_tokyo.svg'],
+    gallery: payload.coverImageUrl ? [payload.coverImageUrl] : [],
     promptProfile: {
       genreKey: 'city',
       rules: [payload.worldRulesMarkdown || payload.summary],
@@ -404,10 +397,10 @@ export const createRoom = ({ userId, characterRef, characterSlug, worldRef, worl
   };
   rooms.set(room.id, room);
 
-  const characterStore = seedCharacterMap.get(character.id) || createdCharacters.get(character.id);
+  const characterStore = createdCharacters.get(character.id);
   if (characterStore) characterStore.chatStartCount += 1;
   if (world) {
-    const worldStore = seedWorldMap.get(world.id) || createdWorlds.get(world.id);
+    const worldStore = createdWorlds.get(world.id);
     if (worldStore) worldStore.chatStartCount += 1;
   }
   return clone(room);
@@ -466,8 +459,8 @@ export const getOpsDashboard = () => ({
 
 export const setContentVisibility = ({ entityType, id, status }) => {
   const collection = entityType === 'character'
-    ? [...seedCharacterMap.values(), ...createdCharacters.values()]
-    : [...seedWorldMap.values(), ...createdWorlds.values()];
+    ? [...createdCharacters.values()]
+    : [...createdWorlds.values()];
   const item = collection.find((entry) => entry.id === id || entry.slug === id);
   if (!item) return null;
   item.displayStatus = status;
@@ -477,24 +470,18 @@ export const setContentVisibility = ({ entityType, id, status }) => {
 
 export const deleteContent = async ({ entityType, id }) => {
   const collections = entityType === 'character'
-    ? [createdCharacters, seedCharacterMap, seedCharacterSlugMap]
-    : [createdWorlds, seedWorldMap, seedWorldSlugMap];
+    ? [createdCharacters]
+    : [createdWorlds];
 
   for (const collection of collections) {
     for (const [key, item] of collection.entries()) {
       if (item.id === id || item.slug === id) {
         collection.delete(key);
         if (entityType === 'character') {
-          for (const [linkKey, link] of seedLinkMap.entries()) {
-            if (link.characterSlug === item.slug) seedLinkMap.delete(linkKey);
-          }
           for (const [linkKey, link] of createdLinks.entries()) {
             if (link.characterSlug === item.slug) createdLinks.delete(linkKey);
           }
         } else {
-          for (const [linkKey, link] of seedLinkMap.entries()) {
-            if (link.worldSlug === item.slug) seedLinkMap.delete(linkKey);
-          }
           for (const [linkKey, link] of createdLinks.entries()) {
             if (link.worldSlug === item.slug) createdLinks.delete(linkKey);
           }
@@ -542,17 +529,5 @@ export const resetPlatformStoreForTests = () => {
   recentViewsByUser.clear();
   bookmarksByUser.clear();
   featuredHomeState.heroMode = 'auto';
-  featuredHomeState.heroTargetPath = `/characters/${platformSeed.characters[0].slug}`;
-  for (const character of seedCharacterMap.values()) {
-    const seed = platformCharacters.find((item) => item.id === character.id);
-    Object.assign(character, clone(seed));
-  }
-  for (const world of seedWorldMap.values()) {
-    const seed = platformWorlds.find((item) => item.id === world.id);
-    Object.assign(world, clone(seed));
-  }
-  for (const link of seedLinkMap.values()) {
-    const seed = platformCharacterWorldLinks.find((item) => item.id === link.id);
-    Object.assign(link, clone(seed));
-  }
+  featuredHomeState.heroTargetPath = '';
 };

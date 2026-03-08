@@ -49,7 +49,7 @@ export function Home({ user, userAvatarInitial, searchQuery, onSearchChange, onN
         <button type="button" onClick={() => onNavigate(hero?.targetPath || '/')} className="group grid w-full gap-0 overflow-hidden rounded-[2rem] border border-white/10 bg-[#0f1115] lg:grid-cols-[1.1fr_0.9fr]">
           <div className="flex flex-col justify-center p-6 text-left lg:p-7">
             <div>
-              <h1 className="text-[clamp(2rem,4vw,3.1rem)] font-semibold leading-[1.08] tracking-[-0.04em] text-white">{hero?.title || '미소노 미카'}</h1>
+              <h1 className="text-[clamp(2rem,4vw,3.1rem)] font-semibold leading-[1.08] tracking-[-0.04em] text-white">{hero?.title || '새 캐릭터와 월드를 공개해보세요'}</h1>
               <p className="mt-3 max-w-2xl text-base leading-7 text-white/64">{hero?.subtitle || ''}</p>
             </div>
             <div className="mt-6 inline-flex items-center gap-2 text-sm font-semibold text-white">
@@ -58,7 +58,11 @@ export function Home({ user, userAvatarInitial, searchQuery, onSearchChange, onN
             </div>
           </div>
           <div className="min-h-[220px] bg-[#0d1322] lg:min-h-[260px]">
-            <img src={hero?.coverImageUrl || '/world_sao.svg'} alt={hero?.title || '대표 배너'} className="h-full w-full object-cover object-top" loading="eager" decoding="async" />
+            {hero?.coverImageUrl ? (
+              <img src={hero.coverImageUrl} alt={hero.title || '대표 배너'} className="h-full w-full object-cover object-top" loading="eager" decoding="async" />
+            ) : (
+              <div className="flex h-full items-center justify-center text-sm text-white/38">대표 배너 없음</div>
+            )}
           </div>
         </button>
 

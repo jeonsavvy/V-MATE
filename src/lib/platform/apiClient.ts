@@ -12,7 +12,6 @@ import type {
   WorldDetail,
   WorldSummary,
 } from '@/lib/platform/types'
-import { demoPlatform } from '@/lib/platform/demoData'
 import { getBrowserOrigin } from '@/lib/browserRuntime'
 
 const resolveRuntimeEnv = () =>
@@ -68,7 +67,7 @@ const resolveAccessToken = async () => {
   return data.session.access_token
 }
 
-const request = async <T>(path: string, init?: RequestInit & { auth?: boolean; fallback?: () => T }): Promise<T> => {
+const request = async <T>(path: string, init?: RequestInit & { auth?: boolean }): Promise<T> => {
   const headers = new Headers(init?.headers || {})
   headers.set('Content-Type', 'application/json')
 
@@ -81,35 +80,31 @@ const request = async <T>(path: string, init?: RequestInit & { auth?: boolean; f
   try {
     response = await fetch(`${resolveApiBaseUrl()}${path}`, { ...init, headers })
   } catch (error) {
-    if (init?.fallback) return init.fallback()
     throw error
   }
 
   const contentType = response.headers.get('content-type') || ''
-  if (contentType.includes('text/html') && init?.fallback) {
-    return init.fallback()
+  if (contentType.includes('text/html')) {
+    throw new Error('API 응답이 올바르지 않습니다.')
   }
 
   const data = await response.json().catch(() => ({}))
   if (!response.ok) {
     throw new Error(typeof data.error === 'string' ? data.error : '요청 처리에 실패했습니다.')
   }
-  if (init?.fallback && (!data || (typeof data === 'object' && Object.keys(data).length === 0))) {
-    return init.fallback()
-  }
   return data as T
 }
 
 export const platformApi = {
-  fetchHome: (tab: 'characters' | 'worlds' = 'characters', search = '', filter: 'new' | 'popular' | '' = '') => request<HomeFeedPayload>(`/home?tab=${tab}&search=${encodeURIComponent(search)}&filter=${encodeURIComponent(filter)}`, { fallback: () => demoPlatform.home(tab, filter) }),
-  fetchCharacters: (search = '', filter: 'new' | 'popular' | '' = '') => request<{ items: CharacterSummary[] }>(`/characters?search=${encodeURIComponent(search)}&filter=${encodeURIComponent(filter)}`, { fallback: () => ({ items: demoPlatform.characters(search, filter) }) }),
-  fetchWorlds: (search = '', filter: 'new' | 'popular' | '' = '') => request<{ items: WorldSummary[] }>(`/worlds?search=${encodeURIComponent(search)}&filter=${encodeURIComponent(filter)}`, { fallback: () => ({ items: demoPlatform.worlds(search, filter) }) }),
-  fetchCharacter: (slug: string) => request<{ item: CharacterDetail }>(`/characters/${slug}`, { fallback: () => ({ item: demoPlatform.character(slug)! }) }),
-  fetchWorld: (slug: string) => request<{ item: WorldDetail }>(`/worlds/${slug}`, { fallback: () => ({ item: demoPlatform.world(slug)! }) }),
-  fetchCharacterWorldLinks: (slug: string) => request<{ items: CharacterWorldLinkSummary[] }>(`/characters/${slug}/world-links`, { fallback: () => ({ items: demoPlatform.worldLinks(slug) }) }),
-  fetchRecentRooms: () => request<{ items: RoomSummary[] }>('/recent-rooms', { auth: true, fallback: () => ({ items: demoPlatform.recentRooms() }) }),
-  fetchLibrary: () => request<LibraryPayload>('/library', { auth: true, fallback: () => demoPlatform.library() }),
-  fetchOpsDashboard: () => request<OwnerOpsDashboard>('/ops/dashboard', { auth: true, fallback: () => demoPlatform.ops() }),
+  fetchHome: (tab: 'characters' | 'worlds' = 'characters', search = '', filter: 'new' | 'popular' | '' = '') => request<HomeFeedPayload>(`/home?tab=${tab}&search=${encodeURIComponent(search)}&filter=${encodeURIComponent(filter)}`),
+  fetchCharacters: (search = '', filter: 'new' | 'popular' | '' = '') => request<{ items: CharacterSummary[] }>(`/characters?search=${encodeURIComponent(search)}&filter=${encodeURIComponent(filter)}`),
+  fetchWorlds: (search = '', filter: 'new' | 'popular' | '' = '') => request<{ items: WorldSummary[] }>(`/worlds?search=${encodeURIComponent(search)}&filter=${encodeURIComponent(filter)}`),
+  fetchCharacter: (slug: string) => request<{ item: CharacterDetail }>(`/characters/${slug}`),
+  fetchWorld: (slug: string) => request<{ item: WorldDetail }>(`/worlds/${slug}`),
+  fetchCharacterWorldLinks: (slug: string) => request<{ items: CharacterWorldLinkSummary[] }>(`/characters/${slug}/world-links`),
+  fetchRecentRooms: () => request<{ items: RoomSummary[] }>('/recent-rooms', { auth: true }),
+  fetchLibrary: () => request<LibraryPayload>('/library', { auth: true }),
+  fetchOpsDashboard: () => request<OwnerOpsDashboard>('/ops/dashboard', { auth: true }),
   prepareUploads: (payload: { entityType: EntityType; variants: Array<{ kind: string; width: number; height: number }> }) =>
     request<{ bucket: string; uploads: Array<{ kind: string; width: number; height: number; path: string; token: string; signedUrl: string; publicUrl: string; bucket: string }> }>('/uploads/prepare', {
       method: 'POST',

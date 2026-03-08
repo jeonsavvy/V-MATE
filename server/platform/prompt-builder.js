@@ -1,10 +1,14 @@
 export const generateBridgeProfile = ({ character, world, link }) => {
+  const characterIntro = typeof character.promptProfile.characterIntro === 'string'
+    ? character.promptProfile.characterIntro.trim()
+    : ''
+
   if (!world) {
     return {
       entryMode: 'direct_character',
       characterRoleInWorld: '캐릭터 본연의 역할',
       userRoleInWorld: '대화 상대',
-      meetingTrigger: `${character.name}와 단독 대화를 시작한다.`,
+      meetingTrigger: characterIntro || `${character.name}와 단독 대화를 시작한다.`,
       relationshipDistance: character.promptProfile.relationshipBaseline,
       currentGoal: '캐릭터의 결을 자연스럽게 연다.',
       startingLocation: '자유 대화 공간',
@@ -19,6 +23,9 @@ export const generateBridgeProfile = ({ character, world, link }) => {
     city: '심야를 함께 걷는 인물',
   }
   const worldKey = world.promptProfile.genreKey || world.promptProfile.genre || 'city'
+  const worldIntro = typeof world.promptProfile.worldIntro === 'string'
+    ? world.promptProfile.worldIntro.trim()
+    : ''
   const characterRoleInWorld = roleMap[worldKey] || '이 월드에 익숙한 인물'
   const userRoleInWorld = worldKey === 'game'
     ? '같은 파티원'
@@ -26,6 +33,7 @@ export const generateBridgeProfile = ({ character, world, link }) => {
       ? '함께 움직이는 동료'
       : '캐릭터와 같은 장면을 공유하는 상대'
   const meetingTrigger = link?.defaultOpeningContext
+    || worldIntro
     || (worldKey === 'game'
       ? '레이드 시작 직전, 마지막 점검을 하고 있다.'
       : worldKey === 'fantasy'
@@ -75,6 +83,7 @@ export const buildRoomPromptSnapshot = ({ character, world, bridgeProfile, state
   const characterSpeech = Array.isArray(character.promptProfile.speechStyle) ? character.promptProfile.speechStyle : []
   const characterImageSlots = Array.isArray(character.promptProfile.imageSlots) ? character.promptProfile.imageSlots : []
   const characterMasterPrompt = typeof character.promptProfile.masterPrompt === 'string' ? character.promptProfile.masterPrompt.trim() : ''
+  const characterIntro = typeof character.promptProfile.characterIntro === 'string' ? character.promptProfile.characterIntro.trim() : ''
   const lines = [
     '### PLATFORM CONTRACT',
     '- 항상 한국어.',
@@ -90,6 +99,10 @@ export const buildRoomPromptSnapshot = ({ character, world, bridgeProfile, state
     ...characterSpeech.map((item) => `- Speech: ${item}`),
     `- Relationship baseline: ${character.promptProfile.relationshipBaseline}`,
   ]
+
+  if (characterIntro) {
+    lines.push(`- Character intro: ${characterIntro}`)
+  }
 
   if (characterMasterPrompt) {
     lines.push(...characterMasterPrompt.split('\n').map((item) => item.trim()).filter(Boolean).map((item) => `- Master prompt: ${item}`))
@@ -107,6 +120,7 @@ export const buildRoomPromptSnapshot = ({ character, world, bridgeProfile, state
     const tone = world.promptProfile.tone || (Array.isArray(world.promptProfile.toneKeywords) ? world.promptProfile.toneKeywords.join(', ') : '')
     const worldImageSlots = Array.isArray(world.promptProfile.imageSlots) ? world.promptProfile.imageSlots : []
     const worldMasterPrompt = typeof world.promptProfile.masterPrompt === 'string' ? world.promptProfile.masterPrompt.trim() : ''
+    const worldIntro = typeof world.promptProfile.worldIntro === 'string' ? world.promptProfile.worldIntro.trim() : ''
     lines.push(
       '',
       '### WORLD',
@@ -116,6 +130,10 @@ export const buildRoomPromptSnapshot = ({ character, world, bridgeProfile, state
       `- Tone: ${tone}`,
       `- Starter locations: ${starterLocations.join(', ')}`,
     )
+
+    if (worldIntro) {
+      lines.push(`- World intro: ${worldIntro}`)
+    }
 
     if (worldMasterPrompt) {
       lines.push(...worldMasterPrompt.split('\n').map((item) => item.trim()).filter(Boolean).map((item) => `- World master prompt: ${item}`))
