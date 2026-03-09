@@ -1161,6 +1161,34 @@ export const deleteContent = async ({ event, entityType, id }) => {
   return true;
 };
 
+export const deleteOwnedContent = async ({ event, userId, entityType, id }) => {
+  const client = await userClient(event);
+  if (!client) return false;
+  const table = entityType === 'character' ? 'characters' : 'worlds';
+  const assetTable = entityType === 'character' ? 'character_assets' : 'world_assets';
+  const fkColumn = entityType === 'character' ? 'character_id' : 'world_id';
+  const selectFields = entityType === 'character'
+    ? 'id, owner_user_id, cover_image_url, avatar_image_url, prompt_profile_json'
+    : 'id, owner_user_id, cover_image_url, prompt_profile_json';
+  const { data: row, error: rowError } = await client
+    .from(table)
+    .select(selectFields)
+    .eq('owner_user_id', userId)
+    .or(`id.eq.${id},slug.eq.${id}`)
+    .maybeSingle();
+  if (rowError) throw rowError;
+  if (!row?.id) return false;
+  const { data: assets, error: assetError } = await client.from(assetTable).select('url').eq(fkColumn, row.id);
+  if (assetError) throw assetError;
+  await removeStorageObjectsByUrls({
+    client,
+    urls: collectContentAssetUrls({ entityType, row, assets: assets || [] }),
+  });
+  const { error } = await client.from(table).delete().eq('id', row.id).eq('owner_user_id', userId);
+  if (error) throw error;
+  return true;
+};
+
 export const setHomeHeroTarget = async ({ event, targetPath }) => {
   const client = await userClient(event);
   if (!client) return null;

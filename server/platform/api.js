@@ -261,6 +261,15 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
     return jsonOk({ headers, startedAtMs, body: { item } });
   }
 
+  if (method === 'DELETE' && segments[1] === 'characters' && segments[2]) {
+    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: true });
+    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
+    const ok = await (getPlatformStore().deleteOwnedContent?.({ event, userId: authResult.userId, entityType: 'character', id: segments[2] })
+      ?? getPlatformStore().deleteContent({ event, entityType: 'character', id: segments[2] }));
+    if (!ok) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Character not found.', errorCode: 'CHARACTER_NOT_FOUND' });
+    return jsonOk({ headers, startedAtMs, body: { ok: true } });
+  }
+
   if (method === 'POST' && segments[1] === 'worlds') {
     const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable() });
     if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
@@ -277,6 +286,15 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
     const item = await getPlatformStore().updateWorld?.({ event, userId: authResult.userId, slug: segments[2], payload: { ...normalizeWorldPayload(body), assets: body.assets, promptProfileJson: body.promptProfileJson } });
     if (!item) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'World not found.', errorCode: 'WORLD_NOT_FOUND' });
     return jsonOk({ headers, startedAtMs, body: { item } });
+  }
+
+  if (method === 'DELETE' && segments[1] === 'worlds' && segments[2]) {
+    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: true });
+    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
+    const ok = await (getPlatformStore().deleteOwnedContent?.({ event, userId: authResult.userId, entityType: 'world', id: segments[2] })
+      ?? getPlatformStore().deleteContent({ event, entityType: 'world', id: segments[2] }));
+    if (!ok) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'World not found.', errorCode: 'WORLD_NOT_FOUND' });
+    return jsonOk({ headers, startedAtMs, body: { ok: true } });
   }
 
   if (method === 'POST' && segments[1] === 'uploads' && segments[2] === 'prepare') {

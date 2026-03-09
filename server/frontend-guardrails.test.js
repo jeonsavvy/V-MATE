@@ -191,6 +191,15 @@ test('platform source removes preset and rankings copy while exposing owner ops 
   assert.ok(joined.includes('최근 대화'));
 });
 
+test('edit pages expose creator-owned delete actions through non-blocking dialogs', async () => {
+  const pagesPath = path.join(srcRoot, 'components', 'platform', 'Pages.tsx');
+  const source = await readFile(pagesPath, 'utf8');
+
+  assert.ok(source.includes('OwnedContentDeleteDialog'));
+  assert.ok(source.includes('캐릭터 삭제'));
+  assert.ok(source.includes('월드 삭제'));
+});
+
 test('platform types and api client are character-world only', async () => {
   const typesPath = path.join(srcRoot, 'lib/platform/types.ts');
   const typesSource = await readFile(typesPath, 'utf8');
@@ -212,6 +221,8 @@ test('platform types and api client are character-world only', async () => {
   assert.equal(apiSource.includes('fetchCharacterWorldLinks'), false);
   assert.equal(apiSource.includes('createCharacterWorldLink'), false);
   assert.ok(apiSource.includes('/api/ops') || apiSource.includes('/ops'));
+  assert.ok(apiSource.includes('deleteCharacter'));
+  assert.ok(apiSource.includes('deleteWorld'));
 });
 
 test('auth dialog removes marketing banner copy and keeps form-only structure', async () => {

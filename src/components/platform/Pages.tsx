@@ -97,6 +97,42 @@ const AliasDialog = ({
   )
 }
 
+const OwnedContentDeleteDialog = ({
+  open,
+  title,
+  description,
+  itemName,
+  isDeleting,
+  onCancel,
+  onConfirm,
+}: {
+  open: boolean
+  title: string
+  description: string
+  itemName: string
+  isDeleting: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) => (
+  <Dialog open={open} onOpenChange={(nextOpen) => { if (!nextOpen && !isDeleting) onCancel() }}>
+    <DialogContent className="max-w-lg rounded-[2rem] bg-[#20242b] text-white">
+      <DialogHeader>
+        <DialogTitle className="text-white">{title}</DialogTitle>
+        <DialogDescription className="text-white/56">{description}</DialogDescription>
+      </DialogHeader>
+      <div className="rounded-[1.2rem] border border-[#d92c63]/30 bg-[#d92c63]/10 px-4 py-4 text-sm text-white/78">
+        {itemName}
+      </div>
+      <div className="flex justify-end gap-3">
+        <Button variant="outline" onClick={onCancel} disabled={isDeleting}>취소</Button>
+        <Button className="bg-[#d92c63] text-white hover:bg-[#c12358]" onClick={onConfirm} disabled={isDeleting}>
+          {isDeleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}삭제
+        </Button>
+      </div>
+    </DialogContent>
+  </Dialog>
+)
+
 // 상세 화면은 공개 조회와 새 방 진입을 함께 책임진다.
 export function CharacterDetailPage({ chrome, slug }: { chrome: PlatformPageChromeProps; slug: string }) {
   const [item, setItem] = useState<CharacterDetail | null>(null)
@@ -824,6 +860,9 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
   const [characterIntro, setCharacterIntro] = useState('')
   const [processingSlotId, setProcessingSlotId] = useState<string | null>(null)
   const [isHydrating, setIsHydrating] = useState(Boolean(slug))
+  const [canManage, setCanManage] = useState<boolean | null>(slug ? null : true)
+  const [pendingDelete, setPendingDelete] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
   const [imageSlots, setImageSlots] = useState<ImageSlotDraft[]>(() => [
     createImageSlotDraft('main', '대표 이미지', '기본 대표 비주얼', '100'),
   ])
@@ -858,6 +897,11 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
     void platformApi.fetchCharacter(slug)
       .then(({ item }) => {
         if (!mounted) return
+        const ownsItem = item.creator.id === chrome.user?.id
+        setCanManage(ownsItem)
+        if (!ownsItem) {
+          return
+        }
         setName(item.name)
         setHeadline(item.headline || '')
         setTags(item.tags.join(', '))
@@ -875,10 +919,44 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
     return <ProtectedGate chrome={chrome} title="로그인 후 캐릭터를 만들 수 있습니다" description="만든 캐릭터는 바로 홈/상세/최근 대화 흐름에 연결됩니다." />
   }
 
+  if (slug && canManage === false) {
+    return (
+      <PageFrame chrome={chrome}>
+        <EmptyState
+          title="본인 캐릭터만 수정하거나 삭제할 수 있습니다"
+          description="캐릭터 상세 화면으로 돌아가 다시 확인해주세요."
+          action={<Button onClick={() => chrome.onNavigate(`/characters/${slug}`)}>상세로 돌아가기</Button>}
+        />
+      </PageFrame>
+    )
+  }
+
   const derivedSummary = deriveSummaryFromPrompt(headline, characterPrompt)
 
   return (
     <PageFrame chrome={chrome}>
+      <OwnedContentDeleteDialog
+        open={pendingDelete}
+        title="캐릭터를 삭제할까요?"
+        description="삭제하면 연결된 이미지와 관련 데이터가 함께 정리됩니다."
+        itemName={name || '이 캐릭터'}
+        isDeleting={isDeleting}
+        onCancel={() => setPendingDelete(false)}
+        onConfirm={() => {
+          if (!slug) return
+          setIsDeleting(true)
+          void platformApi.deleteCharacter(slug)
+            .then(() => {
+              toast.success('캐릭터를 삭제했습니다.')
+              chrome.onNavigate('/library')
+            })
+            .catch((error) => toast.error(error instanceof Error ? error.message : '캐릭터 삭제에 실패했습니다.'))
+            .finally(() => {
+              setIsDeleting(false)
+              setPendingDelete(false)
+            })
+        }}
+      />
       <div className="mx-auto max-w-4xl space-y-6">
         <PageSection title="기본 정보">
           <div className="grid gap-4">
@@ -958,7 +1036,12 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
           />
         </PageSection>
 
-        <div className="flex justify-end">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          {slug ? (
+            <Button variant="outline" className="border-[#d92c63]/40 text-[#ff8ab2] hover:bg-[#d92c63]/10 hover:text-white" onClick={() => setPendingDelete(true)} disabled={isHydrating || processingSlotId !== null || isDeleting || canManage !== true}>
+              <Trash2 className="h-4 w-4" />캐릭터 삭제
+            </Button>
+          ) : <span />}
           <Button disabled={isHydrating || processingSlotId !== null || !name.trim() || !headline.trim() || !characterPrompt.trim() || !mainSlot.previewUrl} onClick={() => {
             void (async () => {
               const slotAssets = imageSlots.flatMap((slot) => slot.assets)
@@ -1027,6 +1110,9 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
   const [worldIntro, setWorldIntro] = useState('')
   const [processingSlotId, setProcessingSlotId] = useState<string | null>(null)
   const [isHydrating, setIsHydrating] = useState(Boolean(slug))
+  const [canManage, setCanManage] = useState<boolean | null>(slug ? null : true)
+  const [pendingDelete, setPendingDelete] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
   const [imageSlots, setImageSlots] = useState<ImageSlotDraft[]>(() => [
     createImageSlotDraft('main', '대표 이미지', '기본 월드 비주얼', '100'),
   ])
@@ -1066,6 +1152,11 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
     void platformApi.fetchWorld(slug)
       .then(({ item }) => {
         if (!mounted) return
+        const ownsItem = item.creator.id === chrome.user?.id
+        setCanManage(ownsItem)
+        if (!ownsItem) {
+          return
+        }
         setName(item.name)
         setHeadline(item.headline || '')
         setTags(item.tags.join(', '))
@@ -1079,8 +1170,42 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
     return () => { mounted = false }
   }, [slug])
 
+  if (slug && canManage === false) {
+    return (
+      <PageFrame chrome={chrome}>
+        <EmptyState
+          title="본인 월드만 수정하거나 삭제할 수 있습니다"
+          description="월드 상세 화면으로 돌아가 다시 확인해주세요."
+          action={<Button onClick={() => chrome.onNavigate(`/worlds/${slug}`)}>상세로 돌아가기</Button>}
+        />
+      </PageFrame>
+    )
+  }
+
   return (
     <PageFrame chrome={chrome}>
+      <OwnedContentDeleteDialog
+        open={pendingDelete}
+        title="월드를 삭제할까요?"
+        description="삭제하면 연결된 이미지와 관련 데이터가 함께 정리됩니다."
+        itemName={name || '이 월드'}
+        isDeleting={isDeleting}
+        onCancel={() => setPendingDelete(false)}
+        onConfirm={() => {
+          if (!slug) return
+          setIsDeleting(true)
+          void platformApi.deleteWorld(slug)
+            .then(() => {
+              toast.success('월드를 삭제했습니다.')
+              chrome.onNavigate('/library')
+            })
+            .catch((error) => toast.error(error instanceof Error ? error.message : '월드 삭제에 실패했습니다.'))
+            .finally(() => {
+              setIsDeleting(false)
+              setPendingDelete(false)
+            })
+        }}
+      />
       <div className="mx-auto max-w-4xl space-y-6">
         <PageSection title="기본 정보">
           <div className="grid gap-4">
@@ -1159,7 +1284,12 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
           />
         </PageSection>
 
-        <div className="flex justify-end">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          {slug ? (
+            <Button variant="outline" className="border-[#d92c63]/40 text-[#ff8ab2] hover:bg-[#d92c63]/10 hover:text-white" onClick={() => setPendingDelete(true)} disabled={isHydrating || processingSlotId !== null || isDeleting || canManage !== true}>
+              <Trash2 className="h-4 w-4" />월드 삭제
+            </Button>
+          ) : <span />}
           <Button disabled={isHydrating || processingSlotId !== null || !name.trim() || !headline.trim() || !worldPrompt.trim() || !mainSlot.previewUrl} onClick={() => {
             void (async () => {
               const slotAssets = imageSlots.flatMap((slot) => slot.assets)

@@ -141,6 +141,7 @@ export const platformApi = {
     promptProfileJson?: Record<string, unknown>
     assets?: Array<{ kind: string; url: string; width: number; height: number }>
   }) => request<{ item: CharacterSummary }>(`/characters/${slug}`, { method: 'PATCH', auth: true, body: JSON.stringify(payload) }),
+  deleteCharacter: (slug: string) => request<{ ok: boolean }>(`/characters/${slug}`, { method: 'DELETE', auth: true }),
   createWorld: (payload: {
     name: string
     headline: string
@@ -167,6 +168,7 @@ export const platformApi = {
     promptProfileJson?: Record<string, unknown>
     assets?: Array<{ kind: string; url: string; width: number; height: number }>
   }) => request<{ item: WorldSummary }>(`/worlds/${slug}`, { method: 'PATCH', auth: true, body: JSON.stringify(payload) }),
+  deleteWorld: (slug: string) => request<{ ok: boolean }>(`/worlds/${slug}`, { method: 'DELETE', auth: true }),
   createRoom: (payload: { characterSlug: string; worldSlug?: string | null; userAlias?: string }) => request<{ room: RoomSummary }>('/rooms', { method: 'POST', auth: true, body: JSON.stringify(payload) }),
   fetchRoom: (roomId: string) => request<{ room: RoomSummary }>(`/rooms/${roomId}`, { auth: true }),
   sendRoomMessage: (roomId: string, userMessage: string) => request<RoomChatResponse>(`/rooms/${roomId}/chat`, { method: 'POST', auth: true, body: JSON.stringify({ userMessage }) }),

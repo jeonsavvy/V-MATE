@@ -342,6 +342,60 @@ test('owner ops can delete content through dedicated endpoint', async () => {
   }
 });
 
+test('character resource delete route removes creator content without ops dashboard path', async () => {
+  process.env.ALLOW_NON_BROWSER_ORIGIN = 'false';
+  process.env.ALLOW_ALL_ORIGINS = 'false';
+  process.env.ALLOWED_ORIGINS = 'http://localhost:5173';
+  process.env.REQUIRE_AUTH_FOR_CHAT = 'false';
+  const { character } = seedPlatformFixtures();
+
+  const { baseUrl, close } = await startServer(async () => {
+    throw new Error('legacy chat handler should not be called during character delete route smoke test');
+  });
+
+  try {
+    const response = await fetch(`${baseUrl}/api/characters/${character.slug}`, {
+      method: 'DELETE',
+      headers: {
+        Origin: 'http://localhost:5173',
+      },
+    });
+
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.ok, true);
+  } finally {
+    await close();
+  }
+});
+
+test('world resource delete route removes creator content without ops dashboard path', async () => {
+  process.env.ALLOW_NON_BROWSER_ORIGIN = 'false';
+  process.env.ALLOW_ALL_ORIGINS = 'false';
+  process.env.ALLOWED_ORIGINS = 'http://localhost:5173';
+  process.env.REQUIRE_AUTH_FOR_CHAT = 'false';
+  const { world } = seedPlatformFixtures();
+
+  const { baseUrl, close } = await startServer(async () => {
+    throw new Error('legacy chat handler should not be called during world delete route smoke test');
+  });
+
+  try {
+    const response = await fetch(`${baseUrl}/api/worlds/${world.slug}`, {
+      method: 'DELETE',
+      headers: {
+        Origin: 'http://localhost:5173',
+      },
+    });
+
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.ok, true);
+  } finally {
+    await close();
+  }
+});
+
 test('owner ops can switch home banner mode through dedicated endpoint', async () => {
   process.env.ALLOW_NON_BROWSER_ORIGIN = 'false';
   process.env.ALLOW_ALL_ORIGINS = 'false';

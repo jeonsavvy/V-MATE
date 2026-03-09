@@ -474,6 +474,8 @@ export const deleteContent = async ({ entityType, id }) => {
   return false;
 };
 
+export const deleteOwnedContent = async ({ entityType, id }) => deleteContent({ entityType, id });
+
 export const isOwnerUser = async () => true;
 
 export const setHomeHeroTarget = (input) => {
