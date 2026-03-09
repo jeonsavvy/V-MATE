@@ -110,6 +110,18 @@ const buildEmptyLibraryPayload = () => ({
   },
 });
 
+const dedupeRecentViewRows = (rows) => {
+  const seen = new Set();
+  return (rows || []).filter((row) => {
+    const key = `${row?.target_type || ''}:${row?.target_id || ''}`;
+    if (!key || seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+};
+
 const summarizeCharacter = (row) => ({
   id: row.id,
   entityType: 'character',
@@ -485,20 +497,65 @@ export const resolveEntityById = async ({ publicClientInstance, userClientInstan
   return row ? { row, summary: summarizeWorld(row) } : null;
 };
 
+export const persistRecentView = async ({ client, userId, entityType, targetId, viewedAt }) => {
+  const payload = {
+    user_id: userId,
+    target_type: entityType,
+    target_id: targetId,
+    viewed_at: viewedAt,
+  };
+
+  const { error } = await client
+    .from('recent_views')
+    .upsert(payload, { onConflict: 'user_id,target_type,target_id' });
+
+  if (!error) {
+    return true;
+  }
+
+  const message = error?.message || String(error);
+  const shouldFallbackToReplace =
+    /on conflict/i.test(message) ||
+    /constraint/i.test(message) ||
+    /unique/i.test(message);
+
+  if (!shouldFallbackToReplace) {
+    throw error;
+  }
+
+  logServerWarn('[V-MATE] recent_views upsert fallback to replace flow', {
+    userId,
+    entityType,
+    targetId,
+    message,
+  });
+
+  const { error: deleteError } = await client
+    .from('recent_views')
+    .delete()
+    .eq('user_id', userId)
+    .eq('target_type', entityType)
+    .eq('target_id', targetId);
+  if (deleteError) throw deleteError;
+
+  const { error: insertError } = await client.from('recent_views').insert(payload);
+  if (insertError) throw insertError;
+  return true;
+};
+
 export const addRecentView = async ({ event, userId, entityType, ref }) => {
   const client = await userClient(event);
   const publicReadClient = await publicClient();
   if (!client || !publicReadClient) return null;
   const entity = await resolveEntityByRef({ publicClientInstance: publicReadClient, userClientInstance: client, userId, entityType, ref });
   if (!entity) return null;
-  const { error } = await client.from('recent_views').insert({
-    user_id: userId,
-    target_type: entityType,
-    target_id: entity.row.id,
-    viewed_at: nowIso(),
+  return persistRecentView({
+    client,
+    userId,
+    entityType,
+    targetId: entity.row.id,
+    viewedAt: nowIso(),
   });
-  if (error) throw error;
-  return true;
 };
 
 export const toggleBookmark = async ({ event, userId, entityType, ref }) => {
@@ -609,7 +666,7 @@ export const getLibraryPayload = async ({ event, userId }) => {
   if (!client || !publicReadClient) return null;
 
   try {
-    const [bookmarks, recentViews, recentRooms, ownedCharacters, ownedWorlds] = await Promise.all([
+    const [bookmarks, recentViewsRaw, recentRooms, ownedCharacters, ownedWorlds] = await Promise.all([
       resolveDataOrFallback({
         label: 'library.bookmarks',
         queryPromise: client.from('bookmarks').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
@@ -636,6 +693,8 @@ export const getLibraryPayload = async ({ event, userId }) => {
         fallback: [],
       }),
     ]);
+
+    const recentViews = dedupeRecentViewRows(recentViewsRaw);
 
     const resolvedBookmarks = await Promise.all((bookmarks || []).map(async (item) => {
       const resolved = await resolveAsyncOrFallback({

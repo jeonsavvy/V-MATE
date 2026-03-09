@@ -408,6 +408,23 @@ create table if not exists public.recent_views (
   viewed_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
+with ranked_recent_views as (
+  select
+    ctid,
+    row_number() over (
+      partition by user_id, target_type, target_id
+      order by viewed_at desc, id desc
+    ) as rn
+  from public.recent_views
+)
+delete from public.recent_views rv
+using ranked_recent_views ranked
+where rv.ctid = ranked.ctid
+  and ranked.rn > 1;
+
+create unique index if not exists idx_recent_views_user_target_unique
+  on public.recent_views (user_id, target_type, target_id);
+
 create index if not exists idx_recent_views_user_viewed on public.recent_views (user_id, viewed_at desc);
 
 alter table public.recent_views enable row level security;

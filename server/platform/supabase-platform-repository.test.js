@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   collectContentAssetUrls,
   incrementChatStartCountsBestEffort,
+  persistRecentView,
   resolveAsyncOrFallback,
   resolveDataOrFallback,
   resolveEntityById,
@@ -255,4 +256,50 @@ test('resolveAsyncOrFallback returns fallback when async task throws', async () 
   });
 
   assert.deepEqual(value, []);
+});
+
+test('persistRecentView falls back to replace flow when upsert conflict target is unavailable', async () => {
+  const calls = [];
+  const client = {
+    from() {
+      return {
+        upsert(payload) {
+          calls.push({ kind: 'upsert', payload });
+          return Promise.resolve({
+            error: new Error('there is no unique or exclusion constraint matching the ON CONFLICT specification'),
+          });
+        },
+        delete() {
+          return {
+            eq() {
+              return {
+                eq() {
+                  return {
+                    eq() {
+                      calls.push({ kind: 'delete' });
+                      return Promise.resolve({ error: null });
+                    },
+                  };
+                },
+              };
+            },
+          };
+        },
+        insert(payload) {
+          calls.push({ kind: 'insert', payload });
+          return Promise.resolve({ error: null });
+        },
+      };
+    },
+  };
+
+  await persistRecentView({
+    client,
+    userId: 'user-1',
+    entityType: 'character',
+    targetId: 'character-1',
+    viewedAt: '2026-03-09T00:00:00.000Z',
+  });
+
+  assert.deepEqual(calls.map((item) => item.kind), ['upsert', 'delete', 'insert']);
 });
