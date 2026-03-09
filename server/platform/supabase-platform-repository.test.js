@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { collectContentAssetUrls, incrementChatStartCountsBestEffort } from './supabase-platform-repository.js';
+import { collectContentAssetUrls, incrementChatStartCountsBestEffort, resolveEntityByRef } from './supabase-platform-repository.js';
 
 const createMockClient = ({ characterError = null, worldError = null } = {}) => ({
   from(table) {
@@ -68,4 +68,81 @@ test('collectContentAssetUrls gathers cover and slot urls for storage cleanup', 
     'https://example.com/object/public/vmate-assets/user/character/main-thumb.webp',
     'https://example.com/object/public/vmate-assets/user/character/angry-detail.webp',
   ]);
+});
+
+test('resolveEntityByRef can resolve owner content even when it is not public', async () => {
+  const publicClientInstance = {
+    from() {
+      return {
+        select() {
+          return {
+            eq() {
+              return {
+                async maybeSingle() {
+                  return { data: null, error: null };
+                },
+              };
+            },
+          };
+        },
+      };
+    },
+  };
+
+  const userClientInstance = {
+    from(table) {
+      return {
+        select() {
+          return {
+            eq(column) {
+              return {
+                eq(nextColumn, slug) {
+                  void column;
+                  void nextColumn;
+                  return {
+                    async maybeSingle() {
+                      return {
+                        data: table === 'characters'
+                          ? {
+                              id: 'character-1',
+                              owner_user_id: 'user-1',
+                              slug,
+                              name: '비공개 캐릭터',
+                              headline: '',
+                              summary: '요약',
+                              cover_image_url: '',
+                              avatar_image_url: '',
+                              tags: [],
+                              visibility: 'private',
+                              display_status: 'draft',
+                              source_type: 'original',
+                              favorite_count: 0,
+                              chat_start_count: 0,
+                              updated_at: new Date().toISOString(),
+                              prompt_profile_json: {},
+                            }
+                          : null,
+                        error: null,
+                      };
+                    },
+                  };
+                },
+              };
+            },
+          };
+        },
+      };
+    },
+  };
+
+  const resolved = await resolveEntityByRef({
+    publicClientInstance,
+    userClientInstance,
+    userId: 'user-1',
+    entityType: 'character',
+    ref: 'hidden-character',
+  });
+
+  assert.equal(resolved?.summary?.slug, 'hidden-character');
+  assert.equal(resolved?.summary?.visibility, 'private');
 });

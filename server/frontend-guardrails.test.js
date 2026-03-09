@@ -342,9 +342,9 @@ test('edit pages clearly label editing mode separately from public detail pages'
   const pagesPath = path.join(srcRoot, 'components/platform/Pages.tsx');
   const source = await readFile(pagesPath, 'utf8');
 
-  assert.ok(source.includes("slug ? '캐릭터 수정' : '캐릭터 만들기'"));
-  assert.ok(source.includes("slug ? '월드 수정' : '월드 만들기'"));
-  assert.ok(source.includes('공개 상세 화면과 별개로 프롬프트, 도입부, 이미지를 편집하는 화면입니다.'));
+  assert.ok(source.includes("slug ? '캐릭터 수정' : '캐릭터 저장'"));
+  assert.ok(source.includes("slug ? '월드 수정' : '월드 저장'"));
+  assert.equal(source.includes('공개 상세 화면과 별개로 프롬프트, 도입부, 이미지를 편집하는 화면입니다.'), false);
 });
 
 test('ops page exposes banner auto/manual controls and delete actions', async () => {

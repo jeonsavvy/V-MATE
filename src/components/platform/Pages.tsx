@@ -880,11 +880,6 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
   return (
     <PageFrame chrome={chrome}>
       <div className="mx-auto max-w-4xl space-y-6">
-        <PageSection title={slug ? '캐릭터 수정' : '캐릭터 만들기'} className="bg-white/[0.03]">
-          <p className="text-sm leading-7 text-white/62">
-            공개 상세 화면과 별개로 프롬프트, 도입부, 이미지를 편집하는 화면입니다.
-          </p>
-        </PageSection>
         <PageSection title="기본 정보">
           <div className="grid gap-4">
             <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="캐릭터 이름" className="bg-white/5 text-white placeholder:text-white/35" />
@@ -1087,11 +1082,6 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
   return (
     <PageFrame chrome={chrome}>
       <div className="mx-auto max-w-4xl space-y-6">
-        <PageSection title={slug ? '월드 수정' : '월드 만들기'} className="bg-white/[0.03]">
-          <p className="text-sm leading-7 text-white/62">
-            공개 상세 화면과 별개로 프롬프트, 도입부, 이미지를 편집하는 화면입니다.
-          </p>
-        </PageSection>
         <PageSection title="기본 정보">
           <div className="grid gap-4">
             <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="월드 이름" className="bg-white/5 text-white placeholder:text-white/35" />

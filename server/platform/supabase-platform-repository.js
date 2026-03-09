@@ -303,6 +303,20 @@ const getWorldRowBySlug = async (client, slug) => {
   return data;
 };
 
+const getOwnedCharacterRowBySlug = async (client, slug, userId) => {
+  if (!client || !userId) return null;
+  const { data, error } = await client.from('characters').select('*').eq('owner_user_id', userId).eq('slug', slug).maybeSingle();
+  if (error) throw error;
+  return data;
+};
+
+const getOwnedWorldRowBySlug = async (client, slug, userId) => {
+  if (!client || !userId) return null;
+  const { data, error } = await client.from('worlds').select('*').eq('owner_user_id', userId).eq('slug', slug).maybeSingle();
+  if (error) throw error;
+  return data;
+};
+
 const getWorldRowsByIds = async (client, ids) => {
   if (!ids.length) return [];
   const { data, error } = await basePublicContentQuery(client, 'worlds').in('id', ids);
@@ -355,12 +369,12 @@ export const getWorldDetail = async (slug) => {
   };
 };
 
-const resolveEntityByRef = async (client, entityType, ref) => {
+export const resolveEntityByRef = async ({ publicClientInstance, userClientInstance, userId, entityType, ref }) => {
   if (entityType === 'character') {
-    const row = await getCharacterRowBySlug(client, ref);
+    const row = await getOwnedCharacterRowBySlug(userClientInstance, ref, userId) || await getCharacterRowBySlug(publicClientInstance, ref);
     return row ? { row, summary: summarizeCharacter(row) } : null;
   }
-  const row = await getWorldRowBySlug(client, ref);
+  const row = await getOwnedWorldRowBySlug(userClientInstance, ref, userId) || await getWorldRowBySlug(publicClientInstance, ref);
   return row ? { row, summary: summarizeWorld(row) } : null;
 };
 
@@ -368,7 +382,7 @@ export const addRecentView = async ({ event, userId, entityType, ref }) => {
   const client = await userClient(event);
   const publicReadClient = await publicClient();
   if (!client || !publicReadClient) return null;
-  const entity = await resolveEntityByRef(publicReadClient, entityType, ref);
+  const entity = await resolveEntityByRef({ publicClientInstance: publicReadClient, userClientInstance: client, userId, entityType, ref });
   if (!entity) return null;
   const { error } = await client.from('recent_views').insert({
     user_id: userId,
@@ -384,7 +398,7 @@ export const toggleBookmark = async ({ event, userId, entityType, ref }) => {
   const client = await userClient(event);
   const publicReadClient = await publicClient();
   if (!client || !publicReadClient) return null;
-  const entity = await resolveEntityByRef(publicReadClient, entityType, ref);
+  const entity = await resolveEntityByRef({ publicClientInstance: publicReadClient, userClientInstance: client, userId, entityType, ref });
   if (!entity) return null;
   const { data: existing } = await client.from('bookmarks').select('id').eq('user_id', userId).eq('target_type', entityType).eq('target_id', entity.row.id).maybeSingle();
   if (existing?.id) {
@@ -412,6 +426,10 @@ const hydrateRoom = async ({ client, publicClientInstance, row }) => {
     client.from('room_state_summaries').select('*').eq('room_id', row.id).maybeSingle(),
     client.from('room_messages').select('*').eq('room_id', row.id).order('created_at', { ascending: true }),
   ]);
+
+  if (!characterRows[0]) {
+    return null;
+  }
 
   const character = summarizeCharacter(characterRows[0]);
   const world = worldRows[0] ? summarizeWorld(worldRows[0]) : null;
@@ -457,7 +475,10 @@ export const listRecentRooms = async ({ event, userId }) => {
   if (error) throw error;
   const rooms = [];
   for (const row of data || []) {
-    rooms.push(await hydrateRoom({ client, publicClientInstance: publicReadClient, row }));
+    const hydrated = await hydrateRoom({ client, publicClientInstance: publicReadClient, row });
+    if (hydrated) {
+      rooms.push(hydrated);
+    }
   }
   return rooms;
 };
