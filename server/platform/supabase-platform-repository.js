@@ -100,6 +100,16 @@ export const resolveAsyncOrFallback = async ({ label, promise, fallback }) => {
   }
 };
 
+const buildEmptyLibraryPayload = () => ({
+  bookmarks: [],
+  recentViews: [],
+  recentRooms: [],
+  owned: {
+    characters: [],
+    worlds: [],
+  },
+});
+
 const summarizeCharacter = (row) => ({
   id: row.id,
   entityType: 'character',
@@ -563,75 +573,83 @@ export const getLibraryPayload = async ({ event, userId }) => {
   const publicReadClient = await publicClient();
   if (!client || !publicReadClient) return null;
 
-  const [bookmarks, recentViews, recentRooms, ownedCharacters, ownedWorlds] = await Promise.all([
-    resolveDataOrFallback({
-      label: 'library.bookmarks',
-      queryPromise: client.from('bookmarks').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
-      fallback: [],
-    }),
-    resolveDataOrFallback({
-      label: 'library.recent_views',
-      queryPromise: client.from('recent_views').select('*').eq('user_id', userId).order('viewed_at', { ascending: false }).limit(20),
-      fallback: [],
-    }),
-    resolveAsyncOrFallback({
-      label: 'library.recentRooms',
-      promise: listRecentRooms({ event, userId }),
-      fallback: [],
-    }),
-    resolveDataOrFallback({
-      label: 'library.ownedCharacters',
-      queryPromise: client.from('characters').select('*').eq('owner_user_id', userId).order('updated_at', { ascending: false }),
-      fallback: [],
-    }),
-    resolveDataOrFallback({
-      label: 'library.ownedWorlds',
-      queryPromise: client.from('worlds').select('*').eq('owner_user_id', userId).order('updated_at', { ascending: false }),
-      fallback: [],
-    }),
-  ]);
+  try {
+    const [bookmarks, recentViews, recentRooms, ownedCharacters, ownedWorlds] = await Promise.all([
+      resolveDataOrFallback({
+        label: 'library.bookmarks',
+        queryPromise: client.from('bookmarks').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
+        fallback: [],
+      }),
+      resolveDataOrFallback({
+        label: 'library.recent_views',
+        queryPromise: client.from('recent_views').select('*').eq('user_id', userId).order('viewed_at', { ascending: false }).limit(20),
+        fallback: [],
+      }),
+      resolveAsyncOrFallback({
+        label: 'library.recentRooms',
+        promise: listRecentRooms({ event, userId }),
+        fallback: [],
+      }),
+      resolveDataOrFallback({
+        label: 'library.ownedCharacters',
+        queryPromise: client.from('characters').select('*').eq('owner_user_id', userId).order('updated_at', { ascending: false }),
+        fallback: [],
+      }),
+      resolveDataOrFallback({
+        label: 'library.ownedWorlds',
+        queryPromise: client.from('worlds').select('*').eq('owner_user_id', userId).order('updated_at', { ascending: false }),
+        fallback: [],
+      }),
+    ]);
 
-  const bookmarkedCharacterIds = (bookmarks || []).filter((item) => item.target_type === 'character').map((item) => item.target_id);
-  const bookmarkedWorldIds = (bookmarks || []).filter((item) => item.target_type === 'world').map((item) => item.target_id);
-  const recentCharacterIds = (recentViews || []).filter((item) => item.target_type === 'character').map((item) => item.target_id);
-  const recentWorldIds = (recentViews || []).filter((item) => item.target_type === 'world').map((item) => item.target_id);
+    const bookmarkedCharacterIds = (bookmarks || []).filter((item) => item.target_type === 'character').map((item) => item.target_id);
+    const bookmarkedWorldIds = (bookmarks || []).filter((item) => item.target_type === 'world').map((item) => item.target_id);
+    const recentCharacterIds = (recentViews || []).filter((item) => item.target_type === 'character').map((item) => item.target_id);
+    const recentWorldIds = (recentViews || []).filter((item) => item.target_type === 'world').map((item) => item.target_id);
 
-  const [publicBookmarkCharacters, ownedBookmarkCharacters, publicBookmarkWorlds, ownedBookmarkWorlds, publicViewedCharacters, ownedViewedCharacters, publicViewedWorlds, ownedViewedWorlds] = await Promise.all([
-    getCharacterRowsByIds(publicReadClient, bookmarkedCharacterIds),
-    getOwnedCharacterRowsByIds(client, bookmarkedCharacterIds, userId),
-    getWorldRowsByIds(publicReadClient, bookmarkedWorldIds),
-    getOwnedWorldRowsByIds(client, bookmarkedWorldIds, userId),
-    getCharacterRowsByIds(publicReadClient, recentCharacterIds),
-    getOwnedCharacterRowsByIds(client, recentCharacterIds, userId),
-    getWorldRowsByIds(publicReadClient, recentWorldIds),
-    getOwnedWorldRowsByIds(client, recentWorldIds, userId),
-  ]);
+    const [publicBookmarkCharacters, ownedBookmarkCharacters, publicBookmarkWorlds, ownedBookmarkWorlds, publicViewedCharacters, ownedViewedCharacters, publicViewedWorlds, ownedViewedWorlds] = await Promise.all([
+      resolveAsyncOrFallback({ label: 'library.publicBookmarkCharacters', promise: getCharacterRowsByIds(publicReadClient, bookmarkedCharacterIds), fallback: [] }),
+      resolveAsyncOrFallback({ label: 'library.ownedBookmarkCharacters', promise: getOwnedCharacterRowsByIds(client, bookmarkedCharacterIds, userId), fallback: [] }),
+      resolveAsyncOrFallback({ label: 'library.publicBookmarkWorlds', promise: getWorldRowsByIds(publicReadClient, bookmarkedWorldIds), fallback: [] }),
+      resolveAsyncOrFallback({ label: 'library.ownedBookmarkWorlds', promise: getOwnedWorldRowsByIds(client, bookmarkedWorldIds, userId), fallback: [] }),
+      resolveAsyncOrFallback({ label: 'library.publicViewedCharacters', promise: getCharacterRowsByIds(publicReadClient, recentCharacterIds), fallback: [] }),
+      resolveAsyncOrFallback({ label: 'library.ownedViewedCharacters', promise: getOwnedCharacterRowsByIds(client, recentCharacterIds, userId), fallback: [] }),
+      resolveAsyncOrFallback({ label: 'library.publicViewedWorlds', promise: getWorldRowsByIds(publicReadClient, recentWorldIds), fallback: [] }),
+      resolveAsyncOrFallback({ label: 'library.ownedViewedWorlds', promise: getOwnedWorldRowsByIds(client, recentWorldIds, userId), fallback: [] }),
+    ]);
 
-  const bookmarkCharacters = mergeRowsById(publicBookmarkCharacters, ownedBookmarkCharacters);
-  const bookmarkWorlds = mergeRowsById(publicBookmarkWorlds, ownedBookmarkWorlds);
-  const viewedCharacters = mergeRowsById(publicViewedCharacters, ownedViewedCharacters);
-  const viewedWorlds = mergeRowsById(publicViewedWorlds, ownedViewedWorlds);
+    const bookmarkCharacters = mergeRowsById(publicBookmarkCharacters, ownedBookmarkCharacters);
+    const bookmarkWorlds = mergeRowsById(publicBookmarkWorlds, ownedBookmarkWorlds);
+    const viewedCharacters = mergeRowsById(publicViewedCharacters, ownedViewedCharacters);
+    const viewedWorlds = mergeRowsById(publicViewedWorlds, ownedViewedWorlds);
 
-  const bookmarkCharacterMap = new Map(bookmarkCharacters.map((item) => [item.id, summarizeCharacter(item)]));
-  const bookmarkWorldMap = new Map(bookmarkWorlds.map((item) => [item.id, summarizeWorld(item)]));
-  const recentCharacterMap = new Map(viewedCharacters.map((item) => [item.id, summarizeCharacter(item)]));
-  const recentWorldMap = new Map(viewedWorlds.map((item) => [item.id, summarizeWorld(item)]));
+    const bookmarkCharacterMap = new Map(bookmarkCharacters.map((item) => [item.id, summarizeCharacter(item)]));
+    const bookmarkWorldMap = new Map(bookmarkWorlds.map((item) => [item.id, summarizeWorld(item)]));
+    const recentCharacterMap = new Map(viewedCharacters.map((item) => [item.id, summarizeCharacter(item)]));
+    const recentWorldMap = new Map(viewedWorlds.map((item) => [item.id, summarizeWorld(item)]));
 
-  return {
-    bookmarks: (bookmarks || []).flatMap((item) => {
-      const mapped = item.target_type === 'character' ? bookmarkCharacterMap.get(item.target_id) : bookmarkWorldMap.get(item.target_id);
-      return mapped ? [{ id: item.id, entityType: item.target_type, item: mapped, createdAt: item.created_at }] : [];
-    }),
-    recentViews: (recentViews || []).flatMap((item) => {
-      const mapped = item.target_type === 'character' ? recentCharacterMap.get(item.target_id) : recentWorldMap.get(item.target_id);
-      return mapped ? [{ id: item.id, entityType: item.target_type, item: mapped, viewedAt: item.viewed_at }] : [];
-    }),
-    recentRooms,
-    owned: {
-      characters: ownedCharacters.map(summarizeCharacter),
-      worlds: ownedWorlds.map(summarizeWorld),
-    },
-  };
+    return {
+      bookmarks: (bookmarks || []).flatMap((item) => {
+        const mapped = item.target_type === 'character' ? bookmarkCharacterMap.get(item.target_id) : bookmarkWorldMap.get(item.target_id);
+        return mapped ? [{ id: item.id, entityType: item.target_type, item: mapped, createdAt: item.created_at }] : [];
+      }),
+      recentViews: (recentViews || []).flatMap((item) => {
+        const mapped = item.target_type === 'character' ? recentCharacterMap.get(item.target_id) : recentWorldMap.get(item.target_id);
+        return mapped ? [{ id: item.id, entityType: item.target_type, item: mapped, viewedAt: item.viewed_at }] : [];
+      }),
+      recentRooms,
+      owned: {
+        characters: ownedCharacters.map(summarizeCharacter),
+        worlds: ownedWorlds.map(summarizeWorld),
+      },
+    };
+  } catch (error) {
+    logServerWarn('[V-MATE] Returning empty library payload after unexpected failure', {
+      userId,
+      message: error?.message || String(error),
+    });
+    return buildEmptyLibraryPayload();
+  }
 };
 
 export const createCharacter = async ({ event, userId, payload }) => {
