@@ -1,3 +1,232 @@
+export const ROOM_MEMORY_CONFIG = Object.freeze({
+  summaryRefreshTurns: 10,
+  recentRawTurns: 6,
+  recentRawMessages: 12,
+  maxSummaryChars: 1400,
+});
+
+const normalizeLine = (value, max = 160) => String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
+const normalizeBlock = (value, max = 12000) => String(value || '').trim().slice(0, max);
+
+const pushUnique = (existing, incoming, max = 6) => {
+  const next = [...(Array.isArray(existing) ? existing : [])];
+  for (const value of incoming) {
+    const normalized = normalizeLine(value, 96);
+    if (!normalized || next.includes(normalized)) continue;
+    next.push(normalized);
+  }
+  return next.slice(-max);
+};
+
+const extractLocationFromNarration = (narration, fallback) => {
+  const normalized = normalizeLine(narration, 120);
+  if (!normalized.includes('에서')) {
+    return fallback;
+  }
+  const [candidate] = normalized.split('에서');
+  const trimmed = candidate.trim();
+  if (!trimmed || trimmed.length > 40) {
+    return fallback;
+  }
+  return trimmed;
+};
+
+const extractFuturePromiseHints = (...texts) => {
+  const keywords = ['다음', '나중', '약속', '다시', '함께', '곧'];
+  const hints = [];
+
+  for (const text of texts) {
+    const segments = String(text || '')
+      .split(/[\n.!?]/)
+      .map((segment) => normalizeLine(segment, 96))
+      .filter(Boolean);
+
+    for (const segment of segments) {
+      if (keywords.some((keyword) => segment.includes(keyword))) {
+        hints.push(segment);
+      }
+    }
+  }
+
+  return hints;
+};
+
+const extractRelationshipCue = (assistantMessage, fallback) => {
+  const keywords = ['거리', '관계', '경계', '호감', '신뢰', '어색', '편안', '가까워', '멀어', '동행'];
+  const candidates = [
+    normalizeLine(assistantMessage?.inner_heart, 120),
+    normalizeLine(assistantMessage?.response, 120),
+  ].filter(Boolean);
+
+  const matched = candidates.find((candidate) => keywords.some((keyword) => candidate.includes(keyword)));
+  return matched || fallback;
+};
+
+export const normalizeStoredPromptSnapshot = (value) => {
+  if (typeof value === 'string') {
+    return {
+      basePromptSnapshot: value,
+      runningSummary: '',
+      compactedUserTurns: 0,
+    };
+  }
+
+  if (value && typeof value === 'object') {
+    return {
+      basePromptSnapshot: normalizeBlock(value.basePromptSnapshot || value.promptSnapshot || '', 12000),
+      runningSummary: normalizeBlock(value.runningSummary || '', ROOM_MEMORY_CONFIG.maxSummaryChars),
+      compactedUserTurns: Number.isFinite(Number(value.compactedUserTurns))
+        ? Math.max(0, Number(value.compactedUserTurns))
+        : 0,
+    };
+  }
+
+  return {
+    basePromptSnapshot: '',
+    runningSummary: '',
+    compactedUserTurns: 0,
+  };
+};
+
+export const buildStoredPromptSnapshot = ({ basePromptSnapshot, runningSummary = '', compactedUserTurns = 0 }) => ({
+  basePromptSnapshot: normalizeBlock(basePromptSnapshot, 12000),
+  runningSummary: normalizeBlock(runningSummary, ROOM_MEMORY_CONFIG.maxSummaryChars),
+  compactedUserTurns: Math.max(0, Number(compactedUserTurns || 0)),
+});
+
+export const buildConversationTurns = (messageHistory = []) => {
+  const history = Array.isArray(messageHistory) ? messageHistory : [];
+  const normalized = history
+    .map((message) => {
+      const role = message?.role === 'assistant' ? 'assistant' : message?.role === 'user' ? 'user' : null;
+      if (!role) return null;
+
+      if (role === 'user') {
+        return { role, text: normalizeLine(message?.content, 240) };
+      }
+
+      const assistantObject = typeof message?.content === 'object' && message?.content
+        ? message.content
+        : null;
+
+      return {
+        role,
+        text: normalizeLine(assistantObject?.response || message?.content, 240),
+        narration: normalizeLine(assistantObject?.narration, 180),
+      };
+    })
+    .filter((message) => message?.text);
+
+  const historyWithoutGreeting = normalized[0]?.role === 'assistant'
+    ? normalized.slice(1)
+    : normalized;
+
+  const turns = [];
+  let pendingUser = null;
+
+  for (const message of historyWithoutGreeting) {
+    if (message.role === 'user') {
+      if (pendingUser) {
+        turns.push({ userText: pendingUser.text, assistantText: '', narration: '' });
+      }
+      pendingUser = message;
+      continue;
+    }
+
+    if (!pendingUser) {
+      continue;
+    }
+
+    turns.push({
+      userText: pendingUser.text,
+      assistantText: message.text,
+      narration: message.narration || '',
+    });
+    pendingUser = null;
+  }
+
+  if (pendingUser) {
+    turns.push({ userText: pendingUser.text, assistantText: '', narration: '' });
+  }
+
+  return turns;
+};
+
+export const buildRecentRawHistory = (messageHistory = []) => {
+  const history = Array.isArray(messageHistory) ? messageHistory : [];
+  const normalized = history
+    .filter((message) => message?.role === 'user' || message?.role === 'assistant')
+    .map((message) => ({
+      role: message.role,
+      content: message.content,
+    }));
+
+  const withoutGreeting = normalized[0]?.role === 'assistant'
+    ? normalized.slice(1)
+    : normalized;
+
+  return withoutGreeting.slice(-ROOM_MEMORY_CONFIG.recentRawMessages);
+};
+
+export const shouldRefreshRunningSummary = ({ totalUserTurns, compactedUserTurns }) =>
+  totalUserTurns >= ROOM_MEMORY_CONFIG.summaryRefreshTurns
+  && totalUserTurns - compactedUserTurns >= ROOM_MEMORY_CONFIG.summaryRefreshTurns;
+
+export const buildRunningSummary = ({ turns, state }) => {
+  const compactedTurns = Array.isArray(turns) ? turns : [];
+  if (!compactedTurns.length) {
+    return '';
+  }
+
+  const lines = [
+    `누적 장면: ${normalizeLine(state?.currentSituation || '장면 진행 중', 120)}`,
+    `현재 위치: ${normalizeLine(state?.location || '미정', 80)}`,
+    `관계 흐름: ${normalizeLine(state?.relationshipState || '기본 관계 유지', 120)}`,
+  ];
+
+  if (Array.isArray(state?.futurePromises) && state.futurePromises.length > 0) {
+    lines.push(`열린 루프: ${state.futurePromises.slice(0, 4).map((item) => normalizeLine(item, 72)).join(' / ')}`);
+  }
+
+  if (Array.isArray(state?.worldNotes) && state.worldNotes.length > 0) {
+    lines.push(`세계 메모: ${state.worldNotes.slice(-4).map((item) => normalizeLine(item, 60)).join(' / ')}`);
+  }
+
+  lines.push('압축 대화 메모:');
+  compactedTurns.slice(-8).forEach((turn, index) => {
+    lines.push(`${index + 1}) 사용자: ${normalizeLine(turn.userText, 72)} | 응답: ${normalizeLine(turn.assistantText || turn.narration || '', 96)}`);
+  });
+
+  return lines.join('\n').slice(0, ROOM_MEMORY_CONFIG.maxSummaryChars);
+};
+
+export const buildRuntimePromptSnapshot = ({ storedPromptSnapshot, state }) => {
+  const snapshot = normalizeStoredPromptSnapshot(storedPromptSnapshot);
+  const lines = [snapshot.basePromptSnapshot];
+
+  if (snapshot.runningSummary) {
+    lines.push('', '### RUNNING SUMMARY', snapshot.runningSummary);
+  }
+
+  lines.push(
+    '',
+    '### LIVE ROOM STATE',
+    `- Situation: ${normalizeLine(state?.currentSituation || '장면 진행 중', 160)}`,
+    `- Location: ${normalizeLine(state?.location || '미정', 80)}`,
+    `- Relationship: ${normalizeLine(state?.relationshipState || '기본 관계 유지', 160)}`,
+  );
+
+  if (Array.isArray(state?.futurePromises) && state.futurePromises.length > 0) {
+    lines.push(`- Open loops: ${state.futurePromises.slice(0, 4).map((item) => normalizeLine(item, 72)).join(' / ')}`);
+  }
+
+  if (Array.isArray(state?.worldNotes) && state.worldNotes.length > 0) {
+    lines.push(`- World notes: ${state.worldNotes.slice(-4).map((item) => normalizeLine(item, 60)).join(' / ')}`);
+  }
+
+  return lines.join('\n');
+};
+
 export const generateBridgeProfile = ({ character, world }) => {
   const characterIntro = typeof character.promptProfile.characterIntro === 'string'
     ? character.promptProfile.characterIntro.trim()
@@ -170,4 +399,19 @@ export const updateRoomStateFromMessages = ({ state, assistantMessage, userMessa
   currentSituation: typeof assistantMessage?.narration === 'string' && assistantMessage.narration.trim()
     ? assistantMessage.narration.trim()
     : String(userMessage || '').trim().slice(0, 120) || state.currentSituation,
+  location: extractLocationFromNarration(assistantMessage?.narration, state.location),
+  relationshipState: extractRelationshipCue(assistantMessage, state.relationshipState),
+  futurePromises: pushUnique(
+    state.futurePromises,
+    extractFuturePromiseHints(userMessage, assistantMessage?.response, assistantMessage?.narration),
+    4,
+  ),
+  worldNotes: pushUnique(
+    state.worldNotes,
+    [
+      extractLocationFromNarration(assistantMessage?.narration, ''),
+      normalizeLine(assistantMessage?.narration, 80),
+    ],
+    6,
+  ),
 })

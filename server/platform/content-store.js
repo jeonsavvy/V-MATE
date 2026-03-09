@@ -1,5 +1,18 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { buildRoomPromptSnapshot, createInitialRoomState, generateBridgeProfile, updateRoomStateFromMessages } from './prompt-builder.js';
+import {
+  buildConversationTurns,
+  buildRecentRawHistory,
+  buildRoomPromptSnapshot,
+  buildRunningSummary,
+  buildRuntimePromptSnapshot,
+  buildStoredPromptSnapshot,
+  createInitialRoomState,
+  generateBridgeProfile,
+  normalizeStoredPromptSnapshot,
+  ROOM_MEMORY_CONFIG,
+  shouldRefreshRunningSummary,
+  updateRoomStateFromMessages,
+} from './prompt-builder.js';
 
 const clone = (value) => structuredClone(value);
 
@@ -380,7 +393,9 @@ export const createRoom = ({ userId, characterRef, characterSlug, worldRef, worl
     bridgeProfile,
     state,
     messages: [createGreetingMessage({ userAlias: userAlias || '나', character, bridgeProfile })],
-    resolvedPromptSnapshotJson: buildRoomPromptSnapshot({ character, world, bridgeProfile, state }),
+    resolvedPromptSnapshotJson: buildStoredPromptSnapshot({
+      basePromptSnapshot: buildRoomPromptSnapshot({ character, world, bridgeProfile, state }),
+    }),
     createdAt: nowIso(),
     updatedAt: nowIso(),
     lastMessageAt: nowIso(),
@@ -405,10 +420,11 @@ export const getRoomHistoryForModel = (input) => {
   const roomId = typeof input === 'string' ? input : input?.roomId
   const room = rooms.get(roomId);
   if (!room) return [];
-  return room.messages.slice(1).map((message) => ({
+  const history = room.messages.map((message) => ({
     role: message.role,
     content: typeof message.content === 'string' ? message.content : message.content.response,
   }));
+  return buildRecentRawHistory(history);
 };
 
 export const getRoomPromptContext = (input) => {
@@ -418,7 +434,10 @@ export const getRoomPromptContext = (input) => {
   const character = findCharacter(room.character.slug);
   const world = room.world ? findWorld(room.world.slug) : null;
   return {
-    promptSnapshot: room.resolvedPromptSnapshotJson,
+    promptSnapshot: buildRuntimePromptSnapshot({
+      storedPromptSnapshot: room.resolvedPromptSnapshotJson,
+      state: room.state,
+    }),
     bridgeProfile: clone(room.bridgeProfile),
     state: clone(room.state),
     character,
@@ -432,6 +451,21 @@ export const appendRoomMessages = ({ roomId, userMessage, assistantMessage }) =>
   room.messages.push({ id: `user-${randomUUID()}`, role: 'user', createdAt: nowIso(), content: userMessage });
   room.messages.push({ id: `assistant-${randomUUID()}`, role: 'assistant', createdAt: nowIso(), content: assistantMessage });
   room.state = updateRoomStateFromMessages({ state: room.state, assistantMessage, userMessage });
+  const turns = buildConversationTurns(room.messages);
+  const storedPromptSnapshot = normalizeStoredPromptSnapshot(room.resolvedPromptSnapshotJson);
+  if (shouldRefreshRunningSummary({
+    totalUserTurns: turns.length,
+    compactedUserTurns: storedPromptSnapshot.compactedUserTurns,
+  })) {
+    room.resolvedPromptSnapshotJson = buildStoredPromptSnapshot({
+      basePromptSnapshot: storedPromptSnapshot.basePromptSnapshot,
+      runningSummary: buildRunningSummary({
+        turns: turns.slice(0, Math.max(0, turns.length - ROOM_MEMORY_CONFIG.recentRawTurns)),
+        state: room.state,
+      }),
+      compactedUserTurns: turns.length,
+    });
+  }
   room.updatedAt = nowIso();
   room.lastMessageAt = nowIso();
   return clone(room);

@@ -165,7 +165,7 @@ export const getChatRuntimeLimits = () => {
     });
 
     return {
-        maxHistoryMessages: toSafeInt(process.env.GEMINI_HISTORY_MESSAGES, 10, {
+        maxHistoryMessages: toSafeInt(process.env.GEMINI_HISTORY_MESSAGES, 12, {
             min: 1,
             max: 100,
         }),

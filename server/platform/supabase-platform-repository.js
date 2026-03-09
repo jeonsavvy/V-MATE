@@ -1,7 +1,20 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { extractBearerToken } from '../modules/auth-guard.js';
 import { logServerWarn } from '../modules/server-logger.js';
-import { buildRoomPromptSnapshot, createInitialRoomState, generateBridgeProfile, updateRoomStateFromMessages } from './prompt-builder.js';
+import {
+  buildConversationTurns,
+  buildRecentRawHistory,
+  buildRoomPromptSnapshot,
+  buildRunningSummary,
+  buildRuntimePromptSnapshot,
+  buildStoredPromptSnapshot,
+  createInitialRoomState,
+  generateBridgeProfile,
+  normalizeStoredPromptSnapshot,
+  ROOM_MEMORY_CONFIG,
+  shouldRefreshRunningSummary,
+  updateRoomStateFromMessages,
+} from './prompt-builder.js';
 
 // Supabase persistence adapter는 platform API가 기대하는 동일한 메서드 집합을 DB/Storage 기반으로 구현한다.
 const STORAGE_BUCKET = process.env.PUBLIC_ASSETS_BUCKET || 'vmate-assets';
@@ -66,6 +79,17 @@ const userClient = (event) => createSupabaseClient({ accessToken: extractBearerT
 
 const clone = (value) => structuredClone(value);
 const nowIso = () => new Date().toISOString();
+
+const toRoomStateSummary = (stateRow = {}) => ({
+  currentSituation: stateRow.current_situation || '',
+  location: stateRow.location || '',
+  relationshipState: stateRow.relationship_state || '',
+  inventory: stateRow.inventory_json || [],
+  appearance: stateRow.appearance_json || [],
+  pose: stateRow.pose_json || [],
+  futurePromises: stateRow.future_promises_json || [],
+  worldNotes: stateRow.world_notes_json || [],
+});
 
 export const resolveDataOrFallback = async ({ label, queryPromise, fallback }) => {
   try {
@@ -650,16 +674,7 @@ const hydrateRoom = async ({ client, publicClientInstance, row }) => {
     character,
     world,
     bridgeProfile: row.bridge_profile_json,
-    state: {
-      currentSituation: stateRow.current_situation || '',
-      location: stateRow.location || '',
-      relationshipState: stateRow.relationship_state || '',
-      inventory: stateRow.inventory_json || [],
-      appearance: stateRow.appearance_json || [],
-      pose: stateRow.pose_json || [],
-      futurePromises: stateRow.future_promises_json || [],
-      worldNotes: stateRow.world_notes_json || [],
-    },
+    state: toRoomStateSummary(stateRow),
     messages,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -973,6 +988,7 @@ export const createRoom = async ({ event, userId, characterSlug, worldSlug = nul
     summary: world.summary,
     promptProfile: world.prompt_profile_json,
   } : null, bridgeProfile, state });
+  const storedPromptSnapshot = buildStoredPromptSnapshot({ basePromptSnapshot: promptSnapshot });
 
   const { data: roomRow, error: roomError } = await client.from('rooms').insert({
     user_id: userId,
@@ -981,7 +997,7 @@ export const createRoom = async ({ event, userId, characterSlug, worldSlug = nul
     user_alias: userAlias,
     title: world ? `${character.name} · ${world.name}` : character.name,
     bridge_profile_json: bridgeProfile,
-    resolved_prompt_snapshot_json: promptSnapshot,
+    resolved_prompt_snapshot_json: storedPromptSnapshot,
     last_message_at: nowIso(),
   }).select('*').single();
   if (roomError) {
@@ -1045,21 +1061,31 @@ export const getRoomHistoryForModel = async ({ event, roomId }) => {
   if (!client) return [];
   const { data, error } = await client.from('room_messages').select('*').eq('room_id', roomId).order('created_at', { ascending: true });
   if (error) throw error;
-  return (data || []).map((item) => ({
+  const history = (data || []).map((item) => ({
     role: item.role,
     content: item.role === 'user' ? String(item.content_json?.text || '') : String(item.content_json?.response || ''),
   })).filter((item) => item.content);
+  return buildRecentRawHistory(history);
 };
 
 export const getRoomPromptContext = async ({ event, roomId }) => {
   const client = await userClient(event);
   if (!client) return null;
-  const { data, error } = await client.from('rooms').select('resolved_prompt_snapshot_json, bridge_profile_json').eq('id', roomId).maybeSingle();
-  if (error) throw error;
-  if (!data) return null;
+  const [roomResult, stateResult] = await Promise.all([
+    client.from('rooms').select('resolved_prompt_snapshot_json, bridge_profile_json').eq('id', roomId).maybeSingle(),
+    client.from('room_state_summaries').select('*').eq('room_id', roomId).maybeSingle(),
+  ]);
+  if (roomResult.error) throw roomResult.error;
+  if (stateResult.error) throw stateResult.error;
+  if (!roomResult.data) return null;
+
+  const state = toRoomStateSummary(stateResult.data || {});
   return {
-    promptSnapshot: data.resolved_prompt_snapshot_json,
-    bridgeProfile: data.bridge_profile_json,
+    promptSnapshot: buildRuntimePromptSnapshot({
+      storedPromptSnapshot: roomResult.data.resolved_prompt_snapshot_json,
+      state,
+    }),
+    bridgeProfile: roomResult.data.bridge_profile_json,
   };
 };
 
@@ -1069,7 +1095,28 @@ export const appendRoomMessages = async ({ event, roomId, userMessage, assistant
   if (!client || !publicReadClient) return null;
   const room = await getRoom({ event, roomId });
   if (!room) return null;
+  const { data: roomRow, error: roomRowError } = await client.from('rooms').select('resolved_prompt_snapshot_json').eq('id', roomId).single();
+  if (roomRowError) throw roomRowError;
   const nextState = updateRoomStateFromMessages({ state: clone(room.state), assistantMessage, userMessage });
+  const nextMessages = [
+    ...room.messages,
+    { role: 'user', content: userMessage },
+    { role: 'assistant', content: assistantMessage },
+  ];
+  const turns = buildConversationTurns(nextMessages);
+  const storedPromptSnapshot = normalizeStoredPromptSnapshot(roomRow.resolved_prompt_snapshot_json);
+  const shouldRefreshSummary = shouldRefreshRunningSummary({
+    totalUserTurns: turns.length,
+    compactedUserTurns: storedPromptSnapshot.compactedUserTurns,
+  });
+  const compactedTurns = turns.slice(0, Math.max(0, turns.length - ROOM_MEMORY_CONFIG.recentRawTurns));
+  const nextStoredPromptSnapshot = shouldRefreshSummary
+    ? buildStoredPromptSnapshot({
+        basePromptSnapshot: storedPromptSnapshot.basePromptSnapshot,
+        runningSummary: buildRunningSummary({ turns: compactedTurns, state: nextState }),
+        compactedUserTurns: turns.length,
+      })
+    : storedPromptSnapshot;
   const { error: insertError } = await client.from('room_messages').insert([
     { room_id: roomId, role: 'user', content_json: { text: userMessage } },
     { room_id: roomId, role: 'assistant', content_json: assistantMessage },
@@ -1087,9 +1134,17 @@ export const appendRoomMessages = async ({ event, roomId, userMessage, assistant
     updated_at: nowIso(),
   }).eq('room_id', roomId);
   if (stateError) throw stateError;
-  await client.from('rooms').update({ updated_at: nowIso(), last_message_at: nowIso() }).eq('id', roomId);
-  const { data: roomRow } = await client.from('rooms').select('*').eq('id', roomId).single();
-  return hydrateRoom({ client, publicClientInstance: publicReadClient, row: roomRow });
+  const { error: roomUpdateError } = await client
+    .from('rooms')
+    .update({
+      updated_at: nowIso(),
+      last_message_at: nowIso(),
+      resolved_prompt_snapshot_json: nextStoredPromptSnapshot,
+    })
+    .eq('id', roomId);
+  if (roomUpdateError) throw roomUpdateError;
+  const { data: nextRoomRow } = await client.from('rooms').select('*').eq('id', roomId).single();
+  return hydrateRoom({ client, publicClientInstance: publicReadClient, row: nextRoomRow });
 };
 
 export const getOpsDashboard = async ({ event, userId }) => {

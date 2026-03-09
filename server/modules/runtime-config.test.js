@@ -67,7 +67,7 @@ test('returns defaults when env vars are missing', () => {
 
   const limits = getChatRuntimeLimits();
   assert.deepEqual(limits, {
-    maxHistoryMessages: 10,
+    maxHistoryMessages: 12,
     maxPartChars: 700,
     maxSystemPromptChars: 5000,
     primaryMaxOutputTokens: 2048,

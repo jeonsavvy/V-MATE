@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { buildRoomPromptSnapshot, generateBridgeProfile } from './prompt-builder.js';
+import {
+  buildRecentRawHistory,
+  buildRoomPromptSnapshot,
+  buildRuntimePromptSnapshot,
+  buildStoredPromptSnapshot,
+  generateBridgeProfile,
+  shouldRefreshRunningSummary,
+} from './prompt-builder.js';
 
 test('buildRoomPromptSnapshot includes character and world image-slot guidance for runtime switching', () => {
   const snapshot = buildRoomPromptSnapshot({
@@ -87,4 +94,51 @@ test('generateBridgeProfile uses intro fields as first-scene defaults', () => {
 
   assert.equal(bridgeProfile.meetingTrigger, '비가 막 그친 편의점 앞에서 장면을 연다.');
   assert.equal(bridgeProfile.relationshipDistance, '조심스럽지만 끊어내진 않는다.');
+});
+
+test('buildRuntimePromptSnapshot appends running summary and live room state on top of stored snapshot', () => {
+  const runtimePrompt = buildRuntimePromptSnapshot({
+    storedPromptSnapshot: buildStoredPromptSnapshot({
+      basePromptSnapshot: '### BASE\n- base prompt line',
+      runningSummary: '누적 장면: 이미 한 번 크게 다퉜다.',
+      compactedUserTurns: 10,
+    }),
+    state: {
+      currentSituation: '비가 그친 뒤 다시 말을 붙였다.',
+      location: '편의점 앞',
+      relationshipState: '어색하지만 완전히 끊어지진 않았다.',
+      futurePromises: ['나중에 다시 이야기하기로 했다.'],
+      worldNotes: ['심야', '편의점'],
+    },
+  });
+
+  assert.match(runtimePrompt, /### BASE/);
+  assert.match(runtimePrompt, /### RUNNING SUMMARY/);
+  assert.match(runtimePrompt, /누적 장면: 이미 한 번 크게 다퉜다/);
+  assert.match(runtimePrompt, /### LIVE ROOM STATE/);
+  assert.match(runtimePrompt, /Location: 편의점 앞/);
+  assert.match(runtimePrompt, /Open loops: 나중에 다시 이야기하기로 했다/);
+});
+
+test('buildRecentRawHistory keeps only the latest 6 turns of raw history and skips greeting assistant message', () => {
+  const history = [
+    { role: 'assistant', content: '시작 인사' },
+    ...Array.from({ length: 8 }, (_, index) => ([
+      { role: 'user', content: `user-${index + 1}` },
+      { role: 'assistant', content: `assistant-${index + 1}` },
+    ])).flat(),
+  ];
+
+  const recentHistory = buildRecentRawHistory(history);
+
+  assert.equal(recentHistory.length, 12);
+  assert.deepEqual(recentHistory[0], { role: 'user', content: 'user-3' });
+  assert.deepEqual(recentHistory.at(-1), { role: 'assistant', content: 'assistant-8' });
+});
+
+test('shouldRefreshRunningSummary turns on every 10 user turns', () => {
+  assert.equal(shouldRefreshRunningSummary({ totalUserTurns: 9, compactedUserTurns: 0 }), false);
+  assert.equal(shouldRefreshRunningSummary({ totalUserTurns: 10, compactedUserTurns: 0 }), true);
+  assert.equal(shouldRefreshRunningSummary({ totalUserTurns: 15, compactedUserTurns: 10 }), false);
+  assert.equal(shouldRefreshRunningSummary({ totalUserTurns: 20, compactedUserTurns: 10 }), true);
 });
