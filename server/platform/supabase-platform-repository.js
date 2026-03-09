@@ -331,6 +331,35 @@ const getCharacterRowsByIds = async (client, ids) => {
   return data || [];
 };
 
+const getOwnedWorldRowsByIds = async (client, ids, userId) => {
+  if (!client || !ids.length || !userId) return [];
+  const { data, error } = await client.from('worlds').select('*').eq('owner_user_id', userId).in('id', ids);
+  if (error) throw error;
+  return data || [];
+};
+
+const getOwnedCharacterRowsByIds = async (client, ids, userId) => {
+  if (!client || !ids.length || !userId) return [];
+  const { data, error } = await client.from('characters').select('*').eq('owner_user_id', userId).in('id', ids);
+  if (error) throw error;
+  return data || [];
+};
+
+const mergeRowsById = (primaryRows, fallbackRows) => {
+  const merged = new Map();
+  for (const row of fallbackRows || []) {
+    if (row?.id) {
+      merged.set(row.id, row);
+    }
+  }
+  for (const row of primaryRows || []) {
+    if (row?.id) {
+      merged.set(row.id, row);
+    }
+  }
+  return Array.from(merged.values());
+};
+
 export const getCharacterDetail = async (slug) => {
   const client = await publicClient();
   if (!client) return null;
@@ -420,12 +449,17 @@ export const removeBookmark = async ({ event, bookmarkId }) => {
 };
 
 const hydrateRoom = async ({ client, publicClientInstance, row }) => {
-  const [characterRows, worldRows, stateRows, messageRows] = await Promise.all([
+  const [publicCharacterRows, ownedCharacterRows, publicWorldRows, ownedWorldRows, stateRows, messageRows] = await Promise.all([
     getCharacterRowsByIds(publicClientInstance, [row.character_id]),
+    getOwnedCharacterRowsByIds(client, [row.character_id], row.user_id),
     row.world_id ? getWorldRowsByIds(publicClientInstance, [row.world_id]) : Promise.resolve([]),
+    row.world_id ? getOwnedWorldRowsByIds(client, [row.world_id], row.user_id) : Promise.resolve([]),
     client.from('room_state_summaries').select('*').eq('room_id', row.id).maybeSingle(),
     client.from('room_messages').select('*').eq('room_id', row.id).order('created_at', { ascending: true }),
   ]);
+
+  const characterRows = mergeRowsById(publicCharacterRows, ownedCharacterRows);
+  const worldRows = mergeRowsById(publicWorldRows, ownedWorldRows);
 
   if (!characterRows[0]) {
     return null;
@@ -475,9 +509,17 @@ export const listRecentRooms = async ({ event, userId }) => {
   if (error) throw error;
   const rooms = [];
   for (const row of data || []) {
-    const hydrated = await hydrateRoom({ client, publicClientInstance: publicReadClient, row });
-    if (hydrated) {
-      rooms.push(hydrated);
+    try {
+      const hydrated = await hydrateRoom({ client, publicClientInstance: publicReadClient, row });
+      if (hydrated) {
+        rooms.push(hydrated);
+      }
+    } catch (hydrateError) {
+      logServerWarn('[V-MATE] Skipping recent room hydrate failure', {
+        userId,
+        roomId: row?.id || null,
+        message: hydrateError?.message || String(hydrateError),
+      });
     }
   }
   return rooms;
@@ -501,12 +543,21 @@ export const getLibraryPayload = async ({ event, userId }) => {
   const recentCharacterIds = (recentViews || []).filter((item) => item.target_type === 'character').map((item) => item.target_id);
   const recentWorldIds = (recentViews || []).filter((item) => item.target_type === 'world').map((item) => item.target_id);
 
-  const [bookmarkCharacters, bookmarkWorlds, viewedCharacters, viewedWorlds] = await Promise.all([
+  const [publicBookmarkCharacters, ownedBookmarkCharacters, publicBookmarkWorlds, ownedBookmarkWorlds, publicViewedCharacters, ownedViewedCharacters, publicViewedWorlds, ownedViewedWorlds] = await Promise.all([
     getCharacterRowsByIds(publicReadClient, bookmarkedCharacterIds),
+    getOwnedCharacterRowsByIds(client, bookmarkedCharacterIds, userId),
     getWorldRowsByIds(publicReadClient, bookmarkedWorldIds),
+    getOwnedWorldRowsByIds(client, bookmarkedWorldIds, userId),
     getCharacterRowsByIds(publicReadClient, recentCharacterIds),
+    getOwnedCharacterRowsByIds(client, recentCharacterIds, userId),
     getWorldRowsByIds(publicReadClient, recentWorldIds),
+    getOwnedWorldRowsByIds(client, recentWorldIds, userId),
   ]);
+
+  const bookmarkCharacters = mergeRowsById(publicBookmarkCharacters, ownedBookmarkCharacters);
+  const bookmarkWorlds = mergeRowsById(publicBookmarkWorlds, ownedBookmarkWorlds);
+  const viewedCharacters = mergeRowsById(publicViewedCharacters, ownedViewedCharacters);
+  const viewedWorlds = mergeRowsById(publicViewedWorlds, ownedViewedWorlds);
 
   const bookmarkCharacterMap = new Map(bookmarkCharacters.map((item) => [item.id, summarizeCharacter(item)]));
   const bookmarkWorldMap = new Map(bookmarkWorlds.map((item) => [item.id, summarizeWorld(item)]));
