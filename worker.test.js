@@ -294,7 +294,7 @@ test('returns structured 413 when chat request body exceeds worker read limit', 
   assert.equal(response.headers.get('x-v-mate-trace-id'), payload.trace_id);
 });
 
-test('runs scheduled Supabase keepalive via waitUntil using publishable key', async () => {
+test('runs scheduled Supabase keepalive via waitUntil for both public content tables', async () => {
   const fetchCalls = [];
   const waitUntilPromises = [];
   const isolatedWorker = createWorker({
@@ -331,11 +331,20 @@ test('runs scheduled Supabase keepalive via waitUntil using publishable key', as
 
   assert.equal(waitUntilPromises.length, 1);
   await Promise.all(waitUntilPromises);
-  assert.equal(fetchCalls.length, 1);
-  assert.equal(fetchCalls[0]?.url, 'https://demo.supabase.co/rest/v1/characters?select=id&limit=1');
+  assert.equal(fetchCalls.length, 2);
+  assert.deepEqual(
+    fetchCalls.map((call) => call.url),
+    [
+      'https://demo.supabase.co/rest/v1/characters?select=id&limit=1',
+      'https://demo.supabase.co/rest/v1/worlds?select=id&limit=1',
+    ],
+  );
   assert.equal(fetchCalls[0]?.method, 'GET');
+  assert.equal(fetchCalls[1]?.method, 'GET');
   assert.equal(fetchCalls[0]?.headers.apikey, 'sb_publishable_demo');
+  assert.equal(fetchCalls[1]?.headers.apikey, 'sb_publishable_demo');
   assert.equal('authorization' in (fetchCalls[0]?.headers || {}), false);
+  assert.equal('authorization' in (fetchCalls[1]?.headers || {}), false);
 });
 
 test('skips scheduled Supabase keepalive when public Supabase config is missing', async () => {

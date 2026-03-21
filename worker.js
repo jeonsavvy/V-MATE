@@ -9,7 +9,10 @@ import { handlePlatformApi } from "./server/platform/api.js";
 
 // Worker는 정적 셸 응답에 runtime env를 주입하고, chat API와 platform API를 분기한다.
 const CHAT_API_PATH = "/api/chat";
-const SUPABASE_KEEPALIVE_PATH = "/rest/v1/characters?select=id&limit=1";
+const SUPABASE_KEEPALIVE_PATHS = [
+  "/rest/v1/characters?select=id&limit=1",
+  "/rest/v1/worlds?select=id&limit=1",
+];
 const SUPABASE_KEEPALIVE_TIMEOUT_MS = 10_000;
 const SUPABASE_KEEPALIVE_MAX_ATTEMPTS = 2;
 const CLIENT_RUNTIME_ENV_KEYS = [
@@ -78,7 +81,9 @@ const resolveSupabaseKeepaliveConfig = (env = {}) => {
 
   return {
     enabled: Boolean(supabaseUrl && supabasePublicKey),
-    keepaliveUrl: supabaseUrl ? `${supabaseUrl}${SUPABASE_KEEPALIVE_PATH}` : "",
+    keepaliveUrls: supabaseUrl
+      ? SUPABASE_KEEPALIVE_PATHS.map((path) => `${supabaseUrl}${path}`)
+      : [],
     supabasePublicKey,
   };
 };
@@ -99,7 +104,7 @@ const runSupabaseKeepalive = async ({
   env,
   fetchImpl = fetch,
 }) => {
-  const { enabled, keepaliveUrl, supabasePublicKey } = resolveSupabaseKeepaliveConfig(env);
+  const { enabled, keepaliveUrls, supabasePublicKey } = resolveSupabaseKeepaliveConfig(env);
 
   if (!enabled) {
     console.warn("[V-MATE] Supabase keepalive skipped: public Supabase config is missing.");
@@ -112,32 +117,37 @@ const runSupabaseKeepalive = async ({
     const { signal, cleanup } = createTimeoutSignal(SUPABASE_KEEPALIVE_TIMEOUT_MS);
 
     try {
-      const response = await fetchImpl(keepaliveUrl, {
-        method: "GET",
-        headers: {
-          apikey: supabasePublicKey,
-          Accept: "application/json",
-          "Cache-Control": "no-store",
-          "X-V-MATE-Task": "supabase-keepalive",
-        },
-        signal,
-      });
+      const responses = await Promise.all(keepaliveUrls.map(async (keepaliveUrl) => {
+        const response = await fetchImpl(keepaliveUrl, {
+          method: "GET",
+          headers: {
+            apikey: supabasePublicKey,
+            Accept: "application/json",
+            "Cache-Control": "no-store",
+            "X-V-MATE-Task": "supabase-keepalive",
+          },
+          signal,
+        });
 
-      if (!response.ok) {
-        const body = await response.text().catch(() => "");
-        throw new Error(
-          `[V-MATE] Supabase keepalive failed (${response.status})${body ? `: ${body.slice(0, 200)}` : ""}`
-        );
-      }
+        if (!response.ok) {
+          const body = await response.text().catch(() => "");
+          throw new Error(
+            `[V-MATE] Supabase keepalive failed (${response.status})${body ? `: ${body.slice(0, 200)}` : ""}`
+          );
+        }
+
+        return response;
+      }));
 
       console.info("[V-MATE] Supabase keepalive succeeded.", {
         attempt,
-        status: response.status,
+        requestCount: responses.length,
+        statuses: responses.map((response) => response.status),
       });
       return {
         ok: true,
         skipped: false,
-        status: response.status,
+        statuses: responses.map((response) => response.status),
       };
     } catch (error) {
       lastError = error;

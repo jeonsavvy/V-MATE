@@ -52,7 +52,7 @@ test('wrangler config enables Cloudflare cron trigger for Supabase keepalive', a
 
   assert.match(wranglerConfig, /"triggers"\s*:\s*\{/);
   assert.match(wranglerConfig, /"crons"\s*:\s*\[/);
-  assert.match(wranglerConfig, /"0 \*\/6 \* \* \*"/);
+  assert.match(wranglerConfig, /"0 \* \* \* \*"/);
 });
 
 test('README documents worker auto-deploy, optional smoke-check url, runtime prerequisites, and rollback', async () => {

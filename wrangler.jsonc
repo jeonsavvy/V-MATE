@@ -12,7 +12,7 @@
     "run_worker_first": ["/", "/index.html", "/chat/*"]
   },
   "triggers": {
-    "crons": ["0 */6 * * *"]
+    "crons": ["0 * * * *"]
   },
   "keep_vars": true,
   "placement": {

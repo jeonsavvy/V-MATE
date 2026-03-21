@@ -312,8 +312,8 @@ do update set value_json = excluded.value_json;
   - `VITE_SUPABASE_URL`
   - `VITE_SUPABASE_ANON_KEY` 또는 `VITE_SUPABASE_PUBLISHABLE_KEY`
   - `VITE_CHAT_API_BASE_URL`
-- `wrangler.jsonc`에는 **6시간마다 실행되는 Cloudflare cron trigger**가 포함되어 있습니다.
-- cron은 `worker.js`의 `scheduled()`에서 Supabase `characters` 테이블에 **read-only keepalive 요청**을 보내 Free 프로젝트 자동 pause 가능성을 낮춥니다.
+- `wrangler.jsonc`에는 **매시간 실행되는 Cloudflare cron trigger**가 포함되어 있습니다.
+- cron은 `worker.js`의 `scheduled()`에서 Supabase `characters` / `worlds` 테이블에 **read-only keepalive 요청**을 보내 Free 프로젝트 자동 pause 가능성을 낮춥니다.
 - keepalive는 기존 `VITE_SUPABASE_URL` + 공개 키를 재사용하며, 쓰기 작업이나 service role key를 사용하지 않습니다.
 
 ### 배포 체크 포인트
