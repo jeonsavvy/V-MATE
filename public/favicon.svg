@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">V-MATE favicon</title>
+  <desc id="desc">A bright V letter and spark on a dark rounded square.</desc>
+  <rect width="64" height="64" rx="18" fill="#111317"/>
+  <path d="M16 18h9l7 20 7-20h9L35.7 48h-7.4L16 18Z" fill="#f8f3ea"/>
+  <path d="M44 11l2.1 6.2 6.4 2-6.4 2.1L44 28l-2.1-6.7-6.4-2.1 6.4-2L44 11Z" fill="#d92c63"/>
+</svg>
