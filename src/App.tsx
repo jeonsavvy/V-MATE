@@ -18,6 +18,7 @@ const CreateWorldPage = lazy(() => import('@/components/platform/Pages').then((m
 const RecentRoomsPage = lazy(() => import('@/components/platform/Pages').then((module) => ({ default: module.RecentRoomsPage })))
 const LibraryPage = lazy(() => import('@/components/platform/Pages').then((module) => ({ default: module.LibraryPage })))
 const OpsPage = lazy(() => import('@/components/platform/Pages').then((module) => ({ default: module.OpsPage })))
+const PrivacyPage = lazy(() => import('@/components/PrivacyPage').then((module) => ({ default: module.PrivacyPage })))
 
 type RouteState =
   | { view: 'home' }
@@ -33,6 +34,7 @@ type RouteState =
   | { view: 'recent' }
   | { view: 'library' }
   | { view: 'ops' }
+  | { view: 'privacy' }
 
 const normalizePathname = (pathname: string) => {
   if (!pathname || pathname === '/') return '/'
@@ -56,6 +58,7 @@ const parseRouteFromPathname = (pathname: string): RouteState => {
   if (segments[0] === 'recent') return { view: 'recent' }
   if (segments[0] === 'library') return { view: 'library' }
   if (segments[0] === 'ops') return { view: 'ops' }
+  if (segments[0] === 'privacy') return { view: 'privacy' }
   if (segments[0] === 'chat' && segments[1]) return { view: 'startCharacter', slug: segments[1] }
   return { view: 'home' }
 }
@@ -88,6 +91,8 @@ const toPathname = (route: RouteState) => {
       return '/library'
     case 'ops':
       return '/ops'
+    case 'privacy':
+      return '/privacy'
     default:
       return '/'
   }
@@ -235,6 +240,7 @@ function App() {
               {route.view === 'recent' && <RecentRoomsPage chrome={chrome} />}
               {route.view === 'library' && <LibraryPage chrome={chrome} />}
               {route.view === 'ops' && <OpsPage chrome={chrome} />}
+              {route.view === 'privacy' && <PrivacyPage chrome={chrome} />}
             </motion.div>
           </AnimatePresence>
         </Suspense>

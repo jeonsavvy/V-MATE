@@ -217,7 +217,12 @@ export function PlatformShell({
             </div>
           </main>
           <footer className="text-center text-sm text-white/42">
-            <div className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">© V-MATE</div>
+            <div className="mx-auto flex w-full max-w-[1400px] flex-wrap items-center justify-center gap-x-3 gap-y-2 px-4 py-6 sm:px-6 lg:px-8">
+              <span>© V-MATE</span>
+              <button type="button" onClick={() => handleNavigate('/privacy')} className="font-medium underline-offset-4 transition hover:text-white hover:underline">
+                개인정보처리방침
+              </button>
+            </div>
           </footer>
         </div>
       </div>

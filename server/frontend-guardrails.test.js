@@ -170,6 +170,7 @@ test('app source exposes platform routes and simplified footer copy', async () =
   assert.ok(appSource.includes('/library'));
   assert.ok(appSource.includes('/ops'));
   assert.ok(appSource.includes('/rooms/'));
+  assert.ok(appSource.includes('/privacy'));
 
   const homePath = path.join(srcRoot, 'components', 'Home.tsx');
   const homeSource = await readFile(homePath, 'utf8');
@@ -377,12 +378,26 @@ test('ops page exposes banner auto/manual controls and delete actions', async ()
   assert.ok(source.includes('삭제'));
 });
 
-test('footer removes border divider and keeps copyright only', async () => {
+test('footer removes border divider and exposes privacy policy link', async () => {
   const scaffoldPath = path.join(srcRoot, 'components/platform/PlatformScaffold.tsx');
   const source = await readFile(scaffoldPath, 'utf8');
 
   assert.equal(source.includes('<footer className="border-t'), false);
   assert.ok(source.includes('© V-MATE'));
+  assert.ok(source.includes('개인정보처리방침'));
+  assert.ok(source.includes("handleNavigate('/privacy')"));
+});
+
+test('privacy page renders operator contact and service-specific processing items', async () => {
+  const privacyPath = path.join(srcRoot, 'components', 'PrivacyPage.tsx');
+  const source = await readFile(privacyPath, 'utf8');
+
+  assert.ok(source.includes('개인정보처리자'));
+  assert.ok(source.includes('전찬혁'));
+  assert.ok(source.includes('jeonsavvy@gmail.com'));
+  assert.ok(source.includes('2026년 3월 1일'));
+  assert.ok(source.includes('캐릭터·월드 생성 내용'));
+  assert.ok(source.includes('rate-limit 식별정보'));
 });
 
 test('platform shell uses a mobile drawer and a constrained desktop content container', async () => {

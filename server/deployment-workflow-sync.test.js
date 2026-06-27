@@ -45,6 +45,8 @@ test('wrangler config runs worker first for shell routes that need runtime env i
   assert.match(wranglerConfig, /"\/"/);
   assert.match(wranglerConfig, /"\/index\.html"/);
   assert.match(wranglerConfig, /"\/chat\/\*"/);
+  assert.match(wranglerConfig, /"\/privacy"/);
+  assert.match(wranglerConfig, /"\/privacy\/\*"/);
 });
 
 test('wrangler config enables Cloudflare cron trigger for Supabase keepalive', async () => {
