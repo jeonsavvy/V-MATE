@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, test } from 'node:test';
 import worker, { createWorker } from './worker.js';
 import { resetPlatformStoreForTests } from './server/platform/content-store.js';
@@ -79,6 +80,13 @@ test('serves platform home api payload from /api/home', async () => {
   assert.equal(Array.isArray(payload.home?.characterFeed?.items), true);
   assert.equal(Array.isArray(payload.home?.worldFeed?.items), true);
   assert.equal('presetShelves' in payload, false);
+});
+
+test('platform artwork frames fill their media slots without thumbnail padding', () => {
+  const source = readFileSync('src/components/platform/PlatformScaffold.tsx', 'utf8');
+
+  assert.match(source, /relative z-\[1\] h-full w-full object-cover/);
+  assert.doesNotMatch(source, /relative z-\[1\] h-full w-full object-contain p-3/);
 });
 
 test('returns configuration error for account deletion when service role secret is missing', async () => {

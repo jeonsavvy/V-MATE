@@ -346,7 +346,7 @@ export function ArtworkFrame({
           <img
             src={src}
             alt={alt}
-            className={cn('relative z-[1] h-full w-full object-contain p-3', imageClassName)}
+            className={cn('relative z-[1] h-full w-full object-cover', imageClassName)}
             loading={priority ? 'eager' : 'lazy'}
             decoding="async"
           />
