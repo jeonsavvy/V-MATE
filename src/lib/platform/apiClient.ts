@@ -174,6 +174,7 @@ export const platformApi = {
   sendRoomMessage: (roomId: string, userMessage: string) => request<RoomChatResponse>(`/rooms/${roomId}/chat`, { method: 'POST', auth: true, body: JSON.stringify({ userMessage }) }),
   addRecentView: (entityType: EntityType, entityRef: string) => request<{ ok: boolean }>('/recent-views', { method: 'POST', auth: true, body: JSON.stringify({ entityType, entityRef }) }),
   toggleBookmark: (entityType: EntityType, entityRef: string) => request<{ active: boolean; id: string }>('/bookmarks', { method: 'POST', auth: true, body: JSON.stringify({ entityType, entityRef }) }),
+  deleteAccount: () => request<{ ok: boolean; deleted: boolean; data?: { deleted?: boolean; deletedCharacters?: number; deletedWorlds?: number; deletedRooms?: number; removedAssets?: number } }>('/account', { method: 'DELETE', auth: true }),
   hideContent: (entityType: EntityType, id: string) => request<{ ok: boolean }>(`/ops/content/${entityType}/${id}/hide`, { method: 'POST', auth: true, body: JSON.stringify({}) }),
   showContent: (entityType: EntityType, id: string) => request<{ ok: boolean }>(`/ops/content/${entityType}/${id}/show`, { method: 'POST', auth: true, body: JSON.stringify({}) }),
   deleteContent: (entityType: EntityType, id: string) => request<{ ok: boolean }>(`/ops/content/${entityType}/${id}`, { method: 'DELETE', auth: true }),

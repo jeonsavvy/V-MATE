@@ -37,9 +37,16 @@ const resolveSupabaseConfig = () => {
     || ''
   ).trim();
 
+  const supabaseServiceRoleKey = String(
+    process.env.SUPABASE_SERVICE_ROLE_KEY
+    || process.env.SUPABASE_SERVICE_KEY
+    || ''
+  ).trim();
+
   return {
     supabaseUrl,
     supabaseAnonKey,
+    supabaseServiceRoleKey,
     configured: Boolean(supabaseUrl && supabaseAnonKey),
   };
 };
@@ -76,6 +83,19 @@ const createSupabaseClient = async ({ accessToken = '', asUser = false } = {}) =
 
 const publicClient = () => createSupabaseClient();
 const userClient = (event) => createSupabaseClient({ accessToken: extractBearerToken(event?.headers), asUser: true });
+
+const createSupabaseAdminClient = async () => {
+  const { supabaseUrl, supabaseServiceRoleKey } = resolveSupabaseConfig();
+  if (!supabaseUrl || !supabaseServiceRoleKey) return null;
+  const createClient = await getCreateClient();
+  return createClient(supabaseUrl, supabaseServiceRoleKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+      detectSessionInUrl: false,
+    },
+  });
+};
 
 const clone = (value) => structuredClone(value);
 const nowIso = () => new Date().toISOString();
@@ -282,6 +302,30 @@ const removeStorageObjectsByUrls = async ({ client, urls }) => {
   if (!paths.length) return;
   const { error } = await client.storage.from(STORAGE_BUCKET).remove(paths);
   if (error) throw error;
+};
+
+const removeAccountStorageObjectsByUrls = async ({ client, urls }) => {
+  const normalizedUrls = Array.from(new Set(urls.map((url) => String(url || '').trim()).filter(Boolean)));
+  await removeStorageObjectsByUrls({ client, urls: normalizedUrls });
+  return normalizedUrls.length;
+};
+
+const throwIfSupabaseError = (label, result) => {
+  if (result?.error) {
+    const error = new Error(`${label}: ${result.error.message || 'Supabase operation failed'}`);
+    error.cause = result.error;
+    throw error;
+  }
+  return result;
+};
+
+const deleteRows = async ({ client, table, column, value }) => {
+  throwIfSupabaseError(`${table}.delete`, await client.from(table).delete().eq(column, value));
+};
+
+const deleteRowsIn = async ({ client, table, column, values }) => {
+  if (!values.length) return;
+  throwIfSupabaseError(`${table}.delete`, await client.from(table).delete().in(column, values));
 };
 
 export const collectContentAssetUrls = ({ entityType, row, assets = [] }) => {
@@ -1242,6 +1286,89 @@ export const deleteOwnedContent = async ({ event, userId, entityType, id }) => {
   const { error } = await client.from(table).delete().eq('id', row.id).eq('owner_user_id', userId);
   if (error) throw error;
   return true;
+};
+
+export const deleteAccount = async ({ userId }) => {
+  const client = await createSupabaseAdminClient();
+  if (!client) {
+    return {
+      ok: false,
+      reason: 'admin_not_configured',
+    };
+  }
+
+  const [
+    characterResult,
+    worldResult,
+    roomResult,
+  ] = await Promise.all([
+    client.from('characters').select('id, cover_image_url, avatar_image_url, prompt_profile_json').eq('owner_user_id', userId),
+    client.from('worlds').select('id, cover_image_url, prompt_profile_json').eq('owner_user_id', userId),
+    client.from('rooms').select('id').eq('user_id', userId),
+  ]);
+  throwIfSupabaseError('characters.select', characterResult);
+  throwIfSupabaseError('worlds.select', worldResult);
+  throwIfSupabaseError('rooms.select', roomResult);
+
+  const characterRows = characterResult.data || [];
+  const worldRows = worldResult.data || [];
+  const roomRows = roomResult.data || [];
+  const characterIds = characterRows.map((row) => row.id).filter(Boolean);
+  const worldIds = worldRows.map((row) => row.id).filter(Boolean);
+  const roomIds = roomRows.map((row) => row.id).filter(Boolean);
+
+  const [characterAssetResult, worldAssetResult] = await Promise.all([
+    characterIds.length
+      ? client.from('character_assets').select('character_id, url').in('character_id', characterIds)
+      : Promise.resolve({ data: [], error: null }),
+    worldIds.length
+      ? client.from('world_assets').select('world_id, url').in('world_id', worldIds)
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+  throwIfSupabaseError('character_assets.select', characterAssetResult);
+  throwIfSupabaseError('world_assets.select', worldAssetResult);
+
+  const removedAssets = await removeAccountStorageObjectsByUrls({
+    client,
+    urls: [
+      ...characterRows.flatMap((row) => collectContentAssetUrls({
+        entityType: 'character',
+        row,
+        assets: (characterAssetResult.data || []).filter((asset) => asset.character_id === row.id),
+      })),
+      ...worldRows.flatMap((row) => collectContentAssetUrls({
+        entityType: 'world',
+        row,
+        assets: (worldAssetResult.data || []).filter((asset) => asset.world_id === row.id),
+      })),
+    ],
+  });
+
+  await deleteRows({ client, table: 'chat_messages', column: 'user_id', value: userId });
+  await deleteRowsIn({ client, table: 'room_messages', column: 'room_id', values: roomIds });
+  await deleteRowsIn({ client, table: 'room_state_summaries', column: 'room_id', values: roomIds });
+  await deleteRows({ client, table: 'rooms', column: 'user_id', value: userId });
+  await deleteRows({ client, table: 'bookmarks', column: 'user_id', value: userId });
+  await deleteRows({ client, table: 'recent_views', column: 'user_id', value: userId });
+  await deleteRowsIn({ client, table: 'character_assets', column: 'character_id', values: characterIds });
+  await deleteRowsIn({ client, table: 'world_assets', column: 'world_id', values: worldIds });
+  await deleteRows({ client, table: 'characters', column: 'owner_user_id', value: userId });
+  await deleteRows({ client, table: 'worlds', column: 'owner_user_id', value: userId });
+  await deleteRows({ client, table: 'profiles', column: 'user_id', value: userId });
+
+  const { error: authDeleteError } = await client.auth.admin.deleteUser(userId);
+  if (authDeleteError) {
+    throw authDeleteError;
+  }
+
+  return {
+    ok: true,
+    deleted: true,
+    removedAssets,
+    deletedCharacters: characterIds.length,
+    deletedWorlds: worldIds.length,
+    deletedRooms: roomIds.length,
+  };
 };
 
 export const setHomeHeroTarget = async ({ event, targetPath }) => {

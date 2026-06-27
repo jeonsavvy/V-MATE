@@ -13,9 +13,10 @@ interface HomeProps {
   onNavigate: (path: string) => void
   onAuthRequest: () => void
   onSignOut: () => void
+  onDeleteAccount: () => Promise<void>
 }
 
-export function Home({ user, userAvatarInitial, searchQuery, onSearchChange, onNavigate, onAuthRequest, onSignOut }: HomeProps) {
+export function Home({ user, userAvatarInitial, searchQuery, onSearchChange, onNavigate, onAuthRequest, onSignOut, onDeleteAccount }: HomeProps) {
   void user
   void onAuthRequest
   const [characterFilter, setCharacterFilter] = useState<'new' | 'popular' | ''>('')
@@ -57,6 +58,7 @@ export function Home({ user, userAvatarInitial, searchQuery, onSearchChange, onN
       onNavigate={onNavigate}
       onAuthRequest={onAuthRequest}
       onSignOut={onSignOut}
+      onDeleteAccount={onDeleteAccount}
     >
       <div className="space-y-6" data-footer-copy="© V-MATE">
         <PageSection title="캐릭터 둘러보기" action={

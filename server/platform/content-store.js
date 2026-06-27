@@ -512,6 +512,45 @@ export const deleteOwnedContent = async ({ entityType, id }) => deleteContent({ 
 
 export const isOwnerUser = async () => true;
 
+export const deleteAccount = async ({ userId }) => {
+  let deletedCharacters = 0;
+  let deletedWorlds = 0;
+
+  for (const [key, item] of createdCharacters.entries()) {
+    if (item.ownerUserId === userId) {
+      createdCharacters.delete(key);
+      deletedCharacters += 1;
+    }
+  }
+
+  for (const [key, item] of createdWorlds.entries()) {
+    if (item.ownerUserId === userId) {
+      createdWorlds.delete(key);
+      deletedWorlds += 1;
+    }
+  }
+
+  let deletedRooms = 0;
+  for (const [key, room] of rooms.entries()) {
+    if (room.userId === userId) {
+      rooms.delete(key);
+      deletedRooms += 1;
+    }
+  }
+
+  recentViewsByUser.delete(userId);
+  bookmarksByUser.delete(userId);
+
+  return {
+    ok: true,
+    deleted: true,
+    removedAssets: 0,
+    deletedCharacters,
+    deletedWorlds,
+    deletedRooms,
+  };
+};
+
 export const setHomeHeroTarget = (input) => {
   const path = typeof input === 'string' ? input : input?.targetPath
   featuredHomeState.heroTargetPath = String(path || featuredHomeState.heroTargetPath);

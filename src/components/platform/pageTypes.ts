@@ -8,4 +8,5 @@ export interface PlatformPageChromeProps {
   onNavigate: (path: string) => void
   onAuthRequest: () => void
   onSignOut: () => void
+  onDeleteAccount: () => Promise<void>
 }

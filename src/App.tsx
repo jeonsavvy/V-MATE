@@ -209,6 +209,20 @@ function App() {
     }
   }
 
+  const handleDeleteAccount = async () => {
+    const { platformApi } = await import('@/lib/platform/apiClient')
+    await platformApi.deleteAccount()
+    const supabaseModule = await import('@/lib/supabase')
+    if (supabaseModule.isSupabaseConfigured()) {
+      const supabase = await supabaseModule.resolveSupabaseClient()
+      await supabase?.auth.signOut().catch((error) => {
+        devError('Sign out after account deletion failed:', error)
+      })
+    }
+    setUser(null)
+    navigateTo({ view: 'home' }, { replace: true })
+  }
+
   const chrome = useMemo(() => ({
     user,
     userAvatarInitial: toAvatarInitial(user),
@@ -217,6 +231,7 @@ function App() {
     onNavigate: (path: string) => navigateTo(parseRouteFromPathname(path)),
     onAuthRequest: openAuthDialog,
     onSignOut: handleSignOut,
+    onDeleteAccount: handleDeleteAccount,
   }), [user, searchQuery])
 
   const routeKey = route.view === 'room' ? `room-${route.roomId}` : route.view === 'character' ? `character-${route.slug}` : route.view === 'world' ? `world-${route.slug}` : route.view === 'startCharacter' ? `start-character-${route.slug}` : route.view === 'startWorld' ? `start-world-${route.slug}` : route.view

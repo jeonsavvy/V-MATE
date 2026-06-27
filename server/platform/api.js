@@ -216,6 +216,23 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
   }
 
   // 로그인 사용자 데이터 라우트
+  if (method === 'DELETE' && segments[1] === 'account' && !segments[2]) {
+    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable() });
+    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
+    const result = await getPlatformStore().deleteAccount({ event, userId: authResult.userId });
+    if (result?.reason === 'admin_not_configured') {
+      return jsonError({
+        statusCode: 503,
+        headers,
+        startedAtMs,
+        traceId,
+        error: 'Account deletion is not configured. SUPABASE_SERVICE_ROLE_KEY is required on the Worker.',
+        errorCode: 'ACCOUNT_DELETE_NOT_CONFIGURED',
+      });
+    }
+    return jsonOk({ headers, startedAtMs, body: { ok: true, deleted: true, data: result } });
+  }
+
   if (method === 'POST' && segments[1] === 'recent-views') {
     const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable() });
     if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });

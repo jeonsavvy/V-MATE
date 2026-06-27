@@ -5,7 +5,7 @@ import { BookMarked, Home, Menu, MessageSquareMore, PlusCircle, Search, Shield, 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Avatar } from '@/components/ui/avatar'
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import { maskEmailAddress } from '@/lib/privacy'
 import type { EntitySummary } from '@/lib/platform/types'
@@ -18,6 +18,7 @@ interface PlatformShellProps {
   onNavigate: (path: string) => void
   onAuthRequest: () => void
   onSignOut: () => void
+  onDeleteAccount: () => Promise<void>
   children: ReactNode
 }
 
@@ -40,6 +41,7 @@ function PlatformNavPanel({
   onNavigate,
   onAuthRequest,
   onSignOut,
+  onDeleteAccount,
 }: {
   user: SupabaseUser | null
   userAvatarInitial: string
@@ -48,7 +50,25 @@ function PlatformNavPanel({
   onNavigate: (path: string) => void
   onAuthRequest: () => void
   onSignOut: () => void
+  onDeleteAccount: () => Promise<void>
 }) {
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
+  const [deleteConfirmation, setDeleteConfirmation] = useState('')
+  const [deleteError, setDeleteError] = useState('')
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false)
+  const canDelete = deleteConfirmation === '탈퇴' && !isDeletingAccount
+  const submitAccountDeletion = async () => {
+    if (!canDelete) return
+    setIsDeletingAccount(true)
+    setDeleteError('')
+    try {
+      await onDeleteAccount()
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : '계정 탈퇴 처리에 실패했습니다.')
+      setIsDeletingAccount(false)
+    }
+  }
+
   return (
     <div className="flex h-full flex-col px-4 py-5">
       <button type="button" onClick={() => onNavigate('/')} className="flex items-center gap-3 text-left">
@@ -104,6 +124,56 @@ function PlatformNavPanel({
             <Button size="sm" variant="ghost" onClick={onSignOut} className="mt-3 w-full justify-center bg-white/5 text-white hover:bg-white/10">
               로그아웃
             </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setIsDeleteDialogOpen(true)
+                setDeleteConfirmation('')
+                setDeleteError('')
+              }}
+              className="mt-2 w-full justify-center bg-rose-500/10 text-rose-100 hover:bg-rose-500/18 hover:text-white"
+            >
+              계정 탈퇴
+            </Button>
+            <Dialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>계정 탈퇴</DialogTitle>
+                  <DialogDescription>
+                    계정, 프로필, 캐릭터/월드, 대화방과 메시지, 보관함, 최근 보기, 연결된 업로드 이미지를 삭제합니다.
+                    계속하려면 아래에 <span className="font-semibold text-foreground">탈퇴</span>를 입력하세요.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-2">
+                  <Input
+                    value={deleteConfirmation}
+                    onChange={(event) => setDeleteConfirmation(event.target.value)}
+                    placeholder="탈퇴"
+                    aria-label="계정 탈퇴 확인 문구"
+                  />
+                  {deleteError ? <p className="text-sm text-destructive">{deleteError}</p> : null}
+                </div>
+                <DialogFooter>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setIsDeleteDialogOpen(false)}
+                    disabled={isDeletingAccount}
+                  >
+                    취소
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    onClick={submitAccountDeletion}
+                    disabled={!canDelete}
+                  >
+                    {isDeletingAccount ? '처리 중...' : '영구 탈퇴'}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
           </div>
         ) : (
           <Button onClick={onAuthRequest} className="w-full justify-center bg-white text-[#111317] hover:bg-white/92">로그인</Button>
@@ -121,6 +191,7 @@ export function PlatformShell({
   onNavigate,
   onAuthRequest,
   onSignOut,
+  onDeleteAccount,
   children,
 }: PlatformShellProps) {
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false)
@@ -160,6 +231,7 @@ export function PlatformShell({
                 setIsMobileNavOpen(false)
                 await onSignOut()
               }}
+              onDeleteAccount={onDeleteAccount}
             />
           </div>
         </DialogContent>
@@ -175,6 +247,7 @@ export function PlatformShell({
             onNavigate={handleNavigate}
             onAuthRequest={onAuthRequest}
             onSignOut={onSignOut}
+            onDeleteAccount={onDeleteAccount}
           />
         </aside>
 

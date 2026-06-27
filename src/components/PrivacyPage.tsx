@@ -60,6 +60,7 @@ export function PrivacyPage({ chrome }: { chrome: PlatformPageChromeProps }) {
       onNavigate={chrome.onNavigate}
       onAuthRequest={chrome.onAuthRequest}
       onSignOut={chrome.onSignOut}
+      onDeleteAccount={chrome.onDeleteAccount}
     >
       <div className="space-y-6">
         <section className="rounded-[2rem] border border-white/10 bg-[#20242b] p-6 text-white shadow-[0_20px_60px_-40px_rgba(0,0,0,0.8)] sm:p-8">

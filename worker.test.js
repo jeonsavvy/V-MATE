@@ -9,6 +9,9 @@ const TRACKED_ENV_KEYS = [
   'ALLOW_NON_BROWSER_ORIGIN',
   'REQUEST_BODY_MAX_BYTES',
   'GOOGLE_API_KEY',
+  'SUPABASE_URL',
+  'SUPABASE_ANON_KEY',
+  'SUPABASE_SERVICE_ROLE_KEY',
   'RATE_LIMIT_STORE',
   'PROMPT_CACHE_STORE',
   'REQUIRE_AUTH_FOR_CHAT',
@@ -76,6 +79,52 @@ test('serves platform home api payload from /api/home', async () => {
   assert.equal(Array.isArray(payload.home?.characterFeed?.items), true);
   assert.equal(Array.isArray(payload.home?.worldFeed?.items), true);
   assert.equal('presetShelves' in payload, false);
+});
+
+test('returns configuration error for account deletion when service role secret is missing', async () => {
+  const originalFetch = globalThis.fetch;
+  const userId = '11111111-1111-4111-8111-111111111111';
+
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith('/auth/v1/user')) {
+      return new Response(JSON.stringify({ id: userId }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+
+    return new Response(JSON.stringify({ error: 'unexpected url' }), {
+      status: 500,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  try {
+    const response = await worker.fetch(
+      new Request('https://example.com/api/account', {
+        method: 'DELETE',
+        headers: {
+          Origin: 'https://example.com',
+          Authorization: 'Bearer user-token',
+        },
+      }),
+      {
+        ALLOWED_ORIGINS: 'https://example.com',
+        ALLOW_ALL_ORIGINS: 'false',
+        ALLOW_NON_BROWSER_ORIGIN: 'false',
+        REQUIRE_AUTH_FOR_CHAT: 'true',
+        SUPABASE_URL: 'https://example.supabase.co',
+        SUPABASE_ANON_KEY: 'anon-key',
+      },
+    );
+
+    const payload = await response.json();
+    assert.equal(response.status, 503);
+    assert.equal(payload.error_code, 'ACCOUNT_DELETE_NOT_CONFIGURED');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('allows same-host origin for platform api even when not explicitly allowlisted', async () => {

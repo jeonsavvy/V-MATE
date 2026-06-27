@@ -21,6 +21,7 @@ const PageFrame = ({ chrome, children }: { chrome: PlatformPageChromeProps; chil
     onNavigate={chrome.onNavigate}
     onAuthRequest={chrome.onAuthRequest}
     onSignOut={chrome.onSignOut}
+    onDeleteAccount={chrome.onDeleteAccount}
   >
     {children}
   </PlatformShell>
