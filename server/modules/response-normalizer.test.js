@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
+import { GEMINI_CHAT_MODEL_NAME } from './gemini-model.js';
 import { extractGeminiResponseText, normalizeAssistantPayload } from './response-normalizer.js';
 
 const ORIGINAL_CONSOLE_WARN = console.warn;
@@ -69,7 +70,7 @@ test('normalizeAssistantPayload keeps debug-safe log context for broken contract
   normalizeAssistantPayload('{"emotion":"happy","response":', {
     traceId: 'trace-1',
     roomId: 'room-1',
-    modelName: 'gemini-3-flash-preview',
+    modelName: GEMINI_CHAT_MODEL_NAME,
     promptSnapshotLength: 4321,
     historyMessageCount: 7,
     outputLimit: 2048,
@@ -80,7 +81,7 @@ test('normalizeAssistantPayload keeps debug-safe log context for broken contract
   const metadata = warnCalls[0][1];
   assert.equal(metadata?.traceId, 'trace-1');
   assert.equal(metadata?.roomId, 'room-1');
-  assert.equal(metadata?.modelName, 'gemini-3-flash-preview');
+  assert.equal(metadata?.modelName, GEMINI_CHAT_MODEL_NAME);
   assert.equal(metadata?.promptSnapshotLength, 4321);
   assert.equal(metadata?.historyMessageCount, 7);
   assert.equal(metadata?.outputLimit, 2048);

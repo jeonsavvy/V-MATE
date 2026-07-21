@@ -45,8 +45,7 @@ import {
     withRequestDedupe,
 } from './modules/request-dedupe.js';
 import { resolveAuthenticatedUser } from './modules/auth-guard.js';
-
-const FIXED_GEMINI_MODEL_NAME = 'gemini-3-flash-preview';
+import { GEMINI_CHAT_MODEL_NAME } from './modules/gemini-model.js';
 
 export const handler = async (event, context) => {
     const requestStartedAt = Date.now();
@@ -247,7 +246,7 @@ export const handler = async (event, context) => {
         const executeModelAndNormalize = async () => {
             const geminiResult = await executeGeminiChatRequest({
                 apiKey,
-                modelName: FIXED_GEMINI_MODEL_NAME,
+                modelName: GEMINI_CHAT_MODEL_NAME,
                 requestStartedAt,
                 requestTraceId,
                 normalizedCharacterId,
@@ -297,7 +296,7 @@ export const handler = async (event, context) => {
 
             const normalizedPayload = normalizeAssistantPayload(modelText, {
                 ...logMeta,
-                modelName: FIXED_GEMINI_MODEL_NAME,
+                modelName: GEMINI_CHAT_MODEL_NAME,
                 promptSnapshotLength: trimmedSystemPrompt.length,
                 historyMessageCount: Array.isArray(messageHistory) ? messageHistory.length : 0,
                 outputLimit: chatRuntimeLimits.primaryMaxOutputTokens,
@@ -310,7 +309,7 @@ export const handler = async (event, context) => {
             if (isFormatFallback) {
                 logServerWarn('[V-MATE] Returning hard error for format fallback payload', {
                     ...logMeta,
-                    modelName: FIXED_GEMINI_MODEL_NAME,
+                    modelName: GEMINI_CHAT_MODEL_NAME,
                     promptSnapshotLength: trimmedSystemPrompt.length,
                     historyMessageCount: Array.isArray(messageHistory) ? messageHistory.length : 0,
                     outputLimit: chatRuntimeLimits.primaryMaxOutputTokens,

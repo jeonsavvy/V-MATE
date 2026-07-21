@@ -2,6 +2,7 @@ import { buildApiErrorResult, buildJsonResult } from '../modules/http-response.j
 import { getChatAuthConfig, getChatRuntimeLimits, getDailyChatLimit, getGeminiThinkingLevel } from '../modules/runtime-config.js';
 import { resolveAuthenticatedUser } from '../modules/auth-guard.js';
 import { executeGeminiChatRequest } from '../modules/gemini-orchestrator.js';
+import { GEMINI_CHAT_MODEL_NAME } from '../modules/gemini-model.js';
 import { normalizeAssistantPayload } from '../modules/response-normalizer.js';
 import { logServerWarn } from '../modules/server-logger.js';
 import * as memoryStore from './content-store.js';
@@ -178,13 +179,11 @@ const handleRoomChat = async ({ event, headers, startedAtMs, traceId, roomId }) 
       details: { quota: { limit: quota?.limit || dailyLimit, remaining: 0, resetAt: quota?.resetAt } },
     });
   }
-  const roomModelName = 'gemini-3-flash-preview';
-
   let result;
   try {
     result = await executeGeminiChatRequest({
       apiKey,
-      modelName: roomModelName,
+      modelName: GEMINI_CHAT_MODEL_NAME,
       requestStartedAt: startedAtMs,
       requestTraceId: traceId,
       normalizedCharacterId: room.character.slug,
@@ -207,7 +206,7 @@ const handleRoomChat = async ({ event, headers, startedAtMs, traceId, roomId }) 
   const message = normalizeAssistantPayload(result.modelText, {
     traceId,
     roomId,
-    modelName: roomModelName,
+    modelName: GEMINI_CHAT_MODEL_NAME,
     promptSnapshotLength: String(promptContext.promptSnapshot || '').length,
     historyMessageCount: roomHistory.length,
     outputLimit: chatRuntimeLimits.primaryMaxOutputTokens,

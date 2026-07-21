@@ -558,7 +558,7 @@ test('returns ChatResponseV2 shape when request succeeds', async () => {
   let fetchCalls = 0;
   globalThis.fetch = async (url) => {
     fetchCalls += 1;
-    assert.match(String(url), /generateContent\?key=/);
+    assert.match(String(url), /models\/gemini-3\.5-flash:generateContent\?key=/);
 
     return new Response(
       JSON.stringify({
