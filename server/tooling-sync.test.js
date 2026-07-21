@@ -148,6 +148,24 @@ test('function privilege migration exposes only intentional RPC contracts', asyn
   assert.equal(migration.includes('public.is_content_publicly_allowed(text, uuid) from public, anon'), false);
 });
 
+test('production security cleanup keeps internal helpers and public bucket listings private', async () => {
+  const migration = await readUtf8('supabase/migrations/20260721_production_security_cleanup.sql');
+  const schema = await readUtf8('supabase/schema.sql');
+  const internalFunctionGuard = "to_regprocedure('public.rls_auto_enable()') is not null";
+  const internalFunctionRevoke =
+    "revoke all on function public.rls_auto_enable() from public, anon, authenticated";
+  const bucketPolicyDrop =
+    'drop policy if exists "Public can read vmate assets" on storage.objects;';
+
+  assert.ok(migration.includes(internalFunctionGuard));
+  assert.ok(migration.includes(internalFunctionRevoke));
+  assert.ok(migration.includes(bucketPolicyDrop));
+  assert.ok(schema.includes(internalFunctionGuard));
+  assert.ok(schema.includes(internalFunctionRevoke));
+  assert.ok(schema.includes(bucketPolicyDrop));
+  assert.equal(schema.includes('create policy "Public can read vmate assets"'), false);
+});
+
 test('server source no longer references legacy local demo asset filenames', async () => {
   const repoFiles = [
     'server/platform/supabase-platform-repository.js',

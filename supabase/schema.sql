@@ -618,11 +618,8 @@ values (
 )
 on conflict (id) do nothing;
 
-do $$ begin
-  create policy "Public can read vmate assets"
-    on storage.objects for select
-    using (bucket_id = 'vmate-assets');
-exception when duplicate_object then null; end $$;
+-- Public buckets serve object URLs without a SELECT policy; removing it prevents file listing.
+drop policy if exists "Public can read vmate assets" on storage.objects;
 
 do $$ begin
   create policy "Authenticated users can upload vmate assets to their own folder"
@@ -1133,3 +1130,11 @@ grant execute on function public.refund_daily_chat_message(text, integer) to aut
 revoke all on function public.handle_new_profile() from public, anon, authenticated;
 revoke all on function public.validate_content_report_target() from public, anon, authenticated;
 revoke all on function public.quarantine_content_after_reports() from public, anon, authenticated;
+
+-- Event-trigger functions are database-internal and must not be exposed as RPC endpoints.
+do $$
+begin
+  if to_regprocedure('public.rls_auto_enable()') is not null then
+    execute 'revoke all on function public.rls_auto_enable() from public, anon, authenticated';
+  end if;
+end $$;
