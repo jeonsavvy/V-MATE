@@ -38,15 +38,28 @@ test('wrangler config preserves dashboard vars during deploy', async () => {
 });
 
 
-test('wrangler config runs worker first for shell routes that need runtime env injection', async () => {
+test('wrangler config serves SPA deep links while preserving runtime env injection', async () => {
   const wranglerConfig = await readUtf8('wrangler.jsonc');
 
+  assert.match(wranglerConfig, /"not_found_handling"\s*:\s*"single-page-application"/);
   assert.match(wranglerConfig, /"run_worker_first"\s*:\s*\[/);
-  assert.match(wranglerConfig, /"\/"/);
-  assert.match(wranglerConfig, /"\/index\.html"/);
-  assert.match(wranglerConfig, /"\/chat\/\*"/);
-  assert.match(wranglerConfig, /"\/privacy"/);
-  assert.match(wranglerConfig, /"\/privacy\/\*"/);
+  for (const route of [
+    '/api/*',
+    '/',
+    '/index.html',
+    '/characters/*',
+    '/worlds/*',
+    '/rooms/*',
+    '/chat/*',
+    '/create/*',
+    '/edit/*',
+    '/recent',
+    '/library',
+    '/ops',
+    '/privacy',
+  ]) {
+    assert.ok(wranglerConfig.includes(`"${route}"`), `missing worker-first route: ${route}`);
+  }
 });
 
 test('wrangler config enables Cloudflare cron trigger for Supabase keepalive', async () => {
