@@ -12,28 +12,32 @@ const readUtf8 = async (relativePath) =>
 
 test('package verify script and node engine are pinned for CI/runtime consistency', async () => {
   const packageJson = JSON.parse(await readUtf8('package.json'));
+  const nodeMajor = (await readUtf8('.nvmrc')).trim();
 
   assert.equal(packageJson?.scripts?.verify, 'npm run typecheck && npm test && npm run build');
-  assert.equal(packageJson?.engines?.node, '>=20.0.0');
+  assert.equal(packageJson?.engines?.node, `>=${nodeMajor}.0.0`);
 });
 
-test('.nvmrc is aligned with node 20 runtime policy', async () => {
+test('.nvmrc is aligned with the supported node runtime policy', async () => {
   const nvmrc = (await readUtf8('.nvmrc')).trim();
-  assert.equal(nvmrc, '20');
+  assert.equal(nvmrc, '24');
 });
 
-test('github ci workflow executes verify script on node 20', async () => {
+test('github ci workflow uses node 24 actions and the shared runtime version', async () => {
   const workflow = await readUtf8('.github/workflows/ci.yml');
 
-  assert.ok(workflow.includes('node-version: "20"'));
+  assert.ok(workflow.includes('actions/checkout@v6'));
+  assert.ok(workflow.includes('actions/setup-node@v6'));
+  assert.ok(workflow.includes('node-version-file: ".nvmrc"'));
   assert.ok(workflow.includes('npm run verify'));
 });
 
-test('README includes verify command and node 20 runtime requirement', async () => {
+test('README includes verify command and the shared runtime requirement', async () => {
   const readme = await readUtf8('README.md');
+  const nodeMajor = (await readUtf8('.nvmrc')).trim();
 
   assert.ok(readme.includes('npm run verify'));
-  assert.ok(readme.includes('Node.js 20 이상'));
+  assert.ok(readme.includes(`Node.js ${nodeMajor} 이상`));
   assert.ok(readme.includes('nvm use'));
 });
 

@@ -37,7 +37,7 @@ const REQUIRED_README_ERROR_CODE_TOKENS = [
 ];
 
 const REQUIRED_SECURITY_HEADER_TOKEN = 'X-Content-Type-Options: nosniff';
-const REQUIRED_NODE_RUNTIME_TOKEN = 'Node.js 20 이상';
+const REQUIRED_NODE_RUNTIME_TOKEN = 'Node.js 24 이상';
 
 const readReadme = async () => {
   const readmePath = path.join(repoRoot, 'README.md');
@@ -91,7 +91,7 @@ test('README runtime requirement stays aligned with package engines field', asyn
   const packageJson = JSON.parse(
     await readFile(path.join(repoRoot, 'package.json'), 'utf8')
   );
-  assert.equal(packageJson?.engines?.node, '>=20.0.0');
+  assert.equal(packageJson?.engines?.node, '>=24.0.0');
 
   const readme = await readReadme();
   assert.ok(
