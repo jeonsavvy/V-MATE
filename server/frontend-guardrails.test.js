@@ -203,7 +203,7 @@ test('app source exposes platform routes while product copy stays in the product
   const homeSource = await readFile(homePath, 'utf8');
   assert.equal(homeSource.includes('© V-MATE'), false);
   assert.equal(homeSource.includes('금주의 추천'), false);
-  assert.ok(homeSource.includes('캐릭터와 월드를 골라'));
+  assert.ok(homeSource.includes('대화할 캐릭터를 고르세요.'));
   assert.equal(homeSource.includes('character · world platform'), false);
   assert.equal(homeSource.includes('하드코딩 챗봇처럼 보이지 않도록'), false);
   assert.equal(homeSource.includes('추천 조합'), false);
@@ -233,11 +233,14 @@ test('edit pages expose creator-owned delete actions through non-blocking dialog
 
 test('room page keeps retry guidance scoped to failed sends only', async () => {
   const pagesPath = path.join(srcRoot, 'components', 'platform', 'Pages.tsx');
-  const source = await readFile(pagesPath, 'utf8');
+  const composerPath = path.join(srcRoot, 'components', 'platform', 'ChatComposer.tsx');
+  const [source, composerSource] = await Promise.all([readFile(pagesPath, 'utf8'), readFile(composerPath, 'utf8')]);
 
-  assert.ok(source.includes('일시적으로 응답이 비어 다시 시도가 필요합니다. 입력 내용은 유지되어 바로 다시 보낼 수 있습니다.'));
+  assert.ok(composerSource.includes('응답을 받지 못했습니다. 입력한 메시지는 그대로 두었습니다.'));
   assert.ok(source.includes("message.includes('Gemini returned an empty response')"));
-  assert.ok(source.includes("needsRetry ? '다시 시도' : '보내기'"));
+  assert.ok(composerSource.includes("needsRetry ? '다시 보내기' : '보내기'"));
+  assert.ok(composerSource.includes("event.key !== 'Enter'"));
+  assert.equal(`${source}\n${composerSource}`.includes('Enter 대신 버튼을 눌러 전송합니다.'), false);
 });
 
 test('platform types and api client are character-world only', async () => {
@@ -322,8 +325,8 @@ test('home uses functional catalog headings with latest and popular filters', as
 
   assert.ok(source.includes('신작'));
   assert.ok(source.includes('인기'));
-  assert.ok(source.includes('대화할 인물을 선택하세요'));
-  assert.ok(source.includes('대화가 벌어질 장면을 선택하세요'));
+  assert.ok(source.includes('대화할 캐릭터를 고르세요.'));
+  assert.ok(source.includes('월드는 선택하지 않아도 됩니다.'));
   assert.equal(source.includes('PageSection title="둘러보기"'), false);
   assert.equal(source.includes('tagFilter'), false);
 });
@@ -332,10 +335,10 @@ test('recent rooms page makes direct-vs-world conversations visually explicit', 
   const pagesPath = path.join(srcRoot, 'components/platform/Pages.tsx');
   const source = await readFile(pagesPath, 'utf8');
 
-  assert.ok(source.includes('직접 대화'));
-  assert.ok(source.includes('월드 결합'));
+  assert.ok(source.includes('캐릭터 대화'));
+  assert.ok(source.includes('월드 포함'));
   assert.ok(source.includes('마지막 장면'));
-  assert.ok(source.includes('캐릭터 선택 후 시작'));
+  assert.ok(source.includes('캐릭터 선택'));
   assert.equal(source.includes('이 월드에서 잘 맞는 캐릭터'), false);
 });
 
@@ -368,10 +371,10 @@ test('creator flows keep practical prompt editors and require public publishing 
   const pagesPath = path.join(srcRoot, 'components/platform/Pages.tsx');
   const source = await readFile(pagesPath, 'utf8');
 
-  assert.ok(source.includes('캐릭터 프롬프트'));
-  assert.ok(source.includes('캐릭터 도입부'));
-  assert.ok(source.includes('월드 프롬프트'));
-  assert.ok(source.includes('월드 도입부'));
+  assert.ok(source.includes('캐릭터 설정'));
+  assert.ok(source.includes('대화 시작 설정'));
+  assert.ok(source.includes('월드 설정'));
+  assert.ok(source.includes('시작 장면'));
   assert.ok(source.includes('상황별 이미지 추가'));
   assert.ok(source.includes('권장 3:4 · 최소 768×1024'));
   assert.ok(source.includes('권장 16:9 · 최소 1280×720'));
@@ -380,7 +383,7 @@ test('creator flows keep practical prompt editors and require public publishing 
   assert.ok(source.includes('rightsConfirmed'));
   assert.equal(source.includes('ageConfirmed'), false);
   assert.equal(source.includes('월드 설명'), false);
-  assert.equal(source.includes('캐릭터 설정'), false);
+  assert.ok(source.includes('상세 설정 · 필수'));
 });
 
 test('editing prompt content preserves existing image urls when no new upload happens', async () => {
@@ -421,7 +424,7 @@ test('footer exposes product identity and privacy policy without an age gate', a
   assert.ok(source.includes('© V-MATE'));
   assert.equal(source.includes('17+'), false);
   assert.ok(source.includes('개인정보처리방침'));
-  assert.ok(source.includes("onNavigate('/privacy')"));
+  assert.ok(source.includes('path="/privacy"'));
 });
 
 test('privacy page renders operator contact and service-specific processing items', async () => {
@@ -444,7 +447,7 @@ test('platform shell uses mobile bottom navigation, compact top tabs, and a conv
   assert.ok(source.includes('lg:pl-[232px]'));
   assert.ok(source.includes('대화 기록'));
   assert.ok(source.includes('주요 메뉴'));
-  assert.ok(source.includes('grid h-[66px] grid-cols-4'));
+  assert.ok(source.includes('grid h-[calc(66px+env(safe-area-inset-bottom))] grid-cols-4'));
   assert.ok(source.includes('max-w-[1280px]'));
   assert.ok(source.includes('lg:hidden'));
   assert.equal(source.includes('isMobileNavOpen'), false);
@@ -471,18 +474,19 @@ test('home keeps the exact two-column starter catalog while library grids remain
   assert.match(pagesSource, /grid-cols-1[\s\S]*sm:grid-cols-2[\s\S]*lg:grid-cols-3[\s\S]*2xl:grid-cols-4/);
 });
 
-test('detail layouts switch at laptop widths while chat stays in one focused column', async () => {
+test('detail layouts switch at laptop widths while chat keeps a compact context rail and focused composer', async () => {
   const pagesPath = path.join(srcRoot, 'components/platform/Pages.tsx');
   const source = await readFile(pagesPath, 'utf8');
 
   assert.ok(source.includes('lg:grid-cols-[minmax(0,0.84fr)_minmax(0,1.16fr)]'));
   assert.ok(source.includes('lg:grid-cols-[minmax(0,1.02fr)_minmax(0,0.98fr)]'));
   assert.equal(source.includes('lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]'), false);
-  assert.ok(source.includes('mx-auto max-w-[860px] space-y-6'));
+  assert.ok(source.includes('mx-auto max-w-[960px] space-y-5'));
+  assert.ok(source.includes('lg:grid-cols-[220px_minmax(0,1fr)]'));
+  assert.ok(source.includes('aria-label="대화 정보"'));
+  assert.ok(source.includes('sticky bottom-[calc(66px+env(safe-area-inset-bottom))]'));
   assert.ok(source.includes('max-w-[28rem] rounded-lg'));
-  assert.ok(source.includes('absolute bottom-3 right-3 z-10 w-24'));
-  assert.ok(source.includes('sm:w-32'));
-  assert.ok(source.includes('mx-auto w-full max-w-[34rem]'));
+  assert.equal(source.includes('mx-auto w-full max-w-[34rem]'), false);
   assert.equal(source.includes('xl:grid-cols-[0.84fr_1.16fr]'), false);
   assert.equal(source.includes('xl:grid-cols-[1.02fr_0.98fr]'), false);
   assert.equal(source.includes('xl:grid-cols-[0.92fr_1.08fr]'), false);

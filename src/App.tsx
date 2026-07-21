@@ -117,11 +117,7 @@ const hasPersistedSupabaseSession = (): boolean => {
 
 const PageFallback = () => (
   <div className="flex min-h-dvh items-center justify-center bg-[#ffffff] px-6 text-center">
-    <div className="space-y-3 rounded-xl border border-[#e7e7e7] bg-white px-8 py-7 text-[#171717] shadow-[0_18px_55px_-36px_rgba(49,27,34,0.3)]">
-      <p className="text-[0.7rem] font-bold uppercase tracking-[0.22em] text-[#ff5148]">V-MATE</p>
-      <p className="text-[clamp(1.5rem,3vw,2rem)] font-semibold tracking-[-0.03em]">화면을 준비하는 중</p>
-      <p className="text-sm text-[#756d69]">캐릭터와 월드를 불러오고 있어요.</p>
-    </div>
+    <p role="status" className="text-sm text-[#6f6f6f]">화면 불러오는 중…</p>
   </div>
 )
 
@@ -242,11 +238,9 @@ function App() {
   const handleSelectEntity = (item: EntitySummary) => {
     if (item.entityType === 'character') {
       setSelectedCharacter(item as CharacterSummary)
-      toast.success(`${item.name}을(를) 선택했습니다.`)
       return
     }
     setSelectedWorld(item as WorldSummary)
-    toast.success(`${item.name} 월드를 선택했습니다.`)
   }
 
   const handleClearSelectedEntity = (entityType: 'character' | 'world') => {
@@ -256,7 +250,7 @@ function App() {
 
   const handleStartCombination = async () => {
     if (!selectedCharacter) {
-      toast.error('먼저 대화할 캐릭터를 선택해주세요.')
+      toast.error('대화할 캐릭터를 먼저 선택해 주세요.')
       return
     }
     if (!user) {
@@ -302,11 +296,11 @@ function App() {
   const routeKey = route.view === 'room' ? `room-${route.roomId}` : route.view === 'character' ? `character-${route.slug}` : route.view === 'world' ? `world-${route.slug}` : route.view === 'startCharacter' ? `start-character-${route.slug}` : route.view === 'startWorld' ? `start-world-${route.slug}` : route.view
 
   return (
-    <MotionConfig transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}>
+    <MotionConfig reducedMotion="user" transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}>
       <div className="relative min-h-dvh w-full overflow-x-hidden bg-[#ffffff]">
         <Suspense fallback={<PageFallback />}>
           <AnimatePresence mode="wait" initial={false}>
-            <motion.div key={routeKey} initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -12 }} className="relative">
+            <motion.div key={routeKey} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} className="relative">
               {route.view === 'home' && <Home {...chrome} />}
               {route.view === 'character' && <CharacterDetailPage chrome={chrome} slug={route.slug} />}
               {route.view === 'world' && <WorldDetailPage chrome={chrome} slug={route.slug} />}

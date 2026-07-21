@@ -83,6 +83,7 @@
   button,
   [role='button'] {
     -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
   }
 
   button:not(:disabled),

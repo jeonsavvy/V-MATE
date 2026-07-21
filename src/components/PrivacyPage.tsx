@@ -61,28 +61,28 @@ export function PrivacyPage({ chrome }: { chrome: PlatformPageChromeProps }) {
       onAuthRequest={chrome.onAuthRequest}
       onSignOut={chrome.onSignOut}
       onDeleteAccount={chrome.onDeleteAccount}
+      showCombinationDock={false}
     >
       <div className="space-y-6">
-        <section className="rounded-[2rem] border border-white/10 bg-[#20242b] p-6 text-white shadow-[0_20px_60px_-40px_rgba(0,0,0,0.8)] sm:p-8">
-          <p className="text-[0.72rem] font-semibold uppercase tracking-[0.22em] text-white/42">Privacy</p>
-          <h1 className="mt-3 text-[clamp(2rem,4vw,3.2rem)] font-semibold tracking-[-0.04em] text-white">개인정보처리방침</h1>
-          <p className="mt-3 max-w-3xl text-sm leading-7 text-white/62">
+        <section className="border-b border-[#e7e7e7] pb-6 pt-1">
+          <h1 className="text-[clamp(2rem,4vw,3.2rem)] font-semibold tracking-[-0.04em] text-[#171717]">개인정보처리방침</h1>
+          <p className="mt-3 max-w-3xl text-sm leading-7 text-[#666]">
             V-MATE는 캐릭터와 월드 기반 대화 서비스를 제공하기 위해 필요한 최소한의 개인정보를 처리합니다.
           </p>
         </section>
 
         <PageSection title="기본 정보">
-          <div className="grid gap-3 text-sm text-white/66 md:grid-cols-3">
-            <div className="rounded-[1.3rem] border border-white/10 bg-white/[0.04] p-4">
-              <p className="font-semibold text-white">개인정보처리자</p>
+          <div className="grid gap-3 text-sm text-[#666] md:grid-cols-3">
+            <div className="rounded-lg border border-[#e7e7e7] bg-[#fafafa] p-4">
+              <p className="font-semibold text-[#171717]">개인정보처리자</p>
               <p className="mt-2">전찬혁</p>
             </div>
-            <div className="rounded-[1.3rem] border border-white/10 bg-white/[0.04] p-4">
-              <p className="font-semibold text-white">개인정보 문의</p>
-              <p className="mt-2">jeonsavvy@gmail.com</p>
+            <div className="rounded-lg border border-[#e7e7e7] bg-[#fafafa] p-4">
+              <p className="font-semibold text-[#171717]">개인정보 문의</p>
+              <a href="mailto:jeonsavvy@gmail.com" className="mt-2 inline-block underline-offset-4 hover:underline">jeonsavvy@gmail.com</a>
             </div>
-            <div className="rounded-[1.3rem] border border-white/10 bg-white/[0.04] p-4">
-              <p className="font-semibold text-white">시행일</p>
+            <div className="rounded-lg border border-[#e7e7e7] bg-[#fafafa] p-4">
+              <p className="font-semibold text-[#171717]">시행일</p>
               <p className="mt-2">2026년 3월 1일</p>
             </div>
           </div>
@@ -90,7 +90,7 @@ export function PrivacyPage({ chrome }: { chrome: PlatformPageChromeProps }) {
 
         {privacySections.map((section) => (
           <PageSection key={section.title} title={section.title}>
-            <ul className="list-disc space-y-2 pl-5 text-sm leading-7 text-white/62">
+            <ul className="list-disc space-y-2 pl-5 text-sm leading-7 text-[#666]">
               {section.items.map((item) => (
                 <li key={item}>{item}</li>
               ))}

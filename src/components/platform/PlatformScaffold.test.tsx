@@ -19,7 +19,7 @@ const baseEntity = {
 afterEach(cleanup)
 
 describe('PlatformShell combination dock', () => {
-  it('renders one character slot, one optional world slot, and the start CTA', () => {
+  it('renders one character slot, one optional world slot, and blocks an incomplete combination', () => {
     const onStart = vi.fn(async () => undefined)
     render(
       <PlatformShell
@@ -38,7 +38,38 @@ describe('PlatformShell combination dock', () => {
     expect(screen.getByText('캐릭터 선택')).toBeTruthy()
     expect(screen.getByText('월드 선택')).toBeTruthy()
     const startButton = screen.getByRole('button', { name: /캐릭터를 선택하세요/ })
+    expect((startButton as HTMLButtonElement).disabled).toBe(true)
     fireEvent.click(startButton)
+    expect(onStart).not.toHaveBeenCalled()
+  })
+
+  it('starts from the same dock once a character is selected', () => {
+    const onStart = vi.fn(async () => undefined)
+    const selectedCharacter: CharacterSummary = {
+      ...baseEntity,
+      id: 'character-a',
+      entityType: 'character',
+      slug: 'character-a-test',
+      name: '캐릭터A',
+      coverImageUrl: '/starter/character-a.webp',
+      avatarImageUrl: '/starter/character-a.webp',
+    }
+    render(
+      <PlatformShell
+        user={null}
+        userAvatarInitial="V"
+        onNavigate={vi.fn()}
+        onAuthRequest={vi.fn()}
+        onSignOut={vi.fn()}
+        onDeleteAccount={vi.fn(async () => undefined)}
+        selectedCharacter={selectedCharacter}
+        onStartCombination={onStart}
+      >
+        <p>본문</p>
+      </PlatformShell>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '대화 시작' }))
     expect(onStart).toHaveBeenCalledTimes(1)
   })
 
