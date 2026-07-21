@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { User as SupabaseUser } from '@supabase/supabase-js'
 import { ChevronRight, MessageSquareMore } from 'lucide-react'
 import { toast } from 'sonner'
@@ -38,30 +38,37 @@ export function Home(props: HomeProps) {
   useEffect(() => {
     let mounted = true
     setIsLoading(true)
-    void Promise.all([
-      platformApi.fetchHome('characters', searchQuery, ''),
-      platformApi.fetchCharacters(searchQuery, characterFilter),
-      platformApi.fetchWorlds(searchQuery, worldFilter),
-      user ? platformApi.fetchRecentRooms().catch(() => ({ items: [] })) : Promise.resolve({ items: [] as RoomSummary[] }),
-    ])
-      .then(([home, characters, worlds, recent]) => {
+    void platformApi.fetchHome('characters', searchQuery, '')
+      .then((home) => {
         if (!mounted) return
-        setHomePayload({
-          home: {
-            ...home.home,
-            characterFeed: { items: characters.items },
-            worldFeed: { items: worlds.items },
-          },
-        })
-        setRecentRooms(recent.items.slice(0, 3))
+        setHomePayload(home)
       })
       .catch((error) => toast.error(error instanceof Error ? error.message : '홈을 불러오지 못했습니다.'))
       .finally(() => { if (mounted) setIsLoading(false) })
     return () => { mounted = false }
-  }, [characterFilter, searchQuery, user, worldFilter])
+  }, [searchQuery])
 
-  const characters = homePayload?.home.characterFeed.items || []
-  const worlds = homePayload?.home.worldFeed.items || []
+  useEffect(() => {
+    let mounted = true
+    if (!user) {
+      setRecentRooms([])
+      return () => { mounted = false }
+    }
+
+    void platformApi.fetchRecentRooms()
+      .then((recent) => { if (mounted) setRecentRooms(recent.items.slice(0, 3)) })
+      .catch(() => { if (mounted) setRecentRooms([]) })
+    return () => { mounted = false }
+  }, [user])
+
+  const characters = useMemo(
+    () => sortCatalog(homePayload?.home.characterFeed.items || [], characterFilter),
+    [characterFilter, homePayload],
+  )
+  const worlds = useMemo(
+    () => sortCatalog(homePayload?.home.worldFeed.items || [], worldFilter),
+    [homePayload, worldFilter],
+  )
   return (
     <PlatformShell
       user={user}
@@ -119,4 +126,13 @@ function CardSkeletons({ type, count }: { type: 'character' | 'world'; count: nu
 
 function cn(...values: Array<string | false | undefined>) {
   return values.filter(Boolean).join(' ')
+}
+
+function sortCatalog<T extends { chatStartCount: number; favoriteCount: number; updatedAt: string }>(items: T[], filter: 'new' | 'popular' | '') {
+  if (!filter) return items
+  return [...items].sort((a, b) => {
+    const recentOrder = Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
+    if (filter === 'new') return recentOrder
+    return b.chatStartCount - a.chatStartCount || b.favoriteCount - a.favoriteCount || recentOrder
+  })
 }

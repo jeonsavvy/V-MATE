@@ -46,15 +46,15 @@ const world = (index: number): WorldSummary => ({
   coverImageUrl: index === 1 ? '/starter/world-a.webp' : '/starter/world-b.webp',
 })
 
-const homePayload: HomeFeedPayload = {
+const homePayload = ({ characters = [], worlds = [] }: { characters?: CharacterSummary[]; worlds?: WorldSummary[] } = {}): HomeFeedPayload => ({
   home: {
     defaultTab: 'characters',
     filterChips: ['신작', '인기'],
     hero: null,
-    characterFeed: { items: [] },
-    worldFeed: { items: [] },
+    characterFeed: { items: characters },
+    worldFeed: { items: worlds },
   },
-}
+})
 
 const props = {
   user: null,
@@ -76,7 +76,8 @@ const props = {
 afterEach(cleanup)
 
 beforeEach(() => {
-  api.fetchHome.mockResolvedValue(homePayload)
+  vi.clearAllMocks()
+  api.fetchHome.mockResolvedValue(homePayload())
   api.fetchRecentRooms.mockResolvedValue({ items: [] })
 })
 
@@ -86,16 +87,14 @@ describe('Home catalog states', () => {
     { label: 'one', characters: [character(1)], worlds: [], count: 1 },
     { label: 'many', characters: [character(1), character(2), character(3)], worlds: [world(1), world(2)], count: 5 },
   ])('renders the $label catalog without fake filler cards', async ({ characters, worlds, count }) => {
-    api.fetchCharacters.mockResolvedValue({ items: characters })
-    api.fetchWorlds.mockResolvedValue({ items: worlds })
+    api.fetchHome.mockResolvedValue(homePayload({ characters, worlds }))
     const { container } = render(<Home {...props} />)
     await waitFor(() => expect(container.querySelectorAll('article')).toHaveLength(count))
     if (count === 0) expect(screen.getByText('공개된 캐릭터가 없습니다')).toBeTruthy()
   })
 
   it('places the two starter characters and two starter worlds in two-column grids', async () => {
-    api.fetchCharacters.mockResolvedValue({ items: [character(1), character(2)] })
-    api.fetchWorlds.mockResolvedValue({ items: [world(1), world(2)] })
+    api.fetchHome.mockResolvedValue(homePayload({ characters: [character(1), character(2)], worlds: [world(1), world(2)] }))
     const { container } = render(<Home {...props} />)
 
     await waitFor(() => expect(container.querySelectorAll('article')).toHaveLength(4))
@@ -110,5 +109,17 @@ describe('Home catalog states', () => {
     expect(screen.getAllByText('테스트 캐릭터')).toHaveLength(2)
     expect(screen.getByText('현대 도시 월드')).toBeTruthy()
     expect(screen.getByText('판타지 하늘섬 월드')).toBeTruthy()
+  })
+
+  it('does not block the catalog on recent rooms or issue duplicate catalog requests', async () => {
+    api.fetchHome.mockResolvedValue(homePayload({ characters: [character(1), character(2)], worlds: [world(1), world(2)] }))
+    api.fetchRecentRooms.mockReturnValue(new Promise(() => undefined))
+    const { container } = render(<Home {...props} user={{ id: 'user-1' } as never} />)
+
+    await waitFor(() => expect(container.querySelectorAll('article')).toHaveLength(4))
+    expect(api.fetchHome).toHaveBeenCalledTimes(1)
+    expect(api.fetchCharacters).not.toHaveBeenCalled()
+    expect(api.fetchWorlds).not.toHaveBeenCalled()
+    expect(api.fetchRecentRooms).toHaveBeenCalledTimes(1)
   })
 })

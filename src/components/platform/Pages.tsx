@@ -8,7 +8,7 @@ import { CHARACTER_VARIANTS, createImageVariants, type ResizedImageAsset, WORLD_
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { ArtworkFrame, EmptyState, EntityCard, LinkCard, PageSection, PlatformShell } from '@/components/platform/PlatformScaffold'
+import { ArtworkFrame, EmptyState, EntityCard, LinkCard, PageSection, PlatformShell, resolveEntityArtworkSources } from '@/components/platform/PlatformScaffold'
 import type { PlatformPageChromeProps } from '@/components/platform/pageTypes'
 
 // 상세, 시작, 대화, 제작, 운영 화면을 한 파일에 두고 공통 흐름을 재사용한다.
@@ -241,6 +241,8 @@ export function CharacterDetailPage({ chrome, slug }: { chrome: PlatformPageChro
     return <PageFrame chrome={chrome}><EmptyState title="캐릭터를 불러오는 중" description="잠시만 기다려주세요." /></PageFrame>
   }
 
+  const characterArtwork = resolveEntityArtworkSources(item, 'detail')
+
   return (
     <PageFrame chrome={chrome}>
       <ReportDialog open={reportOpen} onOpenChange={setReportOpen} entityType="character" entityId={item.id} entityName={item.name} />
@@ -255,7 +257,7 @@ export function CharacterDetailPage({ chrome, slug }: { chrome: PlatformPageChro
       />
       <AliasDialog open={aliasOpen} initialValue={String(chrome.user?.user_metadata?.name || '')} onConfirm={(value) => { setAliasOpen(false); startRoom(pendingWorldSlug ?? null, value) }} />
       <div className="grid gap-6 lg:grid-cols-[minmax(0,0.84fr)_minmax(0,1.16fr)]">
-        <ArtworkFrame src={item.avatarImageUrl || item.coverImageUrl} alt={item.name} aspectClassName="aspect-[4/5] xl:max-h-[720px]" className="mx-auto w-full max-w-[28rem] rounded-lg lg:mx-0 lg:max-w-none" priority />
+        <ArtworkFrame src={characterArtwork.src} srcSet={characterArtwork.srcSet} sizes="(min-width: 1024px) 42vw, 100vw" alt={item.name} aspectClassName="aspect-[4/5] xl:max-h-[720px]" className="mx-auto w-full max-w-[28rem] rounded-lg lg:mx-0 lg:max-w-none" priority />
         <div className="space-y-6 py-1 lg:pl-4">
           <div className="border-b border-[#e7e7e7] pb-5">
             <p className="text-[0.72rem] font-semibold uppercase tracking-[0.22em] text-[#8c8c8c]">캐릭터</p>
@@ -397,7 +399,7 @@ export function WorldDetailPage({ chrome, slug }: { chrome: PlatformPageChromePr
         }}
       />
       <div className="mx-auto w-full max-w-[1000px] space-y-6">
-        <ArtworkFrame src={item.coverImageUrl} alt={item.name} aspectClassName="aspect-[16/9]" className="rounded-lg" priority />
+        <ArtworkFrame {...resolveEntityArtworkSources(item, 'detail')} sizes="(min-width: 1024px) 1000px, 100vw" alt={item.name} aspectClassName="aspect-[16/9]" className="rounded-lg" priority />
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1.02fr)_minmax(0,0.98fr)]">
           <div className="space-y-6 py-1 lg:pr-6">
             <div className="border-b border-[#e7e7e7] pb-5">

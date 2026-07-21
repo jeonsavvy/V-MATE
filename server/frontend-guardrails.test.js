@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +8,33 @@ const dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(dirname, '..');
 const srcRoot = path.join(repoRoot, 'src');
 const toRepoPath = (filePath) => path.relative(repoRoot, filePath).split(path.sep).join('/');
+
+test('versioned frontend assets use immutable browser caching and bounded image payloads', async () => {
+  const headers = await readFile(path.join(repoRoot, 'public', '_headers'), 'utf8');
+  assert.match(headers, /\/assets\/\*/);
+  assert.match(headers, /\/starter\/\*-v1\.webp/);
+  assert.match(headers, /Cache-Control: public, max-age=31556952, immutable/);
+
+  const assetLimits = {
+    'character-a-thumb-v1.webp': 50_000,
+    'character-a-card-v1.webp': 130_000,
+    'character-a-detail-v1.webp': 210_000,
+    'character-b-thumb-v1.webp': 50_000,
+    'character-b-card-v1.webp': 130_000,
+    'character-b-detail-v1.webp': 210_000,
+    'world-a-thumb-v1.webp': 25_000,
+    'world-a-card-v1.webp': 70_000,
+    'world-a-hero-v1.webp': 210_000,
+    'world-b-thumb-v1.webp': 25_000,
+    'world-b-card-v1.webp': 70_000,
+    'world-b-hero-v1.webp': 210_000,
+  };
+
+  for (const [fileName, maxBytes] of Object.entries(assetLimits)) {
+    const file = await stat(path.join(repoRoot, 'public', 'starter', fileName));
+    assert.ok(file.size <= maxBytes, `${fileName} exceeds ${maxBytes} bytes (${file.size})`);
+  }
+});
 
 const walkFiles = async (rootDir) => {
   const entries = await readdir(rootDir, { withFileTypes: true });

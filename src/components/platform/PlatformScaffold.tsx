@@ -20,7 +20,7 @@ import { Avatar } from '@/components/ui/avatar'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import { maskEmailAddress } from '@/lib/privacy'
-import type { CharacterSummary, EntitySummary, WorldSummary } from '@/lib/platform/types'
+import type { CharacterImageSlot, CharacterSummary, EntitySummary, WorldSummary } from '@/lib/platform/types'
 
 interface PlatformShellProps {
   user: SupabaseUser | null
@@ -258,10 +258,10 @@ export function PageSection({ title, action, children, className }: { title: str
   )
 }
 
-export function ArtworkFrame({ src, alt, aspectClassName, imageClassName, priority = false, className }: { src?: string; alt: string; aspectClassName: string; imageClassName?: string; priority?: boolean; className?: string }) {
+export function ArtworkFrame({ src, srcSet, sizes, alt, aspectClassName, imageClassName, priority = false, className }: { src?: string; srcSet?: string; sizes?: string; alt: string; aspectClassName: string; imageClassName?: string; priority?: boolean; className?: string }) {
   return (
     <div className={cn(`relative w-full overflow-hidden bg-[#eeeeee] ${aspectClassName}`, className)}>
-      {src ? <img src={src} alt={alt} className={cn('h-full w-full object-cover', imageClassName)} loading={priority ? 'eager' : 'lazy'} decoding="async" /> : <div className="flex h-full items-center justify-center text-[#a79d97]"><ImageOff className="size-7" aria-label="이미지 없음" /></div>}
+      {src ? <img {...(priority ? { fetchpriority: 'high' } : {})} src={src} srcSet={srcSet} sizes={srcSet ? sizes : undefined} alt={alt} className={cn('h-full w-full object-cover', imageClassName)} loading={priority ? 'eager' : 'lazy'} decoding="async" /> : <div className="flex h-full items-center justify-center text-[#a79d97]"><ImageOff className="size-7" aria-label="이미지 없음" /></div>}
     </div>
   )
 }
@@ -270,20 +270,53 @@ export function FilterChip({ active = false, children, onClick }: { active?: boo
   return <button type="button" onClick={onClick} className={cn('rounded-full border px-3 py-1.5 text-xs font-semibold transition', active ? 'border-[#ff5148] bg-[#ff5148] text-white' : 'border-[#dedede] bg-white text-[#666] hover:border-[#bdbdbd] hover:text-[#171717]')}>{children}</button>
 }
 
-export const resolveEntityArtwork = (item: EntitySummary) => {
-  if (item.entityType === 'character' && item.avatarImageUrl) return item.avatarImageUrl
-  if (item.coverImageUrl) return item.coverImageUrl
-  const imageSlots = 'imageSlots' in item && Array.isArray(item.imageSlots) ? item.imageSlots : []
-  const slot = imageSlots.find((entry) => entry.detailUrl || entry.cardUrl || entry.thumbUrl)
-  return slot?.detailUrl || slot?.cardUrl || slot?.thumbUrl || ''
+type ArtworkSources = {
+  src: string
+  srcSet?: string
 }
 
+const OFFICIAL_STARTER_SLOTS: Record<string, CharacterImageSlot> = {
+  '/starter/character-a.webp': { id: 'character-a-main', slot: 'main', usage: '대표', trigger: '', priority: 0, thumbUrl: '/starter/character-a-thumb-v1.webp', cardUrl: '/starter/character-a-card-v1.webp', detailUrl: '/starter/character-a-detail-v1.webp' },
+  '/starter/character-b.webp': { id: 'character-b-main', slot: 'main', usage: '대표', trigger: '', priority: 0, thumbUrl: '/starter/character-b-thumb-v1.webp', cardUrl: '/starter/character-b-card-v1.webp', detailUrl: '/starter/character-b-detail-v1.webp' },
+  '/starter/world-a.webp': { id: 'world-a-main', slot: 'main', usage: '대표', trigger: '', priority: 0, thumbUrl: '/starter/world-a-thumb-v1.webp', cardUrl: '/starter/world-a-card-v1.webp', detailUrl: '/starter/world-a-hero-v1.webp' },
+  '/starter/world-b.webp': { id: 'world-b-main', slot: 'main', usage: '대표', trigger: '', priority: 0, thumbUrl: '/starter/world-b-thumb-v1.webp', cardUrl: '/starter/world-b-card-v1.webp', detailUrl: '/starter/world-b-hero-v1.webp' },
+}
+
+const resolveArtworkSlot = (item: EntitySummary) => {
+  const imageSlots = 'imageSlots' in item && Array.isArray(item.imageSlots) ? item.imageSlots : []
+  const generatedSlot = imageSlots.find((entry) => entry.slot === 'main') || imageSlots.find((entry) => entry.detailUrl || entry.cardUrl || entry.thumbUrl)
+  if (generatedSlot) return generatedSlot
+  const officialSource = item.entityType === 'character' ? item.avatarImageUrl || item.coverImageUrl : item.coverImageUrl
+  return OFFICIAL_STARTER_SLOTS[officialSource] || OFFICIAL_STARTER_SLOTS[item.coverImageUrl]
+}
+
+const buildArtworkSrcSet = (item: EntitySummary, slot?: CharacterImageSlot) => {
+  if (!slot) return undefined
+  const widths = item.entityType === 'character' ? [300, 600, 768] : [320, 640, 1280]
+  const urls = [slot.thumbUrl, slot.cardUrl, slot.detailUrl]
+  const candidates = urls.flatMap((url, index) => url ? [`${url} ${widths[index]}w`] : [])
+  return candidates.length > 1 ? candidates.join(', ') : undefined
+}
+
+export const resolveEntityArtworkSources = (item: EntitySummary, usage: 'card' | 'detail' = 'card'): ArtworkSources => {
+  const slot = resolveArtworkSlot(item)
+  const fallback = item.entityType === 'character'
+    ? (usage === 'detail' ? item.coverImageUrl || item.avatarImageUrl : item.avatarImageUrl || item.coverImageUrl)
+    : item.coverImageUrl
+  const src = usage === 'detail'
+    ? slot?.detailUrl || slot?.cardUrl || slot?.thumbUrl || fallback || ''
+    : slot?.cardUrl || slot?.thumbUrl || slot?.detailUrl || fallback || ''
+  return { src, srcSet: buildArtworkSrcSet(item, slot) }
+}
+
+export const resolveEntityArtwork = (item: EntitySummary) => resolveEntityArtworkSources(item).src
+
 export function EntityCard({ item, meta, onClick, onSelect, cta = '상세 보기', priority = false, selected = false }: { item: EntitySummary; meta?: string; onClick?: () => void; onSelect?: () => void; cta?: string; priority?: boolean; selected?: boolean }) {
-  const artwork = resolveEntityArtwork(item)
+  const artwork = resolveEntityArtworkSources(item)
   return (
     <article className="group flex h-full min-w-0 flex-col bg-white">
       <button type="button" onClick={onClick} className={cn('relative block w-full overflow-hidden rounded-lg bg-[#f1f1f1] text-left ring-offset-2 transition', selected && 'ring-2 ring-[#ff5148]')}>
-        <ArtworkFrame src={artwork} alt={item.name} aspectClassName={item.entityType === 'world' ? 'aspect-[16/9]' : 'aspect-[4/5]'} imageClassName="transition duration-500 group-hover:scale-[1.02]" priority={priority} />
+        <ArtworkFrame src={artwork.src} srcSet={artwork.srcSet} sizes="(min-width: 1024px) 520px, 50vw" alt={item.name} aspectClassName={item.entityType === 'world' ? 'aspect-[16/9]' : 'aspect-[4/5]'} imageClassName="transition duration-500 group-hover:scale-[1.02]" priority={priority} />
         <span className="absolute left-2.5 top-2.5 rounded bg-black/68 px-2 py-1 text-[10px] font-bold text-white backdrop-blur-sm">{item.entityType === 'character' ? '캐릭터' : '월드'}</span>
       </button>
       <div className="flex flex-1 flex-col pt-3">
