@@ -89,8 +89,11 @@ describe('Home catalog states', () => {
   ])('renders the $label catalog without fake filler cards', async ({ characters, worlds, count }) => {
     api.fetchHome.mockResolvedValue(homePayload({ characters, worlds }))
     const { container } = render(<Home {...props} />)
-    await waitFor(() => expect(container.querySelectorAll('article')).toHaveLength(count))
-    if (count === 0) expect(screen.getByText('공개된 캐릭터가 없습니다')).toBeTruthy()
+    if (count === 0) {
+      expect(await screen.findByText('공개된 캐릭터가 없습니다')).toBeTruthy()
+    } else {
+      await waitFor(() => expect(container.querySelectorAll('article')).toHaveLength(count))
+    }
   })
 
   it('places the two starter characters and two starter worlds in two-column grids', async () => {

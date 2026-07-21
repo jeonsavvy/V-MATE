@@ -40,7 +40,7 @@ export function Home(props: HomeProps) {
     let mounted = true
     setIsLoading(true)
     setLoadError('')
-    const timer = window.setTimeout(() => {
+    const loadHome = () => {
       void platformApi.fetchHome('characters', searchQuery, '')
         .then((home) => {
           if (!mounted) return
@@ -48,8 +48,13 @@ export function Home(props: HomeProps) {
         })
         .catch(() => { if (mounted) setLoadError('네트워크 연결을 확인한 뒤 다시 시도해 주세요.') })
         .finally(() => { if (mounted) setIsLoading(false) })
-    }, searchQuery ? 200 : 0)
-    return () => { mounted = false; window.clearTimeout(timer) }
+    }
+    const timer = searchQuery ? window.setTimeout(loadHome, 200) : undefined
+    if (!searchQuery) loadHome()
+    return () => {
+      mounted = false
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
   }, [searchQuery, reloadVersion])
 
   useEffect(() => {
