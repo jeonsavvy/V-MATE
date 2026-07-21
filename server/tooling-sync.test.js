@@ -175,6 +175,15 @@ test('age restriction removal keeps only rights attestation as the public publis
   }
 });
 
+test('starter publishing hides legacy Korean test fixtures without hiding the replacement slugs', async () => {
+  const operation = await readUtf8('supabase/operations/publish_starter_content.sql');
+
+  assert.ok(operation.includes("slug <> 'character-a-test'"));
+  assert.ok(operation.includes("'캐릭터a'"));
+  assert.ok(operation.includes("slug <> 'world-a-test'"));
+  assert.ok(operation.includes("'월드1'"));
+});
+
 test('production security cleanup keeps internal helpers and public bucket listings private', async () => {
   const migration = await readUtf8('supabase/migrations/20260721_production_security_cleanup.sql');
   const schema = await readUtf8('supabase/schema.sql');

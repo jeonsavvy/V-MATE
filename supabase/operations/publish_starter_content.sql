@@ -16,13 +16,19 @@ begin
 
   update public.characters
   set display_status = 'hidden', updated_at = timezone('utc'::text, now())
-  where lower(coalesce(slug, '')) in ('charactera', 'character-a', 'momoka', 'kang-taehyun')
-     or lower(coalesce(name, '')) in ('charactera', '모모카', '강태현');
+  where slug <> 'character-a-test'
+    and (
+      lower(coalesce(slug, '')) in ('charactera', 'character-a', 'momoka', 'kang-taehyun')
+      or lower(coalesce(name, '')) in ('charactera', '캐릭터a', '모모카', '강태현')
+    );
 
   update public.worlds
   set display_status = 'hidden', updated_at = timezone('utc'::text, now())
-  where lower(coalesce(slug, '')) in ('world1', 'world-1', 'misty-harbor-city', 'seoul-after-rain', 'skyward-kingdom')
-     or lower(coalesce(name, '')) in ('world1', '안개 낀 항구 도시', '비 온 뒤, 서울', '하늘로 흐르는 왕국');
+  where slug <> 'world-a-test'
+    and (
+      lower(coalesce(slug, '')) in ('world1', 'world-1', 'misty-harbor-city', 'seoul-after-rain', 'skyward-kingdom')
+      or lower(coalesce(name, '')) in ('world1', '월드1', '안개 낀 항구 도시', '비 온 뒤, 서울', '하늘로 흐르는 왕국')
+    );
 
   insert into public.characters (
     owner_user_id, slug, name, headline, summary, cover_image_url, avatar_image_url,
