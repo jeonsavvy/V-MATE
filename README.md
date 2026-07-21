@@ -2,13 +2,6 @@
 
 V-MATE는 캐릭터와 월드를 조합해 서사형 대화를 운영하는 캐릭터챗 플랫폼입니다.
 
-## 운영 URL
-
-- App: `https://v-mate.jeonsavvy.workers.dev/`
-- 개인정보처리방침: `https://v-mate.jeonsavvy.workers.dev/privacy`
-
-운영 smoke check는 홈 응답, 개인정보처리방침 진입, 공개 캐릭터/월드 상세 진입, 로그인 필요 화면의 auth guard, `/api/chat`의 인증/Origin 정책, 비로그인 계정 탈퇴 API의 401 응답을 확인합니다.
-
 ## 제품 구조
 
 ### 주요 화면
@@ -263,7 +256,6 @@ starter 콘텐츠는 `supabase/operations/publish_starter_content.sql`을 별도
 ### 배포 체크 포인트
 - 적용 순서는 **staging migration dry-run → DB migration 승인/적용 → starter 등록 승인/적용 → Worker 배포 승인**입니다.
 - `PRODUCTION_APP_URL`은 선택값입니다. 설정하면 post-deploy smoke check가 실행됩니다.
-- 운영 `PRODUCTION_APP_URL`: `https://v-mate.jeonsavvy.workers.dev/`
 - `PRODUCTION_APP_URL`이 없으면 Worker 배포는 진행하고 smoke check만 건너뜁니다.
 - smoke check는 `PRODUCTION_APP_URL` 기준으로 홈 응답과 chat auth guard를 확인합니다.
 - 저장소의 `wrangler.jsonc` 기본값은 로컬 개발 기준입니다.
@@ -297,7 +289,3 @@ npm run verify
 8. 캐릭터 단독 대화 확인
 9. 캐릭터 + 월드 대화 확인
 10. 비로그인 `DELETE /api/account`가 401을 반환하는지 확인
-
-## 라이선스
-
-MIT
