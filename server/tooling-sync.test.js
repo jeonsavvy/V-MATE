@@ -115,6 +115,39 @@ test('b2c migration defines report quarantine and atomic KST chat quota contract
   assert.ok(migration.includes('create or replace function public.refund_daily_chat_message'));
 });
 
+test('function privilege migration exposes only intentional RPC contracts', async () => {
+  const migration = await readUtf8('supabase/migrations/20260721_function_privileges.sql');
+  const schema = await readUtf8('supabase/schema.sql');
+  const restrictedRpcSignatures = [
+    'public.has_confirmed_age()',
+    'public.apply_content_report_action(uuid, text, text)',
+    'public.get_daily_chat_quota(integer)',
+    'public.reserve_daily_chat_message(text, integer)',
+    'public.complete_daily_chat_message(text, jsonb)',
+    'public.refund_daily_chat_message(text, integer)',
+  ];
+  const triggerSignatures = [
+    'public.handle_new_profile()',
+    'public.validate_content_report_target()',
+    'public.quarantine_content_after_reports()',
+  ];
+
+  for (const signature of restrictedRpcSignatures) {
+    const statement = `revoke all on function ${signature} from public, anon;`;
+    assert.ok(migration.includes(statement));
+    assert.ok(schema.includes(statement));
+  }
+
+  for (const signature of triggerSignatures) {
+    const statement = `revoke all on function ${signature} from public, anon, authenticated;`;
+    assert.ok(migration.includes(statement));
+    assert.ok(schema.includes(statement));
+  }
+
+  assert.equal(migration.includes('public.is_owner_user() from public, anon'), false);
+  assert.equal(migration.includes('public.is_content_publicly_allowed(text, uuid) from public, anon'), false);
+});
+
 test('server source no longer references legacy local demo asset filenames', async () => {
   const repoFiles = [
     'server/platform/supabase-platform-repository.js',
