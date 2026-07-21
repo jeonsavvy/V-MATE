@@ -560,20 +560,22 @@ export function RoomPage({ chrome, roomId }: { chrome: PlatformPageChromeProps; 
           <div className="grid items-start gap-6 lg:grid-cols-[220px_minmax(0,1fr)]">
             <aside className="border-b border-[#e7e7e7] pb-4 lg:sticky lg:top-24 lg:rounded-lg lg:border lg:p-3" aria-label="대화 정보">
               <div className="hidden lg:block">
-                {room.world ? (
-                  <ArtworkFrame src={activeWorldImage} alt={room.world.name} aspectClassName="aspect-[16/9]" className="rounded-md" priority />
-                ) : (
-                  <ArtworkFrame src={activeCharacterImage} alt={room.character.name} aspectClassName="aspect-[4/5]" className="rounded-md" priority />
-                )}
+                <ArtworkFrame src={activeCharacterImage} alt={room.character.name} aspectClassName="aspect-[4/5]" className="rounded-md" priority />
               </div>
               <div className="flex items-start gap-3 lg:mt-3">
-                <img src={activeCharacterImage} alt="" decoding="async" className="size-16 shrink-0 rounded-md object-cover lg:hidden" />
+                <ArtworkFrame src={activeCharacterImage} alt="" aspectClassName="aspect-square" className="size-16 shrink-0 rounded-md lg:hidden" />
                 <div className="min-w-0">
                   <p className="truncate text-sm font-bold text-[#171717]">{room.character.name}</p>
                   {room.world ? <p className="mt-0.5 truncate text-xs text-[#777]">{room.world.name}</p> : null}
                   <p className="mt-1 text-xs leading-5 text-[#777]">{room.state.currentSituation}</p>
                 </div>
               </div>
+              {room.world && activeWorldImage ? (
+                <div className="mt-3 hidden border-t border-[#eeeeee] pt-3 lg:block">
+                  <p className="mb-2 text-[11px] font-semibold text-[#777]">월드 · {room.world.name}</p>
+                  <ArtworkFrame src={activeWorldImage} alt={`${room.world.name} 월드 배경`} aspectClassName="aspect-[16/9]" className="rounded-md" />
+                </div>
+              ) : null}
             </aside>
 
             <div className="min-w-0">
