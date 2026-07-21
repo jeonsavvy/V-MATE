@@ -1,6 +1,8 @@
 import type {
   CharacterDetail,
   CharacterSummary,
+  ChatQuota,
+  ContentReport,
   EntityType,
   HomeFeedPayload,
   LibraryPayload,
@@ -91,7 +93,10 @@ const request = async <T>(path: string, init?: RequestInit & { auth?: boolean })
 
   const data = await response.json().catch(() => ({}))
   if (!response.ok) {
-    throw new Error(typeof data.error === 'string' ? data.error : '요청 처리에 실패했습니다.')
+    const error = new Error(typeof data.error === 'string' ? data.error : '요청 처리에 실패했습니다.') as Error & { code?: string; details?: unknown }
+    error.code = typeof data.error_code === 'string' ? data.error_code : typeof data.errorCode === 'string' ? data.errorCode : undefined
+    error.details = data.details
+    throw error
   }
   return data as T
 }
@@ -118,6 +123,9 @@ export const platformApi = {
     tags: string[]
     visibility: Visibility
     sourceType: string
+    sourceUrl?: string
+    rightsConfirmed?: boolean
+    ageConfirmed?: boolean
     creatorName?: string
     coverImageUrl?: string
     avatarImageUrl?: string
@@ -133,6 +141,9 @@ export const platformApi = {
     tags: string[]
     visibility: Visibility
     sourceType: string
+    sourceUrl?: string
+    rightsConfirmed?: boolean
+    ageConfirmed?: boolean
     creatorName?: string
     coverImageUrl?: string
     avatarImageUrl?: string
@@ -149,6 +160,9 @@ export const platformApi = {
     tags: string[]
     visibility: Visibility
     sourceType: string
+    sourceUrl?: string
+    rightsConfirmed?: boolean
+    ageConfirmed?: boolean
     creatorName?: string
     coverImageUrl?: string
     worldRulesMarkdown?: string
@@ -162,6 +176,9 @@ export const platformApi = {
     tags: string[]
     visibility: Visibility
     sourceType: string
+    sourceUrl?: string
+    rightsConfirmed?: boolean
+    ageConfirmed?: boolean
     creatorName?: string
     coverImageUrl?: string
     worldRulesMarkdown?: string
@@ -171,7 +188,11 @@ export const platformApi = {
   deleteWorld: (slug: string) => request<{ ok: boolean }>(`/worlds/${slug}`, { method: 'DELETE', auth: true }),
   createRoom: (payload: { characterSlug: string; worldSlug?: string | null; userAlias?: string }) => request<{ room: RoomSummary }>('/rooms', { method: 'POST', auth: true, body: JSON.stringify(payload) }),
   fetchRoom: (roomId: string) => request<{ room: RoomSummary }>(`/rooms/${roomId}`, { auth: true }),
-  sendRoomMessage: (roomId: string, userMessage: string) => request<RoomChatResponse>(`/rooms/${roomId}/chat`, { method: 'POST', auth: true, body: JSON.stringify({ userMessage }) }),
+  sendRoomMessage: (roomId: string, userMessage: string, clientRequestId: string) => request<RoomChatResponse>(`/rooms/${roomId}/chat`, { method: 'POST', auth: true, body: JSON.stringify({ userMessage, clientRequestId }) }),
+  fetchChatQuota: () => request<{ quota: ChatQuota }>('/me/chat-quota', { auth: true }),
+  createReport: (payload: { entityType: EntityType; entityId: string; reason: string; details?: string }) => request<{ report: ContentReport }>('/reports', { method: 'POST', auth: true, body: JSON.stringify(payload) }),
+  fetchReports: (status = 'open') => request<{ reports: ContentReport[] }>(`/ops/reports?status=${encodeURIComponent(status)}`, { auth: true }),
+  applyReportAction: (reportId: string, action: 'dismiss' | 'restore' | 'quarantine' | 'remove', note = '') => request<{ reportId: string; moderationStatus: string; action: string }>(`/ops/reports/${reportId}`, { method: 'PATCH', auth: true, body: JSON.stringify({ action, note }) }),
   addRecentView: (entityType: EntityType, entityRef: string) => request<{ ok: boolean }>('/recent-views', { method: 'POST', auth: true, body: JSON.stringify({ entityType, entityRef }) }),
   toggleBookmark: (entityType: EntityType, entityRef: string) => request<{ active: boolean; id: string }>('/bookmarks', { method: 'POST', auth: true, body: JSON.stringify({ entityType, entityRef }) }),
   deleteAccount: () => request<{ ok: boolean; deleted: boolean; data?: { deleted?: boolean; deletedCharacters?: number; deletedWorlds?: number; deletedRooms?: number; removedAssets?: number } }>('/account', { method: 'DELETE', auth: true }),

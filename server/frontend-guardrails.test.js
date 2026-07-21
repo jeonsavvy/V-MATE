@@ -155,7 +155,7 @@ test('profile menu masks user email before rendering', async () => {
   assert.equal(shellSource.includes('{user.email}'), false);
 });
 
-test('app source exposes platform routes and simplified footer copy', async () => {
+test('app source exposes platform routes while product copy stays in the product shell', async () => {
   const appPath = path.join(srcRoot, 'App.tsx');
   const appSource = await readFile(appPath, 'utf8');
   assert.equal(appSource.includes('/discover'), false);
@@ -174,7 +174,9 @@ test('app source exposes platform routes and simplified footer copy', async () =
 
   const homePath = path.join(srcRoot, 'components', 'Home.tsx');
   const homeSource = await readFile(homePath, 'utf8');
-  assert.ok(homeSource.includes('© V-MATE'));
+  assert.equal(homeSource.includes('© V-MATE'), false);
+  assert.equal(homeSource.includes('금주의 추천'), false);
+  assert.ok(homeSource.includes('캐릭터와 월드를 골라'));
   assert.equal(homeSource.includes('character · world platform'), false);
   assert.equal(homeSource.includes('하드코딩 챗봇처럼 보이지 않도록'), false);
   assert.equal(homeSource.includes('추천 조합'), false);
@@ -277,24 +279,26 @@ test('home and detail views avoid fake metrics and duplicated management section
   assert.ok(pagesSource.includes('즐겨찾기 해제'));
 });
 
-test('platform shell keeps ops inside create section instead of top-level nav', async () => {
+test('platform shell keeps ops outside the four primary navigation items', async () => {
   const scaffoldPath = path.join(srcRoot, 'components/platform/PlatformScaffold.tsx');
   const source = await readFile(scaffoldPath, 'utf8');
 
-  assert.equal(source.includes("user ? [...baseNav, { label: '운영실'"), false);
-  assert.ok(source.includes("{ label: '운영실', path: '/ops' }"));
+  assert.ok(source.includes("{ label: '홈', path: '/', icon: Home }"));
+  assert.ok(source.includes("{ label: '대화', path: '/recent', icon: MessageSquareMore }"));
+  assert.ok(source.includes("onNavigate('/ops')"));
+  assert.equal(source.includes("label: '운영실', path: '/ops'"), false);
 });
 
-test('home uses latest and popular filters only', async () => {
+test('home uses functional catalog headings with latest and popular filters', async () => {
   const homePath = path.join(srcRoot, 'components/Home.tsx');
   const source = await readFile(homePath, 'utf8');
 
   assert.ok(source.includes('신작'));
   assert.ok(source.includes('인기'));
-  assert.ok(source.includes('캐릭터 둘러보기'));
-  assert.ok(source.includes('월드 둘러보기'));
+  assert.ok(source.includes('대화할 인물을 선택하세요'));
+  assert.ok(source.includes('대화가 벌어질 장면을 선택하세요'));
   assert.equal(source.includes('PageSection title="둘러보기"'), false);
-  assert.equal(source.includes('태그'), false);
+  assert.equal(source.includes('tagFilter'), false);
 });
 
 test('recent rooms page makes direct-vs-world conversations visually explicit', async () => {
@@ -316,23 +320,24 @@ test('library page exposes owned character/world shelves below recent views', as
   assert.ok(source.includes('내가 만든 월드'));
 });
 
-test('public-facing ui removes creator-name display across home, cards, and detail pages', async () => {
+test('public-facing ui displays creator attribution without exposing emails', async () => {
   const homePath = path.join(srcRoot, 'components/Home.tsx');
   const homeSource = await readFile(homePath, 'utf8');
   assert.equal(homeSource.includes('meta={item.creator.name}'), false);
 
   const scaffoldPath = path.join(srcRoot, 'components/platform/PlatformScaffold.tsx');
   const scaffoldSource = await readFile(scaffoldPath, 'utf8');
-  assert.equal(scaffoldSource.includes('item.creator.name'), false);
+  assert.ok(scaffoldSource.includes('item.creator.name'));
 
   const pagesPath = path.join(srcRoot, 'components/platform/Pages.tsx');
   const pagesSource = await readFile(pagesPath, 'utf8');
-  assert.equal(pagesSource.includes('item.creator.name'), false);
+  assert.ok(pagesSource.includes('item.creator.name'));
+  assert.equal(pagesSource.includes('item.creator.email'), false);
   assert.equal(pagesSource.includes('item.imageSlots.slice(0, 6)'), false);
   assert.ok(pagesSource.includes('이미지 {item.imageSlots.length}장'));
 });
 
-test('creator flows collapse description fields into practical prompt editors and remove public visibility control', async () => {
+test('creator flows keep practical prompt editors and require public publishing attestations', async () => {
   const pagesPath = path.join(srcRoot, 'components/platform/Pages.tsx');
   const source = await readFile(pagesPath, 'utf8');
 
@@ -343,7 +348,10 @@ test('creator flows collapse description fields into practical prompt editors an
   assert.ok(source.includes('상황별 이미지 추가'));
   assert.ok(source.includes('권장 3:4 · 최소 768×1024'));
   assert.ok(source.includes('권장 16:9 · 최소 1280×720'));
-  assert.equal(source.includes('공개 상태'), false);
+  assert.ok(source.includes('공개 범위'));
+  assert.ok(source.includes('공개 전 확인'));
+  assert.ok(source.includes('rightsConfirmed'));
+  assert.ok(source.includes('ageConfirmed'));
   assert.equal(source.includes('월드 설명'), false);
   assert.equal(source.includes('캐릭터 설정'), false);
 });
@@ -378,14 +386,15 @@ test('ops page exposes banner auto/manual controls and delete actions', async ()
   assert.ok(source.includes('삭제'));
 });
 
-test('footer removes border divider and exposes privacy policy link', async () => {
+test('footer exposes privacy policy link and 17+ service notice', async () => {
   const scaffoldPath = path.join(srcRoot, 'components/platform/PlatformScaffold.tsx');
   const source = await readFile(scaffoldPath, 'utf8');
 
-  assert.equal(source.includes('<footer className="border-t'), false);
+  assert.ok(source.includes('<footer className={cn(\'border-t'));
   assert.ok(source.includes('© V-MATE'));
+  assert.ok(source.includes('17+'));
   assert.ok(source.includes('개인정보처리방침'));
-  assert.ok(source.includes("handleNavigate('/privacy')"));
+  assert.ok(source.includes("onNavigate('/privacy')"));
 });
 
 test('privacy page renders operator contact and service-specific processing items', async () => {
@@ -400,26 +409,26 @@ test('privacy page renders operator contact and service-specific processing item
   assert.ok(source.includes('rate-limit 식별정보'));
 });
 
-test('platform shell uses a mobile drawer and a constrained desktop content container', async () => {
+test('platform shell uses mobile bottom navigation, compact top tabs, and a conversation rail', async () => {
   const scaffoldPath = path.join(srcRoot, 'components/platform/PlatformScaffold.tsx');
   const source = await readFile(scaffoldPath, 'utf8');
 
-  assert.ok(source.includes("const [isMobileNavOpen, setIsMobileNavOpen] = useState(false)"));
-  assert.ok(source.includes("aria-label={isMobileNavOpen ? '메뉴 닫기' : '메뉴 열기'}"));
-  assert.ok(source.includes('className="hidden border-r border-white/10 bg-[#111317] lg:flex'));
-  assert.ok(source.includes('lg:grid-cols-[248px_minmax(0,1fr)]'));
-  assert.ok(source.includes('max-w-[1400px]'));
+  assert.ok(source.includes('w-[232px]'));
+  assert.ok(source.includes('lg:pl-[232px]'));
+  assert.ok(source.includes('대화 기록'));
+  assert.ok(source.includes('주요 메뉴'));
+  assert.ok(source.includes('grid h-[66px] grid-cols-4'));
+  assert.ok(source.includes('max-w-[1280px]'));
   assert.ok(source.includes('lg:hidden'));
-  assert.equal(source.includes('className="grid min-h-dvh grid-cols-[248px_minmax(0,1fr)]"'), false);
+  assert.equal(source.includes('isMobileNavOpen'), false);
 });
 
-test('feed and library grids use multi-breakpoint columns instead of xl-only expansion', async () => {
+test('home keeps the exact two-column starter catalog while library grids remain responsive', async () => {
   const homePath = path.join(srcRoot, 'components/Home.tsx');
   const homeSource = await readFile(homePath, 'utf8');
-  assert.match(homeSource, /grid-cols-1[\s\S]*sm:grid-cols-2[\s\S]*lg:grid-cols-3[\s\S]*2xl:grid-cols-4/);
-  assert.match(homeSource, /grid-cols-1[\s\S]*sm:grid-cols-2[\s\S]*lg:grid-cols-3/);
-  assert.equal(homeSource.includes('grid gap-4 sm:grid-cols-2 xl:grid-cols-4'), false);
-  assert.equal(homeSource.includes('grid gap-4 sm:grid-cols-2 xl:grid-cols-3'), false);
+  assert.equal((homeSource.match(/data-catalog-grid=/g) || []).length, 2);
+  assert.ok(homeSource.includes('className="grid grid-cols-2 gap-x-3 gap-y-8 sm:gap-x-5"'));
+  assert.ok(homeSource.includes("type === 'character' ? 'aspect-[4/5]' : 'aspect-[16/9]'"));
 
   const pagesPath = path.join(srcRoot, 'components/platform/Pages.tsx');
   const pagesSource = await readFile(pagesPath, 'utf8');
@@ -427,14 +436,18 @@ test('feed and library grids use multi-breakpoint columns instead of xl-only exp
   assert.match(pagesSource, /grid-cols-1[\s\S]*sm:grid-cols-2[\s\S]*lg:grid-cols-3[\s\S]*2xl:grid-cols-4/);
 });
 
-test('detail and room layouts switch at laptop widths and keep portrait art bounded', async () => {
+test('detail layouts switch at laptop widths while chat stays in one focused column', async () => {
   const pagesPath = path.join(srcRoot, 'components/platform/Pages.tsx');
   const source = await readFile(pagesPath, 'utf8');
 
   assert.ok(source.includes('lg:grid-cols-[minmax(0,0.84fr)_minmax(0,1.16fr)]'));
   assert.ok(source.includes('lg:grid-cols-[minmax(0,1.02fr)_minmax(0,0.98fr)]'));
-  assert.ok(source.includes('lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]'));
-  assert.ok(source.includes('className="mx-auto w-full max-w-[28rem] lg:mx-0 lg:max-w-none"'));
+  assert.equal(source.includes('lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]'), false);
+  assert.ok(source.includes('mx-auto max-w-[860px] space-y-6'));
+  assert.ok(source.includes('max-w-[28rem] rounded-lg'));
+  assert.ok(source.includes('absolute bottom-3 right-3 z-10 w-24'));
+  assert.ok(source.includes('sm:w-32'));
+  assert.ok(source.includes('mx-auto w-full max-w-[34rem]'));
   assert.equal(source.includes('xl:grid-cols-[0.84fr_1.16fr]'), false);
   assert.equal(source.includes('xl:grid-cols-[1.02fr_0.98fr]'), false);
   assert.equal(source.includes('xl:grid-cols-[0.92fr_1.08fr]'), false);

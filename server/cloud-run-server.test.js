@@ -12,6 +12,7 @@ const TRACKED_ENV_KEYS = [
   'V_MATE_LOG_LEVEL',
   'RATE_LIMIT_STORE',
   'PROMPT_CACHE_STORE',
+  'REQUIRE_AUTH_FOR_CHAT',
 ];
 const ORIGINAL_ENV = Object.fromEntries(TRACKED_ENV_KEYS.map((key) => [key, process.env[key]]));
 
@@ -187,6 +188,54 @@ test('returns public character detail payload from /api/characters/:slug', async
   }
 });
 
+test('public character publishing requires a rights attestation at the api boundary', async () => {
+  process.env.ALLOW_NON_BROWSER_ORIGIN = 'false';
+  process.env.ALLOW_ALL_ORIGINS = 'false';
+  process.env.ALLOWED_ORIGINS = 'http://localhost:5173';
+  process.env.REQUIRE_AUTH_FOR_CHAT = 'false';
+  const { baseUrl, close } = await startServer(async () => {
+    throw new Error('legacy chat handler should not be called during publishing test');
+  });
+  const body = {
+    name: '권리 확인 캐릭터',
+    headline: '공개 테스트',
+    summary: '권리 확인 없이는 공개할 수 없습니다.',
+    visibility: 'public',
+    sourceType: 'original',
+    tags: [],
+  };
+
+  try {
+    const rejected = await fetch(`${baseUrl}/api/characters`, {
+      method: 'POST',
+      headers: { Origin: 'http://localhost:5173', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    assert.equal(rejected.status, 400);
+    assert.equal((await rejected.json()).error_code, 'RIGHTS_ATTESTATION_REQUIRED');
+
+    const ageRejected = await fetch(`${baseUrl}/api/characters`, {
+      method: 'POST',
+      headers: { Origin: 'http://localhost:5173', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...body, rightsConfirmed: true }),
+    });
+    assert.equal(ageRejected.status, 400);
+    assert.equal((await ageRejected.json()).error_code, 'AGE_CONFIRMATION_REQUIRED');
+
+    const accepted = await fetch(`${baseUrl}/api/characters`, {
+      method: 'POST',
+      headers: { Origin: 'http://localhost:5173', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...body, rightsConfirmed: true, ageConfirmed: true }),
+    });
+    assert.equal(accepted.status, 201);
+    const payload = await accepted.json();
+    assert.equal(payload.item?.visibility, 'public');
+    assert.equal(typeof payload.item?.rightsAttestedAt, 'string');
+  } finally {
+    await close();
+  }
+});
+
 test('creates and reads a room payload through platform room routes', async () => {
   process.env.ALLOW_NON_BROWSER_ORIGIN = 'false';
   process.env.ALLOW_ALL_ORIGINS = 'false';
@@ -235,7 +284,7 @@ test('creates and reads a room payload through platform room routes', async () =
   }
 });
 
-test('owner ops endpoint is exposed separately from commercial moderation/reporting flows', async () => {
+test('owner ops endpoint requires authentication even when chat auth bypass is enabled', async () => {
   process.env.ALLOW_NON_BROWSER_ORIGIN = 'false';
   process.env.ALLOW_ALL_ORIGINS = 'false';
   process.env.ALLOWED_ORIGINS = 'http://localhost:5173';
@@ -252,10 +301,9 @@ test('owner ops endpoint is exposed separately from commercial moderation/report
       },
     });
 
-    assert.equal(response.status, 200);
+    assert.equal(response.status, 401);
     const payload = await response.json();
-    assert.equal(Array.isArray(payload.items?.visibleCharacters), true);
-    assert.equal('reports' in payload, false);
+    assert.equal(payload.error_code, 'AUTH_REQUIRED');
   } finally {
     await close();
   }
@@ -315,7 +363,7 @@ test('allows originless same-origin browser metadata for platform api requests',
   }
 });
 
-test('owner ops can delete content through dedicated endpoint', async () => {
+test('owner content deletion cannot use the unauthenticated memory fallback', async () => {
   process.env.ALLOW_NON_BROWSER_ORIGIN = 'false';
   process.env.ALLOW_ALL_ORIGINS = 'false';
   process.env.ALLOWED_ORIGINS = 'http://localhost:5173';
@@ -334,15 +382,15 @@ test('owner ops can delete content through dedicated endpoint', async () => {
       },
     });
 
-    assert.equal(response.status, 200);
+    assert.equal(response.status, 401);
     const payload = await response.json();
-    assert.equal(payload.ok, true);
+    assert.equal(payload.error_code, 'AUTH_REQUIRED');
   } finally {
     await close();
   }
 });
 
-test('character resource delete route removes creator content without ops dashboard path', async () => {
+test('character deletion still requires authentication when chat auth bypass is enabled', async () => {
   process.env.ALLOW_NON_BROWSER_ORIGIN = 'false';
   process.env.ALLOW_ALL_ORIGINS = 'false';
   process.env.ALLOWED_ORIGINS = 'http://localhost:5173';
@@ -361,15 +409,15 @@ test('character resource delete route removes creator content without ops dashbo
       },
     });
 
-    assert.equal(response.status, 200);
+    assert.equal(response.status, 401);
     const payload = await response.json();
-    assert.equal(payload.ok, true);
+    assert.equal(payload.error_code, 'AUTH_REQUIRED');
   } finally {
     await close();
   }
 });
 
-test('world resource delete route removes creator content without ops dashboard path', async () => {
+test('world deletion still requires authentication when chat auth bypass is enabled', async () => {
   process.env.ALLOW_NON_BROWSER_ORIGIN = 'false';
   process.env.ALLOW_ALL_ORIGINS = 'false';
   process.env.ALLOWED_ORIGINS = 'http://localhost:5173';
@@ -388,15 +436,15 @@ test('world resource delete route removes creator content without ops dashboard 
       },
     });
 
-    assert.equal(response.status, 200);
+    assert.equal(response.status, 401);
     const payload = await response.json();
-    assert.equal(payload.ok, true);
+    assert.equal(payload.error_code, 'AUTH_REQUIRED');
   } finally {
     await close();
   }
 });
 
-test('owner ops can switch home banner mode through dedicated endpoint', async () => {
+test('owner banner controls cannot use the unauthenticated memory fallback', async () => {
   process.env.ALLOW_NON_BROWSER_ORIGIN = 'false';
   process.env.ALLOW_ALL_ORIGINS = 'false';
   process.env.ALLOWED_ORIGINS = 'http://localhost:5173';
@@ -416,9 +464,9 @@ test('owner ops can switch home banner mode through dedicated endpoint', async (
       body: JSON.stringify({ mode: 'manual' }),
     });
 
-    assert.equal(response.status, 200);
+    assert.equal(response.status, 401);
     const payload = await response.json();
-    assert.equal(payload.home.heroMode, 'manual');
+    assert.equal(payload.error_code, 'AUTH_REQUIRED');
   } finally {
     await close();
   }

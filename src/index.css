@@ -4,26 +4,26 @@
 
 @layer base {
   :root {
-    --background: 34 29% 95%;
-    --foreground: 224 17% 12%;
-    --card: 34 33% 98%;
-    --card-foreground: 224 17% 12%;
-    --popover: 34 33% 99%;
-    --popover-foreground: 224 17% 12%;
-    --primary: 264 27% 38%;
-    --primary-foreground: 34 33% 99%;
-    --secondary: 31 24% 89%;
-    --secondary-foreground: 220 10% 24%;
-    --muted: 31 18% 91%;
-    --muted-foreground: 31 8% 38%;
-    --accent: 344 47% 52%;
-    --accent-foreground: 34 33% 99%;
+    --background: 0 0% 100%;
+    --foreground: 0 0% 9%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 9%;
+    --primary: 3 100% 64%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 96%;
+    --secondary-foreground: 0 0% 22%;
+    --muted: 0 0% 95%;
+    --muted-foreground: 0 0% 42%;
+    --accent: 3 100% 64%;
+    --accent-foreground: 0 0% 100%;
     --destructive: 3 72% 48%;
     --destructive-foreground: 0 0% 100%;
-    --border: 28 17% 82%;
-    --input: 28 17% 82%;
-    --ring: 264 27% 38%;
-    --radius: 1.125rem;
+    --border: 0 0% 88%;
+    --input: 0 0% 88%;
+    --ring: 3 100% 64%;
+    --radius: 0.5rem;
   }
 
   .dark {
@@ -59,10 +59,7 @@
   body {
     @apply min-h-dvh bg-background font-sans text-foreground antialiased;
     font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Malgun Gothic', 'Segoe UI', sans-serif;
-    background:
-      radial-gradient(circle at top left, rgba(152, 127, 184, 0.12), transparent 26%),
-      radial-gradient(circle at top right, rgba(217, 154, 163, 0.11), transparent 24%),
-      linear-gradient(180deg, #f7f3ee 0%, #efe9df 48%, #ece4d8 100%);
+    background: #ffffff;
     line-height: 1.6;
     color: hsl(var(--foreground));
   }
@@ -120,20 +117,20 @@
 
   .shadow-soft-edge {
     box-shadow:
-      0 24px 70px -42px rgba(31, 24, 20, 0.28),
+      0 24px 70px -42px rgba(0, 0, 0, 0.24),
       inset 0 1px 0 rgba(255, 255, 255, 0.72);
   }
 
   .paper-grid {
     background-image:
-      linear-gradient(rgba(91, 78, 67, 0.05) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(91, 78, 67, 0.05) 1px, transparent 1px);
+      linear-gradient(rgba(0, 0, 0, 0.045) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0, 0, 0, 0.045) 1px, transparent 1px);
     background-size: 36px 36px;
   }
 }
 
 ::selection {
-  background: rgba(122, 94, 156, 0.18);
+  background: rgba(255, 81, 72, 0.18);
   color: inherit;
 }
 

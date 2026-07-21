@@ -215,6 +215,9 @@ const summarizeCharacter = (row) => ({
   visibility: row.visibility,
   displayStatus: row.display_status,
   sourceType: row.source_type,
+  sourceUrl: row.source_url || '',
+  rightsAttestedAt: row.rights_attested_at || '',
+  heroImageUrl: row.prompt_profile_json?.heroImageUrl || '',
   favoriteCount: Number(row.favorite_count || 0),
   chatStartCount: Number(row.chat_start_count || 0),
   updatedAt: row.updated_at || nowIso(),
@@ -238,6 +241,8 @@ const summarizeWorld = (row) => ({
   visibility: row.visibility,
   displayStatus: row.display_status,
   sourceType: row.source_type,
+  sourceUrl: row.source_url || '',
+  rightsAttestedAt: row.rights_attested_at || '',
   favoriteCount: Number(row.favorite_count || 0),
   chatStartCount: Number(row.chat_start_count || 0),
   updatedAt: row.updated_at || nowIso(),
@@ -361,14 +366,9 @@ export const collectContentAssetUrls = ({ entityType, row, assets = [] }) => {
 export const isOwnerUser = async ({ event, userId }) => {
   const client = await userClient(event);
   if (!client || !userId) return false;
-  const [{ data: profile }, ownerSetting] = await Promise.all([
-    client.from('profiles').select('is_owner').eq('user_id', userId).maybeSingle(),
-    getSetting(client, 'owner_user_ids'),
-  ]);
-  if (profile?.is_owner === true) return true;
-  if (Array.isArray(ownerSetting) && ownerSetting.includes(userId)) return true;
-  if (Array.isArray(ownerSetting?.ids) && ownerSetting.ids.includes(userId)) return true;
-  return false;
+  const { data, error } = await client.rpc('is_owner_user');
+  if (error) return false;
+  return data === true;
 };
 
 const resolveEntityByTargetPath = ({ targetPath, characters, worlds }) => {
@@ -426,19 +426,18 @@ export const getHomePayload = async ({ tab = 'characters', search = '', filter =
     getSetting(client, 'home.hero'),
   ]);
   const heroMode = heroSetting?.mode === 'manual' ? 'manual' : 'auto';
-  const autoHero = [...characters, ...worlds].sort((a, b) => b.chatStartCount - a.chatStartCount || b.favoriteCount - a.favoriteCount || Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
   const manualHero = resolveEntityByTargetPath({ targetPath: String(heroSetting?.targetPath || ''), characters, worlds });
-  const hero = heroMode === 'manual' && manualHero ? manualHero : autoHero;
+  const hero = heroMode === 'manual' ? manualHero : null;
   return {
     home: {
       defaultTab: 'characters',
       filterChips: ['신작', '인기'],
-      hero: {
+      hero: hero ? {
         title: hero?.name || '캐릭터',
         subtitle: hero?.headline || hero?.summary || '',
-        coverImageUrl: hero?.coverImageUrl || '',
+        coverImageUrl: hero?.heroImageUrl || hero?.coverImageUrl || '',
         targetPath: hero?.entityType === 'world' ? `/worlds/${hero.slug}` : `/characters/${hero?.slug || characters[0]?.slug || ''}`,
-      },
+      } : null,
       characterFeed: { items: characters },
       worldFeed: { items: worlds },
     },
@@ -845,6 +844,10 @@ export const getLibraryPayload = async ({ event, userId }) => {
 export const createCharacter = async ({ event, userId, payload }) => {
   const client = await userClient(event);
   if (!client) return null;
+  if (payload.visibility === 'public' && payload.ageConfirmed) {
+    const { error: profileError } = await client.from('profiles').upsert({ user_id: userId, age_confirmed_at: nowIso(), updated_at: nowIso() }, { onConflict: 'user_id' });
+    if (profileError) throw profileError;
+  }
   const creatorName = String(payload.creatorName || payload.profileJson?.creatorName || payload.promptProfileJson?.creatorName || '').trim();
   const insertPayload = {
     owner_user_id: userId,
@@ -857,6 +860,8 @@ export const createCharacter = async ({ event, userId, payload }) => {
     visibility: payload.visibility,
     display_status: payload.visibility === 'public' ? 'visible' : 'draft',
     source_type: payload.sourceType,
+    source_url: payload.sourceUrl || null,
+    rights_attested_at: payload.visibility === 'public' && payload.rightsConfirmed ? nowIso() : null,
     tags: payload.tags,
     profile_json: { creatorName, ...(payload.profileJson || { personality: payload.summary, relationship: '처음 대화를 시작하는 거리감' }) },
     speech_style_json: payload.speechStyleJson || { voice: payload.headline || payload.summary },
@@ -876,6 +881,10 @@ export const createCharacter = async ({ event, userId, payload }) => {
 export const updateCharacter = async ({ event, userId, slug, payload }) => {
   const client = await userClient(event);
   if (!client) return null;
+  if (payload.visibility === 'public' && payload.ageConfirmed) {
+    const { error: profileError } = await client.from('profiles').upsert({ user_id: userId, age_confirmed_at: nowIso(), updated_at: nowIso() }, { onConflict: 'user_id' });
+    if (profileError) throw profileError;
+  }
   const creatorName = String(payload.creatorName || payload.profileJson?.creatorName || payload.promptProfileJson?.creatorName || '').trim();
   const updatePayload = {
     name: payload.name,
@@ -886,6 +895,8 @@ export const updateCharacter = async ({ event, userId, slug, payload }) => {
     visibility: payload.visibility,
     display_status: payload.visibility === 'public' ? 'visible' : 'draft',
     source_type: payload.sourceType,
+    source_url: payload.sourceUrl || null,
+    rights_attested_at: payload.visibility === 'public' && payload.rightsConfirmed ? nowIso() : null,
     tags: payload.tags,
     profile_json: { creatorName, ...(payload.profileJson || {}) },
     speech_style_json: payload.speechStyleJson || {},
@@ -907,6 +918,10 @@ export const updateCharacter = async ({ event, userId, slug, payload }) => {
 export const createWorld = async ({ event, userId, payload }) => {
   const client = await userClient(event);
   if (!client) return null;
+  if (payload.visibility === 'public' && payload.ageConfirmed) {
+    const { error: profileError } = await client.from('profiles').upsert({ user_id: userId, age_confirmed_at: nowIso(), updated_at: nowIso() }, { onConflict: 'user_id' });
+    if (profileError) throw profileError;
+  }
   const creatorName = String(payload.creatorName || payload.promptProfileJson?.creatorName || '').trim();
   const insertPayload = {
     owner_user_id: userId,
@@ -918,6 +933,8 @@ export const createWorld = async ({ event, userId, payload }) => {
     visibility: payload.visibility,
     display_status: payload.visibility === 'public' ? 'visible' : 'draft',
     source_type: payload.sourceType,
+    source_url: payload.sourceUrl || null,
+    rights_attested_at: payload.visibility === 'public' && payload.rightsConfirmed ? nowIso() : null,
     tags: payload.tags,
     world_rules_markdown: payload.worldRulesMarkdown,
     prompt_profile_json: { creatorName, ...(payload.promptProfileJson || { tone: payload.headline || payload.summary, rules: [payload.worldRulesMarkdown || payload.summary], starterLocations: ['첫 장면 위치'], worldTerms: payload.tags || [] }) },
@@ -936,6 +953,10 @@ export const createWorld = async ({ event, userId, payload }) => {
 export const updateWorld = async ({ event, userId, slug, payload }) => {
   const client = await userClient(event);
   if (!client) return null;
+  if (payload.visibility === 'public' && payload.ageConfirmed) {
+    const { error: profileError } = await client.from('profiles').upsert({ user_id: userId, age_confirmed_at: nowIso(), updated_at: nowIso() }, { onConflict: 'user_id' });
+    if (profileError) throw profileError;
+  }
   const creatorName = String(payload.creatorName || payload.promptProfileJson?.creatorName || '').trim();
   const updatePayload = {
     name: payload.name,
@@ -945,6 +966,8 @@ export const updateWorld = async ({ event, userId, slug, payload }) => {
     visibility: payload.visibility,
     display_status: payload.visibility === 'public' ? 'visible' : 'draft',
     source_type: payload.sourceType,
+    source_url: payload.sourceUrl || null,
+    rights_attested_at: payload.visibility === 'public' && payload.rightsConfirmed ? nowIso() : null,
     tags: payload.tags,
     world_rules_markdown: payload.worldRulesMarkdown,
     prompt_profile_json: { creatorName, ...(payload.promptProfileJson || {}) },
@@ -1408,6 +1431,103 @@ export const setHomeHeroMode = async ({ event, mode }) => {
     heroMode,
     heroTargetPath: typeof current?.targetPath === 'string' ? current.targetPath : '',
   };
+};
+
+const mapReportRow = (row) => ({
+  id: row.id,
+  reporterUserId: row.reporter_user_id,
+  entityType: row.entity_type,
+  entityId: row.entity_id,
+  entityName: row.entity_name || '',
+  reason: row.reason,
+  details: row.details || '',
+  status: row.status,
+  createdAt: row.created_at,
+});
+
+export const createContentReport = async ({ event, userId, payload }) => {
+  const client = await userClient(event);
+  if (!client) return null;
+  const row = payload.entityType === 'character'
+    ? await getCharacterRowBySlug(client, payload.entityId) || await getCharacterRowById(client, payload.entityId)
+    : await getWorldRowBySlug(client, payload.entityId) || await getWorldRowById(client, payload.entityId);
+  if (!row) return null;
+  const { data, error } = await client.from('content_reports').insert({
+    reporter_user_id: userId,
+    entity_type: payload.entityType,
+    entity_id: row.id,
+    entity_name: row.name,
+    reason: payload.reason,
+    details: String(payload.details || '').trim().slice(0, 1000),
+  }).select('*').single();
+  if (error) throw error;
+  return mapReportRow(data);
+};
+
+export const listContentReports = async ({ event, status = 'open' }) => {
+  const client = await userClient(event);
+  if (!client) return [];
+  let query = client.from('content_reports').select('*').order('created_at', { ascending: false });
+  if (status) query = query.eq('status', status);
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data || []).map(mapReportRow);
+};
+
+export const applyReportAction = async ({ event, reportId, action, note }) => {
+  const client = await userClient(event);
+  if (!client) return null;
+  const { data, error } = await client.rpc('apply_content_report_action', {
+    p_report_id: reportId,
+    p_action: action,
+    p_note: note || '',
+  });
+  if (error) throw error;
+  return data || null;
+};
+
+const normalizeQuotaResult = (data, fallbackLimit) => {
+  const row = Array.isArray(data) ? data[0] : data;
+  return {
+    ...(Object.prototype.hasOwnProperty.call(row || {}, 'allowed') ? { allowed: Boolean(row.allowed) } : {}),
+    ...(Object.prototype.hasOwnProperty.call(row || {}, 'duplicate') ? { duplicate: Boolean(row.duplicate) } : {}),
+    ...(Object.prototype.hasOwnProperty.call(row || {}, 'response_json') ? { response: row.response_json || null } : {}),
+    limit: Number(row?.message_limit || row?.limit || fallbackLimit),
+    remaining: Number(row?.remaining || 0),
+    resetAt: row?.reset_at || row?.resetAt || '',
+  };
+};
+
+export const getChatQuota = async ({ event, limit = 30 }) => {
+  const client = await userClient(event);
+  if (!client) return { limit, remaining: 0, resetAt: '' };
+  const { data, error } = await client.rpc('get_daily_chat_quota', { p_limit: limit });
+  if (error) throw error;
+  return normalizeQuotaResult(data, limit);
+};
+
+export const reserveChatQuota = async ({ event, requestId, limit = 30 }) => {
+  const client = await userClient(event);
+  if (!client) return { allowed: false, limit, remaining: 0, resetAt: '' };
+  const { data, error } = await client.rpc('reserve_daily_chat_message', { p_request_id: requestId, p_limit: limit });
+  if (error) throw error;
+  return normalizeQuotaResult(data, limit);
+};
+
+export const completeChatQuota = async ({ event, requestId, response }) => {
+  const client = await userClient(event);
+  if (!client) return false;
+  const { data, error } = await client.rpc('complete_daily_chat_message', { p_request_id: requestId, p_response_json: response || {} });
+  if (error) throw error;
+  return data === true;
+};
+
+export const refundChatQuota = async ({ event, requestId, limit = 30 }) => {
+  const client = await userClient(event);
+  if (!client) return { limit, remaining: 0, resetAt: '' };
+  const { data, error } = await client.rpc('refund_daily_chat_message', { p_request_id: requestId, p_limit: limit });
+  if (error) throw error;
+  return normalizeQuotaResult(data, limit);
 };
 
 export const prepareAssetUploads = async ({ event, userId, entityType, variants }) => {

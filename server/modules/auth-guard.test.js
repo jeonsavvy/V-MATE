@@ -94,6 +94,19 @@ test('resolveAuthenticatedUser returns bypass when auth requirement is disabled'
   });
 });
 
+test('resolveAuthenticatedUser forceAuth rejects missing token even when chat auth bypass is disabled', async () => {
+  process.env.REQUIRE_AUTH_FOR_CHAT = 'false';
+
+  const result = await resolveAuthenticatedUser({
+    event: { headers: {} },
+    forceAuth: true,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.statusCode, 401);
+  assert.equal(result.errorCode, 'AUTH_REQUIRED');
+});
+
 test('resolveAuthenticatedUser rejects missing bearer token when auth is required', async () => {
   process.env.REQUIRE_AUTH_FOR_CHAT = 'true';
   process.env.SUPABASE_URL = 'https://demo-project.supabase.co';

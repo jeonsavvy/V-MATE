@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import {
   getChatRuntimeLimits,
+  getDailyChatLimit,
   getChatAuthConfig,
   getClientRequestDedupeConfig,
   getGeminiRetryConfig,
@@ -49,6 +50,7 @@ const KEYS = [
   'GEMINI_CACHE_LOOKUP_RETRY_ENABLED',
   'GEMINI_NETWORK_RECOVERY_RETRY_ENABLED',
   'GEMINI_EMPTY_RESPONSE_RETRY_ENABLED',
+  'CHAT_DAILY_MESSAGE_LIMIT',
 ];
 
 const ORIGINAL = Object.fromEntries(KEYS.map((key) => [key, process.env[key]]));
@@ -79,6 +81,16 @@ test('returns defaults when env vars are missing', () => {
     functionTotalTimeoutMs: 20000,
     functionTimeoutGuardMs: 1500,
   });
+  assert.equal(getDailyChatLimit(), 30);
+});
+
+test('daily chat limit is configurable within safe bounds', () => {
+  process.env.CHAT_DAILY_MESSAGE_LIMIT = '45';
+  assert.equal(getDailyChatLimit(), 45);
+  process.env.CHAT_DAILY_MESSAGE_LIMIT = '0';
+  assert.equal(getDailyChatLimit(), 1);
+  process.env.CHAT_DAILY_MESSAGE_LIMIT = '9999';
+  assert.equal(getDailyChatLimit(), 500);
 });
 
 test('parses env vars into numeric runtime limits', () => {

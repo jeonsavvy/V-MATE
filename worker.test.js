@@ -85,8 +85,8 @@ test('serves platform home api payload from /api/home', async () => {
 test('platform artwork frames fill their media slots without thumbnail padding', () => {
   const source = readFileSync('src/components/platform/PlatformScaffold.tsx', 'utf8');
 
-  assert.match(source, /relative z-\[1\] h-full w-full object-cover/);
-  assert.doesNotMatch(source, /relative z-\[1\] h-full w-full object-contain p-3/);
+  assert.match(source, /h-full w-full object-cover/);
+  assert.doesNotMatch(source, /h-full w-full object-contain p-3/);
 });
 
 test('returns configuration error for account deletion when service role secret is missing', async () => {

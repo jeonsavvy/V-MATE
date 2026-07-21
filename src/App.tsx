@@ -2,8 +2,15 @@ import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { AnimatePresence, MotionConfig, motion } from 'motion/react'
 import type { User } from '@supabase/supabase-js'
 import { Toaster } from '@/components/ui/sonner'
+import { toast } from 'sonner'
 import { devError } from '@/lib/logger'
 import { getStoredKeys } from '@/lib/browserStorage'
+import type { CharacterSummary, EntitySummary, WorldSummary } from '@/lib/platform/types'
+import {
+  clearCombinationSelection,
+  readCombinationSelection,
+  writeCombinationSelection,
+} from '@/lib/platform/combinationSelection'
 
 // 외부 라우터 없이 pathname 기반 상태 머신과 lazy page 분할을 같이 관리한다.
 const Home = lazy(() => import('@/components/Home').then((module) => ({ default: module.Home })))
@@ -109,11 +116,11 @@ const hasPersistedSupabaseSession = (): boolean => {
 }
 
 const PageFallback = () => (
-  <div className="flex min-h-dvh items-center justify-center bg-[#15171b] px-6 text-center">
-    <div className="space-y-3 rounded-[2rem] border border-white/10 bg-[#20242b] px-8 py-7 text-white shadow-[0_20px_80px_-50px_rgba(0,0,0,0.8)]">
-      <p className="text-[0.7rem] font-semibold uppercase tracking-[0.22em] text-white/42">V-MATE</p>
+  <div className="flex min-h-dvh items-center justify-center bg-[#ffffff] px-6 text-center">
+    <div className="space-y-3 rounded-xl border border-[#e7e7e7] bg-white px-8 py-7 text-[#171717] shadow-[0_18px_55px_-36px_rgba(49,27,34,0.3)]">
+      <p className="text-[0.7rem] font-bold uppercase tracking-[0.22em] text-[#ff5148]">V-MATE</p>
       <p className="text-[clamp(1.5rem,3vw,2rem)] font-semibold tracking-[-0.03em]">화면을 준비하는 중</p>
-      <p className="text-sm text-white/56">캐릭터와 월드를 불러오고 있어요.</p>
+      <p className="text-sm text-[#756d69]">캐릭터와 월드를 불러오고 있어요.</p>
     </div>
   </div>
 )
@@ -129,6 +136,10 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('')
   const [isAuthDialogOpen, setIsAuthDialogOpen] = useState(false)
   const [shouldInitializeAuth, setShouldInitializeAuth] = useState<boolean>(hasPersistedSupabaseSession)
+  const initialSelection = useMemo(readCombinationSelection, [])
+  const [selectedCharacter, setSelectedCharacter] = useState<CharacterSummary | null>(initialSelection.character)
+  const [selectedWorld, setSelectedWorld] = useState<WorldSummary | null>(initialSelection.world)
+  const [isStartingCombination, setIsStartingCombination] = useState(false)
 
   useEffect(() => {
     const handlePopState = () => setRoute(parseRouteFromPathname(window.location.pathname))
@@ -188,6 +199,7 @@ function App() {
       }
     }
     setRoute(nextRoute)
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' })
   }
 
   const openAuthDialog = () => {
@@ -223,6 +235,53 @@ function App() {
     navigateTo({ view: 'home' }, { replace: true })
   }
 
+  useEffect(() => {
+    writeCombinationSelection({ character: selectedCharacter, world: selectedWorld })
+  }, [selectedCharacter, selectedWorld])
+
+  const handleSelectEntity = (item: EntitySummary) => {
+    if (item.entityType === 'character') {
+      setSelectedCharacter(item as CharacterSummary)
+      toast.success(`${item.name}을(를) 선택했습니다.`)
+      return
+    }
+    setSelectedWorld(item as WorldSummary)
+    toast.success(`${item.name} 월드를 선택했습니다.`)
+  }
+
+  const handleClearSelectedEntity = (entityType: 'character' | 'world') => {
+    if (entityType === 'character') setSelectedCharacter(null)
+    else setSelectedWorld(null)
+  }
+
+  const handleStartCombination = async () => {
+    if (!selectedCharacter) {
+      toast.error('먼저 대화할 캐릭터를 선택해주세요.')
+      return
+    }
+    if (!user) {
+      openAuthDialog()
+      return
+    }
+    setIsStartingCombination(true)
+    try {
+      const { platformApi } = await import('@/lib/platform/apiClient')
+      const { room } = await platformApi.createRoom({
+        characterSlug: selectedCharacter.slug,
+        worldSlug: selectedWorld?.slug || null,
+        userAlias: '나',
+      })
+      setSelectedCharacter(null)
+      setSelectedWorld(null)
+      clearCombinationSelection()
+      navigateTo({ view: 'room', roomId: room.id })
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '대화방을 만들지 못했습니다.')
+    } finally {
+      setIsStartingCombination(false)
+    }
+  }
+
   const chrome = useMemo(() => ({
     user,
     userAvatarInitial: toAvatarInitial(user),
@@ -232,13 +291,19 @@ function App() {
     onAuthRequest: openAuthDialog,
     onSignOut: handleSignOut,
     onDeleteAccount: handleDeleteAccount,
-  }), [user, searchQuery])
+    selectedCharacter,
+    selectedWorld,
+    isStartingCombination,
+    onSelectEntity: handleSelectEntity,
+    onClearSelectedEntity: handleClearSelectedEntity,
+    onStartCombination: handleStartCombination,
+  }), [user, searchQuery, selectedCharacter, selectedWorld, isStartingCombination])
 
   const routeKey = route.view === 'room' ? `room-${route.roomId}` : route.view === 'character' ? `character-${route.slug}` : route.view === 'world' ? `world-${route.slug}` : route.view === 'startCharacter' ? `start-character-${route.slug}` : route.view === 'startWorld' ? `start-world-${route.slug}` : route.view
 
   return (
     <MotionConfig transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}>
-      <div className="relative min-h-dvh w-full overflow-x-hidden bg-[#15171b]">
+      <div className="relative min-h-dvh w-full overflow-x-hidden bg-[#ffffff]">
         <Suspense fallback={<PageFallback />}>
           <AnimatePresence mode="wait" initial={false}>
             <motion.div key={routeKey} initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -12 }} className="relative">

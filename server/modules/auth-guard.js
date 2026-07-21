@@ -290,6 +290,7 @@ export const resolveAuthenticatedUser = async ({
     event,
     requestTraceId,
     fetchImpl = globalThis.fetch,
+    forceAuth = false,
 }) => {
     const {
         requireAuth,
@@ -299,7 +300,7 @@ export const resolveAuthenticatedUser = async ({
         supabaseAnonKey,
     } = getChatAuthConfig();
 
-    if (!requireAuth) {
+    if (!forceAuth && !requireAuth) {
         return {
             ok: true,
             userId: '',

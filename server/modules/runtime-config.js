@@ -102,6 +102,12 @@ export const getRateLimitConfig = () => {
     };
 };
 
+export const getDailyChatLimit = () =>
+    toSafeInt(process.env.CHAT_DAILY_MESSAGE_LIMIT, 30, {
+        min: 1,
+        max: 500,
+    });
+
 export const getRateLimitMaxKeys = () =>
     toSafeInt(process.env.RATE_LIMIT_MAX_KEYS, 5000, {
         min: 1,

@@ -79,6 +79,42 @@ test('schema no longer depends on character-world link tables for room creation'
   assert.equal(migration.includes('default_relationship_context'), false);
 });
 
+test('b2c migration keeps owner authority private and user profile writes column-scoped', async () => {
+  const migration = await readUtf8('supabase/migrations/20260718_b2c_platform.sql');
+  const repository = await readUtf8('server/platform/supabase-platform-repository.js');
+
+  assert.ok(migration.includes('create table if not exists public.owner_users'));
+  assert.ok(migration.includes('revoke insert, update on public.profiles from anon, authenticated'));
+  assert.ok(migration.includes('grant update (handle, display_name, avatar_url, bio, age_confirmed_at, updated_at)'));
+  assert.ok(migration.includes("key <> 'owner_user_ids'"));
+  assert.equal(repository.includes(".eq('is_owner', true)"), false);
+  assert.equal(repository.includes("owner_user_ids"), false);
+  assert.ok(repository.includes("rpc('is_owner_user')"));
+});
+
+test('b2c migration defines report quarantine and atomic KST chat quota contracts', async () => {
+  const migration = await readUtf8('supabase/migrations/20260718_b2c_platform.sql');
+
+  assert.ok(migration.includes('create table if not exists public.content_reports'));
+  assert.ok(migration.includes('create table if not exists public.content_moderation'));
+  assert.ok(migration.includes('create table if not exists public.content_moderation_actions'));
+  assert.ok(migration.includes("unique index if not exists content_reports_one_open_per_reporter"));
+  assert.ok(migration.includes('count(distinct reporter_user_id) into reporter_count'));
+  assert.ok(migration.includes('if reporter_count >= 3 and'));
+  assert.ok(migration.includes("'quarantined'"));
+  assert.ok(migration.includes('create table if not exists public.chat_usage_daily'));
+  assert.ok(migration.includes('create table if not exists public.chat_usage_events'));
+  assert.ok(migration.includes('primary key (user_id, request_id)'));
+  assert.ok(migration.includes("existing_status <> 'refunded'"));
+  assert.ok(migration.includes('on conflict (user_id, request_id) do update'));
+  assert.ok(migration.includes('create or replace function public.reserve_daily_chat_message'));
+  assert.ok(migration.includes("timezone('Asia/Seoul', now())::date"));
+  assert.ok(migration.includes('pg_advisory_xact_lock'));
+  assert.ok(migration.includes('create or replace function public.complete_daily_chat_message'));
+  assert.ok(migration.includes("status in ('reserved', 'completed', 'refunded')"));
+  assert.ok(migration.includes('create or replace function public.refund_daily_chat_message'));
+});
+
 test('server source no longer references legacy local demo asset filenames', async () => {
   const repoFiles = [
     'server/platform/supabase-platform-repository.js',

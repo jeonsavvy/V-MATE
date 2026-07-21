@@ -21,12 +21,174 @@ const createdWorlds = new Map();
 const rooms = new Map();
 const recentViewsByUser = new Map();
 const bookmarksByUser = new Map();
+const reports = new Map();
+const moderationByEntity = new Map();
+const moderationActions = [];
+const chatQuotaByUserDate = new Map();
+const chatQuotaEvents = new Map();
 const featuredHomeState = {
   heroMode: 'auto',
   heroTargetPath: '',
 };
 
 const nowIso = () => new Date().toISOString();
+
+const seedStarterContent = () => {
+  const updatedAt = '2026-07-21T00:00:00.000Z';
+  const creator = { id: 'v-mate-official', slug: 'v-mate', name: 'V-MATE' };
+  createdCharacters.set('character-starter-a', {
+    id: 'character-starter-a',
+    entityType: 'character',
+    slug: 'character-a',
+    name: '캐릭터A',
+    headline: '테스트 캐릭터',
+    summary: '밝고 자신감 있는 성인 캐릭터.',
+    coverImageUrl: '/starter/character-a.webp',
+    avatarImageUrl: '/starter/character-a.webp',
+    tags: ['서브컬처', 'SF', '밝은성격', '성인'],
+    creator,
+    ownerUserId: creator.id,
+    visibility: 'public',
+    displayStatus: 'visible',
+    sourceType: 'original',
+    sourceUrl: '',
+    rightsAttestedAt: updatedAt,
+    moderationStatus: 'clear',
+    favoriteCount: 0,
+    chatStartCount: 0,
+    updatedAt,
+    profileJson: { creatorName: 'V-MATE', age: 21, occupation: '아카데미 기술부' },
+    speechStyleJson: { tempo: 'fast', tone: 'playful', address: '너' },
+    profileSections: [
+      { title: '성격', body: '밝고 자신감이 있으며 먼저 말을 건다.' },
+      { title: '말투', body: '밝고 빠른 반말을 쓰며, 상대의 말에서 핵심 단어를 잡아 구체적인 질문으로 이어간다.' },
+    ],
+    gallery: ['/starter/character-a.webp'],
+    promptProfile: {
+      persona: ['21세 성인', '밝고 자신감이 있다', '관찰한 내용을 바로 대화 소재로 바꾼다'],
+      speechStyle: ['짧고 생동감 있는 반말', '과장된 밈이나 이모지는 남발하지 않는다'],
+      relationshipBaseline: '처음 만난 두 사람이 테스트 대화를 시작한다',
+      roleTendency: 'lead',
+      conflictStyle: 'ask-then-clarify',
+      worldFitTags: ['city', 'campus', 'romance'],
+      creatorName: 'V-MATE',
+      imageSlots: [],
+    },
+  });
+  createdCharacters.set('character-starter-b', {
+    id: 'character-starter-b',
+    entityType: 'character',
+    slug: 'character-b',
+    name: '캐릭터B',
+    headline: '테스트 캐릭터',
+    summary: '차분하고 냉정한 성인 캐릭터.',
+    coverImageUrl: '/starter/character-b.webp',
+    avatarImageUrl: '/starter/character-b.webp',
+    tags: ['서브컬처', 'SF판타지', '냉정', '성인'],
+    creator,
+    ownerUserId: creator.id,
+    visibility: 'public',
+    displayStatus: 'visible',
+    sourceType: 'original',
+    sourceUrl: '',
+    rightsAttestedAt: updatedAt,
+    moderationStatus: 'clear',
+    favoriteCount: 0,
+    chatStartCount: 0,
+    updatedAt,
+    profileJson: { creatorName: 'V-MATE', age: 24, occupation: '성간 항로 안내인' },
+    speechStyleJson: { tempo: 'measured', tone: 'restrained', address: '당신' },
+    profileSections: [
+      { title: '성격', body: '차분하고 냉정하며 상황을 먼저 정리한다.' },
+      { title: '말투', body: '낮고 단정한 존댓말을 쓴다. 결론을 서두르기보다 확인 질문을 한 뒤 자신의 판단을 말한다.' },
+    ],
+    gallery: ['/starter/character-b.webp'],
+    promptProfile: {
+      persona: ['24세 성인', '침착하고 관찰력이 좋다', '약속과 사실관계를 정확히 기억한다'],
+      speechStyle: ['짧고 단정한 존댓말', '압박보다 확인 질문으로 긴장을 만든다'],
+      relationshipBaseline: '비가 오는 저녁 처음 협력하게 된 두 사람',
+      roleTendency: 'balanced',
+      conflictStyle: 'verify-then-commit',
+      worldFitTags: ['city', 'mystery', 'fantasy'],
+      creatorName: 'V-MATE',
+      imageSlots: [],
+    },
+  });
+  createdWorlds.set('world-starter-a', {
+    id: 'world-starter-a',
+    entityType: 'world',
+    slug: 'world-a',
+    name: '월드A',
+    headline: '현대 도시 월드',
+    summary: '비가 갠 밤의 현대 도시.',
+    coverImageUrl: '/starter/world-a.webp',
+    tags: ['현대', '도시', '일상'],
+    creator,
+    ownerUserId: creator.id,
+    visibility: 'public',
+    displayStatus: 'visible',
+    sourceType: 'original',
+    sourceUrl: '',
+    rightsAttestedAt: updatedAt,
+    moderationStatus: 'clear',
+    favoriteCount: 0,
+    chatStartCount: 0,
+    updatedAt,
+    worldSections: [
+      { title: '장소', body: '지하철 입구, 편의점, 젖은 교차로.' },
+      { title: '월드 규칙', body: '현실적인 시간과 이동 거리를 지킨다. 초자연적 해결 없이 대화와 생활의 선택으로 장면이 변한다.' },
+    ],
+    gallery: ['/starter/world-a.webp'],
+    promptProfile: {
+      genreKey: 'modern-city',
+      rules: ['현실적인 시간과 이동을 지킨다', '날씨와 장소의 감각을 다음 장면에 이어간다', '생활 속 선택이 관계를 바꾼다'],
+      tone: '비가 갠 도시의 밝고 차분한 관계극',
+      starterLocations: ['지하철 입구', '24시간 편의점', '젖은 교차로'],
+      worldTerms: ['막차', '우산', '편의점', '반사된 불빛'],
+      creatorName: 'V-MATE',
+      imageSlots: [],
+    },
+  });
+  createdWorlds.set('world-starter-b', {
+    id: 'world-starter-b',
+    entityType: 'world',
+    slug: 'world-b',
+    name: '월드B',
+    headline: '판타지 하늘섬 월드',
+    summary: '구름 바다 위의 판타지 하늘섬.',
+    coverImageUrl: '/starter/world-b.webp',
+    tags: ['판타지', '하늘섬', '모험'],
+    creator,
+    ownerUserId: creator.id,
+    visibility: 'public',
+    displayStatus: 'visible',
+    sourceType: 'original',
+    sourceUrl: '',
+    rightsAttestedAt: updatedAt,
+    moderationStatus: 'clear',
+    favoriteCount: 0,
+    chatStartCount: 0,
+    updatedAt,
+    worldSections: [
+      { title: '장소', body: '부유 성채, 연결교, 구름 항구.' },
+      { title: '월드 규칙', body: '하늘섬은 정해진 항로로만 오갈 수 있다. 마법은 기억을 대가로 하며, 모든 선택은 성채의 상태를 바꾼다.' },
+    ],
+    gallery: ['/starter/world-b.webp'],
+    promptProfile: {
+      genreKey: 'sky-fantasy',
+      rules: ['하늘섬은 정해진 항로로만 오간다', '마법은 기억을 대가로 사용한다', '선택의 결과는 세계 상태와 관계에 남는다'],
+      tone: '밝은 하늘과 긴장이 공존하는 모험 판타지',
+      starterLocations: ['부유 성채 전망대', '하늘섬 연결교', '구름 항구'],
+      worldTerms: ['부유 성채', '하늘 항로', '기억석', '구름 바다'],
+      creatorName: 'V-MATE',
+      imageSlots: [],
+    },
+  });
+  featuredHomeState.heroMode = 'auto';
+  featuredHomeState.heroTargetPath = '';
+};
+
+seedStarterContent();
 
 const slugify = (value, fallback) => {
   const normalized = String(value || '')
@@ -52,9 +214,13 @@ const summarizeCharacter = (item) => ({
   visibility: item.visibility,
   displayStatus: item.displayStatus,
   sourceType: item.sourceType,
+  sourceUrl: item.sourceUrl || '',
+  rightsAttestedAt: item.rightsAttestedAt || '',
+  moderationStatus: item.moderationStatus || moderationByEntity.get(`character:${item.id}`)?.status || 'clear',
   favoriteCount: item.favoriteCount,
   chatStartCount: item.chatStartCount,
   updatedAt: item.updatedAt,
+  heroImageUrl: item.promptProfile?.heroImageUrl || '',
   imageSlots: Array.isArray(item.promptProfile?.imageSlots) ? clone(item.promptProfile.imageSlots) : [],
 });
 
@@ -71,6 +237,9 @@ const summarizeWorld = (item) => ({
   visibility: item.visibility,
   displayStatus: item.displayStatus,
   sourceType: item.sourceType,
+  sourceUrl: item.sourceUrl || '',
+  rightsAttestedAt: item.rightsAttestedAt || '',
+  moderationStatus: item.moderationStatus || moderationByEntity.get(`world:${item.id}`)?.status || 'clear',
   favoriteCount: item.favoriteCount,
   chatStartCount: item.chatStartCount,
   updatedAt: item.updatedAt,
@@ -103,7 +272,7 @@ const ensureBookmarkBucket = (userId) => {
 export const listCharacters = ({ search = '', filter = '' } = {}) => {
   const query = String(search || '').trim().toLowerCase();
   const items = allCharacters()
-    .filter((item) => item.displayStatus !== 'hidden')
+    .filter((item) => item.displayStatus !== 'hidden' && !['quarantined', 'blocked'].includes(moderationByEntity.get(`character:${item.id}`)?.status))
     .map(summarizeCharacter)
     .filter((item) => !query || JSON.stringify(item).toLowerCase().includes(query));
 
@@ -116,7 +285,7 @@ export const listCharacters = ({ search = '', filter = '' } = {}) => {
 export const listWorlds = ({ search = '', filter = '' } = {}) => {
   const query = String(search || '').trim().toLowerCase();
   const items = allWorlds()
-    .filter((item) => item.displayStatus !== 'hidden')
+    .filter((item) => item.displayStatus !== 'hidden' && !['quarantined', 'blocked'].includes(moderationByEntity.get(`world:${item.id}`)?.status))
     .map(summarizeWorld)
     .filter((item) => !query || JSON.stringify(item).toLowerCase().includes(query));
 
@@ -129,22 +298,21 @@ export const listWorlds = ({ search = '', filter = '' } = {}) => {
 export const getHomePayload = ({ tab = 'characters', search = '', filter = '' } = {}) => {
   const characters = listCharacters({ search, filter });
   const worlds = listWorlds({ search, filter });
-  const autoHero = [...characters, ...worlds].sort((a, b) => b.chatStartCount - a.chatStartCount || b.favoriteCount - a.favoriteCount || Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
   const manualHero = featuredHomeState.heroTargetPath.startsWith('/worlds/')
     ? worlds.find((item) => featuredHomeState.heroTargetPath.endsWith(`/${item.slug}`))
     : characters.find((item) => featuredHomeState.heroTargetPath.endsWith(`/${item.slug}`));
-  const hero = featuredHomeState.heroMode === 'manual' && manualHero ? manualHero : autoHero;
+  const hero = featuredHomeState.heroMode === 'manual' ? manualHero : null;
 
   return {
     home: {
       defaultTab: 'characters',
       filterChips: ['신작', '인기'],
-      hero: {
-        title: hero?.name || '새 콘텐츠를 공개해보세요',
-        subtitle: hero?.headline || hero?.summary || '',
-        coverImageUrl: hero?.coverImageUrl || '',
-        targetPath: hero?.entityType === 'world' ? `/worlds/${hero.slug}` : hero?.slug ? `/characters/${hero.slug}` : '/create/character',
-      },
+      hero: hero ? {
+        title: hero.name,
+        subtitle: hero.headline || hero.summary || '',
+        coverImageUrl: hero.heroImageUrl || hero.coverImageUrl || '',
+        targetPath: hero.entityType === 'world' ? `/worlds/${hero.slug}` : `/characters/${hero.slug}`,
+      } : null,
       characterFeed: { items: characters },
       worldFeed: { items: worlds },
     },
@@ -250,6 +418,9 @@ export const createCharacter = ({ userId, payload }) => {
     visibility: payload.visibility || 'private',
     displayStatus: payload.visibility === 'public' ? 'visible' : 'draft',
     sourceType: payload.sourceType || 'original',
+    sourceUrl: payload.sourceUrl || '',
+    rightsAttestedAt: payload.visibility === 'public' ? nowIso() : '',
+    moderationStatus: 'clear',
     favoriteCount: 0,
     chatStartCount: 0,
     updatedAt: nowIso(),
@@ -279,19 +450,23 @@ export const updateCharacter = ({ userId, slug, payload }) => {
   const item = [...createdCharacters.values()].find((entry) => entry.slug === slug && entry.ownerUserId === userId);
   if (!item) return null;
   const creatorName = String(payload.creatorName || payload.profileJson?.creatorName || payload.promptProfileJson?.creatorName || '').trim() || item.creator.name;
-  item.name = payload.name;
-  item.headline = payload.headline || payload.summary;
-  item.summary = payload.summary;
-  item.tags = payload.tags || [];
-  item.visibility = payload.visibility || item.visibility;
-  item.displayStatus = payload.visibility === 'public' ? 'visible' : 'draft';
+  item.name = payload.name ?? item.name;
+  item.headline = payload.headline ?? payload.summary ?? item.headline;
+  item.summary = payload.summary ?? item.summary;
+  item.tags = payload.tags ?? item.tags;
+  if (payload.visibility) {
+    item.visibility = payload.visibility;
+    item.displayStatus = payload.visibility === 'public' ? 'visible' : 'draft';
+  }
   item.sourceType = payload.sourceType || item.sourceType;
+  if (Object.prototype.hasOwnProperty.call(payload, 'sourceUrl')) item.sourceUrl = payload.sourceUrl || '';
+  if (payload.visibility === 'public' && payload.rightsConfirmed) item.rightsAttestedAt = nowIso();
   item.coverImageUrl = payload.coverImageUrl || item.coverImageUrl;
   item.avatarImageUrl = payload.avatarImageUrl || payload.coverImageUrl || item.avatarImageUrl;
   item.creator = { ...item.creator, name: creatorName };
   item.profileJson = payload.profileJson || item.profileJson || {};
   item.speechStyleJson = payload.speechStyleJson || item.speechStyleJson || {};
-  item.profileSections = [{ title: '설정', body: payload.summary }];
+  if (payload.summary) item.profileSections = [{ title: '설정', body: payload.summary }];
   item.promptProfile = { ...item.promptProfile, ...(payload.promptProfileJson || {}), creatorName };
   if (Array.isArray(payload.assets) && payload.assets.length > 0) {
     item.gallery = payload.assets.map((asset) => asset.url);
@@ -316,6 +491,9 @@ export const createWorld = ({ userId, payload }) => {
     visibility: payload.visibility || 'private',
     displayStatus: payload.visibility === 'public' ? 'visible' : 'draft',
     sourceType: payload.sourceType || 'original',
+    sourceUrl: payload.sourceUrl || '',
+    rightsAttestedAt: payload.visibility === 'public' ? nowIso() : '',
+    moderationStatus: 'clear',
     favoriteCount: 0,
     chatStartCount: 0,
     updatedAt: nowIso(),
@@ -342,19 +520,25 @@ export const updateWorld = ({ userId, slug, payload }) => {
   const item = [...createdWorlds.values()].find((entry) => entry.slug === slug && entry.ownerUserId === userId);
   if (!item) return null;
   const creatorName = String(payload.creatorName || payload.promptProfileJson?.creatorName || '').trim() || item.creator.name;
-  item.name = payload.name;
-  item.headline = payload.headline || payload.summary;
-  item.summary = payload.summary;
-  item.tags = payload.tags || [];
-  item.visibility = payload.visibility || item.visibility;
-  item.displayStatus = payload.visibility === 'public' ? 'visible' : 'draft';
+  item.name = payload.name ?? item.name;
+  item.headline = payload.headline ?? payload.summary ?? item.headline;
+  item.summary = payload.summary ?? item.summary;
+  item.tags = payload.tags ?? item.tags;
+  if (payload.visibility) {
+    item.visibility = payload.visibility;
+    item.displayStatus = payload.visibility === 'public' ? 'visible' : 'draft';
+  }
   item.sourceType = payload.sourceType || item.sourceType;
+  if (Object.prototype.hasOwnProperty.call(payload, 'sourceUrl')) item.sourceUrl = payload.sourceUrl || '';
+  if (payload.visibility === 'public' && payload.rightsConfirmed) item.rightsAttestedAt = nowIso();
   item.coverImageUrl = payload.coverImageUrl || item.coverImageUrl;
   item.creator = { ...item.creator, name: creatorName };
-  item.worldSections = [
-    { title: '월드 소개', body: payload.summary },
-    { title: '월드 규칙', body: payload.worldRulesMarkdown || payload.summary },
-  ];
+  if (payload.summary || payload.worldRulesMarkdown) {
+    item.worldSections = [
+      { title: '월드 소개', body: payload.summary || item.summary },
+      { title: '월드 규칙', body: payload.worldRulesMarkdown || payload.summary || item.worldSections?.[1]?.body || item.summary },
+    ];
+  }
   item.promptProfile = { ...item.promptProfile, ...(payload.promptProfileJson || {}), creatorName };
   if (Array.isArray(payload.assets) && payload.assets.length > 0) {
     item.gallery = payload.assets.map((asset) => asset.url);
@@ -563,6 +747,127 @@ export const setHomeHeroMode = (input) => {
   return clone(featuredHomeState);
 };
 
+const REPORT_REASONS = new Set(['sexual_content', 'minor_safety', 'hate_or_harassment', 'copyright', 'spam', 'other']);
+
+const resolveContentForReport = (entityType, entityId) => {
+  const collection = entityType === 'character' ? allCharacters() : entityType === 'world' ? allWorlds() : [];
+  return collection.find((item) => item.id === entityId || item.slug === entityId) || null;
+};
+
+export const createContentReport = ({ userId, payload }) => {
+  const entity = resolveContentForReport(payload.entityType, payload.entityId);
+  if (!entity) return null;
+  const duplicate = [...reports.values()].find((report) => report.reporterUserId === userId && report.entityType === payload.entityType && report.entityId === entity.id && report.status === 'open');
+  if (duplicate) {
+    const error = new Error('이미 검토 중인 신고가 있습니다.');
+    error.code = 'REPORT_ALREADY_OPEN';
+    throw error;
+  }
+  const report = {
+    id: `report-${randomUUID()}`,
+    reporterUserId: userId,
+    entityType: payload.entityType,
+    entityId: entity.id,
+    entityName: entity.name,
+    reason: REPORT_REASONS.has(payload.reason) ? payload.reason : 'other',
+    details: String(payload.details || '').trim().slice(0, 1000),
+    status: 'open',
+    createdAt: nowIso(),
+  };
+  reports.set(report.id, report);
+  const uniqueReporters = new Set([...reports.values()].filter((item) => item.entityType === report.entityType && item.entityId === report.entityId && item.status === 'open').map((item) => item.reporterUserId));
+  const moderationKey = `${report.entityType}:${report.entityId}`;
+  const currentModeration = moderationByEntity.get(moderationKey);
+  if (uniqueReporters.size >= 3 && currentModeration?.status !== 'blocked' && currentModeration?.status !== 'quarantined') {
+    const createdAt = nowIso();
+    moderationByEntity.set(moderationKey, { status: 'quarantined', reason: 'report_threshold', updatedAt: createdAt });
+    moderationActions.push({ id: `moderation-action-${randomUUID()}`, reportId: report.id, entityType: report.entityType, entityId: report.entityId, action: 'auto_quarantine', note: 'report_threshold', actionedBy: null, createdAt });
+  }
+  return clone(report);
+};
+
+export const listContentReports = ({ status = 'open' } = {}) => [...reports.values()]
+  .filter((report) => !status || report.status === status)
+  .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+  .map(clone);
+
+export const listContentModerationActions = () => moderationActions.map(clone);
+
+export const applyReportAction = ({ reportId, action, note = '', userId = 'memory-owner' }) => {
+  const report = reports.get(reportId);
+  if (!report) return null;
+  const key = `${report.entityType}:${report.entityId}`;
+  if (action === 'dismiss') {
+    report.status = 'dismissed';
+  } else if (action === 'restore') {
+    moderationByEntity.set(key, { status: 'clear', reason: 'owner_restore', updatedAt: nowIso() });
+    for (const item of reports.values()) if (item.entityType === report.entityType && item.entityId === report.entityId && item.status === 'open') item.status = 'dismissed';
+  } else if (action === 'quarantine' || action === 'remove') {
+    moderationByEntity.set(key, { status: action === 'remove' ? 'blocked' : 'quarantined', reason: `owner_${action}`, updatedAt: nowIso() });
+    report.status = 'actioned';
+  } else {
+    return null;
+  }
+  moderationActions.push({
+    id: `moderation-action-${randomUUID()}`,
+    reportId: report.id,
+    entityType: report.entityType,
+    entityId: report.entityId,
+    action,
+    note: String(note || '').slice(0, 1000),
+    actionedBy: userId,
+    createdAt: nowIso(),
+  });
+  return { report: clone(report), moderationStatus: moderationByEntity.get(key)?.status || 'clear' };
+};
+
+const getKstDateKey = (now = new Date()) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+const getChatQuotaEventKey = (userId, requestId) => `${userId}:${requestId}`;
+const getKstResetAt = (dateKey) => {
+  const [year, month, day] = dateKey.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day + 1, -9, 0, 0)).toISOString();
+};
+
+export const getChatQuota = ({ userId, limit = 30, now = new Date() }) => {
+  const dateKey = getKstDateKey(now);
+  const used = Number(chatQuotaByUserDate.get(`${userId}:${dateKey}`) || 0);
+  return { limit, remaining: Math.max(0, limit - used), resetAt: getKstResetAt(dateKey) };
+};
+
+export const reserveChatQuota = ({ userId, requestId, limit = 30, now = new Date() }) => {
+  const eventKey = getChatQuotaEventKey(userId, requestId);
+  const existing = chatQuotaEvents.get(eventKey);
+  if (existing && existing.status !== 'refunded') return { allowed: false, duplicate: true, response: existing.response ? clone(existing.response) : null, ...getChatQuota({ userId, limit, now }) };
+  const dateKey = getKstDateKey(now);
+  const key = `${userId}:${dateKey}`;
+  const used = Number(chatQuotaByUserDate.get(key) || 0);
+  if (used >= limit) return { allowed: false, duplicate: false, ...getChatQuota({ userId, limit, now }) };
+  chatQuotaByUserDate.set(key, used + 1);
+  chatQuotaEvents.set(eventKey, { userId, dateKey, status: 'reserved', response: null });
+  return { allowed: true, duplicate: false, ...getChatQuota({ userId, limit, now }) };
+};
+
+export const completeChatQuota = ({ userId, requestId, response }) => {
+  const event = chatQuotaEvents.get(getChatQuotaEventKey(userId, requestId));
+  if (!event || event.userId !== userId || !['reserved', 'completed'].includes(event.status)) return false;
+  event.status = 'completed';
+  event.response = clone(response || {});
+  event.completedAt = nowIso();
+  return true;
+};
+
+export const refundChatQuota = ({ userId, requestId, limit = 30 }) => {
+  const event = chatQuotaEvents.get(getChatQuotaEventKey(userId, requestId));
+  if (event?.userId === userId && event.status === 'reserved') {
+    const key = `${userId}:${event.dateKey}`;
+    chatQuotaByUserDate.set(key, Math.max(0, Number(chatQuotaByUserDate.get(key) || 0) - 1));
+    event.status = 'refunded';
+  }
+  const dateKey = event?.dateKey || getKstDateKey();
+  const used = Number(chatQuotaByUserDate.get(`${userId}:${dateKey}`) || 0);
+  return { limit, remaining: Math.max(0, limit - used), resetAt: getKstResetAt(dateKey) };
+};
+
 export const prepareAssetUploads = async ({ userId, entityType, variants }) => ({
   bucket: 'vmate-assets',
   uploads: variants.map((variant) => ({
@@ -577,12 +882,18 @@ export const prepareAssetUploads = async ({ userId, entityType, variants }) => (
   })),
 });
 
-export const resetPlatformStoreForTests = () => {
+export const resetPlatformStoreForTests = ({ includeStarterContent = false } = {}) => {
   createdCharacters.clear();
   createdWorlds.clear();
   rooms.clear();
   recentViewsByUser.clear();
   bookmarksByUser.clear();
+  reports.clear();
+  moderationByEntity.clear();
+  moderationActions.length = 0;
+  chatQuotaByUserDate.clear();
+  chatQuotaEvents.clear();
   featuredHomeState.heroMode = 'auto';
   featuredHomeState.heroTargetPath = '';
+  if (includeStarterContent) seedStarterContent();
 };

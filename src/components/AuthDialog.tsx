@@ -42,6 +42,7 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
   const [signUpEmail, setSignUpEmail] = useState("")
   const [signUpPassword, setSignUpPassword] = useState("")
   const [signUpConfirmPassword, setSignUpConfirmPassword] = useState("")
+  const [signUpAgeConfirmed, setSignUpAgeConfirmed] = useState(false)
   const [resetEmail, setResetEmail] = useState("")
 
   useEffect(() => {
@@ -102,6 +103,10 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
       toast.error("비밀번호가 일치하지 않습니다.")
       return
     }
+    if (!signUpAgeConfirmed) {
+      toast.error("V-MATE는 만 17세 이상만 가입할 수 있습니다.")
+      return
+    }
 
     setIsLoading(true)
 
@@ -113,6 +118,7 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
         options: {
           data: {
             name: signUpName,
+            ageConfirmed: true,
           },
           ...(redirectOrigin ? { emailRedirectTo: redirectOrigin } : {}),
         },
@@ -136,6 +142,7 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
           setSignUpPassword("")
           setSignUpConfirmPassword("")
           setSignUpName("")
+          setSignUpAgeConfirmed(false)
           onSuccess?.()
         } else {
           toast.success("회원가입 성공! 이메일을 확인해주세요.")
@@ -144,6 +151,7 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
           setSignUpPassword("")
           setSignUpConfirmPassword("")
           setSignUpName("")
+          setSignUpAgeConfirmed(false)
         }
       }
     } catch (error: unknown) {
@@ -197,7 +205,7 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[94dvh] overflow-y-auto rounded-[2rem] p-6 sm:max-w-lg">
+      <DialogContent className="max-h-[94dvh] overflow-y-auto rounded-xl p-6 sm:max-w-lg">
         <DialogHeader className="space-y-2 text-left">
           <DialogTitle>로그인</DialogTitle>
           <DialogDescription>채팅을 시작하려면 로그인 또는 회원가입이 필요합니다.</DialogDescription>
@@ -244,7 +252,7 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
                   </button>
 
                   {isResetFormOpen && (
-                    <div className="space-y-3 rounded-[1.6rem] border border-border/80 bg-secondary/42 p-4 shadow-inner-line">
+                    <div className="space-y-3 rounded-xl border border-border bg-secondary p-4 shadow-inner-line">
                       <div className="space-y-2">
                         <Label htmlFor="reset-email" className="text-sm font-semibold text-foreground">아이디(이메일)</Label>
                         <Input
@@ -330,6 +338,10 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
                       autoComplete="new-password"
                     />
                   </div>
+                  <label className="flex items-start gap-3 rounded-lg border border-border bg-secondary/35 p-3 text-sm text-muted-foreground">
+                    <input type="checkbox" checked={signUpAgeConfirmed} onChange={(event) => setSignUpAgeConfirmed(event.target.checked)} className="mt-0.5 size-4 accent-[#ff5148]" />
+                    <span><strong className="text-foreground">만 17세 이상입니다.</strong><br />로맨스·갈등·비노골적 폭력 표현이 포함될 수 있습니다.</span>
+                  </label>
                   <Button type="submit" className="w-full" disabled={isLoading}>
                     {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                     회원가입

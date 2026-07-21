@@ -1,6 +1,13 @@
 export type EntityType = 'character' | 'world'
 export type Visibility = 'private' | 'unlisted' | 'public'
 export type DisplayStatus = 'visible' | 'hidden' | 'draft'
+export type ModerationStatus = 'clear' | 'quarantined' | 'blocked'
+
+export interface ChatQuota {
+  limit: number
+  remaining: number
+  resetAt: string
+}
 
 export interface CreatorSummary {
   id: string
@@ -23,6 +30,9 @@ export interface EntitySummary {
   visibility: Visibility
   displayStatus: DisplayStatus
   sourceType: string
+  sourceUrl?: string
+  rightsAttestedAt?: string
+  moderationStatus?: ModerationStatus
   favoriteCount: number
   chatStartCount: number
   updatedAt: string
@@ -59,7 +69,7 @@ export interface HomeFeedPayload {
       subtitle: string
       coverImageUrl: string
       targetPath: string
-    }
+    } | null
     characterFeed: {
       items: CharacterSummary[]
     }
@@ -157,10 +167,27 @@ export interface OwnerOpsDashboard {
     heroMode: 'auto' | 'manual'
     heroTargetPath: string
   }
+  reports?: ContentReport[]
+}
+
+export type ReportReason = 'sexual_content' | 'minor_safety' | 'hate_or_harassment' | 'copyright' | 'spam' | 'other'
+export type ReportStatus = 'open' | 'dismissed' | 'actioned'
+
+export interface ContentReport {
+  id: string
+  entityType: EntityType
+  entityId: string
+  entityName: string
+  reason: ReportReason
+  details: string
+  status: ReportStatus
+  createdAt: string
+  reporterUserId?: string
 }
 
 export interface RoomChatResponse {
   room: RoomSummary
   message: Extract<RoomMessage['content'], object>
   trace_id: string
+  quota: ChatQuota
 }
