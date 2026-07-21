@@ -653,11 +653,10 @@ do $$ begin
 exception when duplicate_object then null; end $$;
 
 
--- V-MATE B2C hardening: owner isolation, 17+ publishing, UGC reports, and daily chat quota.
+-- V-MATE B2C hardening: owner isolation, UGC reports, and daily chat quota.
 -- Review in a staging project before applying. This migration does not delete existing content.
 
 alter table public.profiles add column if not exists handle text;
-alter table public.profiles add column if not exists age_confirmed_at timestamp with time zone;
 create unique index if not exists profiles_handle_unique on public.profiles (lower(handle)) where handle is not null;
 
 create table if not exists public.owner_users (
@@ -717,8 +716,8 @@ create policy "Users can insert their own profile" on public.profiles for insert
 create policy "Users can update their own profile" on public.profiles for update using (auth.uid() = user_id) with check (auth.uid() = user_id and is_owner is false);
 
 revoke insert, update on public.profiles from anon, authenticated;
-grant insert (user_id, handle, display_name, avatar_url, bio, age_confirmed_at, updated_at) on public.profiles to authenticated;
-grant update (handle, display_name, avatar_url, bio, age_confirmed_at, updated_at) on public.profiles to authenticated;
+grant insert (user_id, handle, display_name, avatar_url, bio, updated_at) on public.profiles to authenticated;
+grant update (handle, display_name, avatar_url, bio, updated_at) on public.profiles to authenticated;
 
 create or replace function public.handle_new_profile()
 returns trigger
@@ -727,12 +726,11 @@ security definer
 set search_path = public, pg_temp
 as $$
 begin
-  insert into public.profiles (user_id, handle, display_name, age_confirmed_at)
+  insert into public.profiles (user_id, handle, display_name)
   values (
     new.id,
     'user_' || left(replace(new.id::text, '-', ''), 12),
-    coalesce(nullif(trim(new.raw_user_meta_data ->> 'name'), ''), '사용자'),
-    case when lower(coalesce(new.raw_user_meta_data ->> 'ageConfirmed', '')) in ('true', '1', 'yes') then timezone('utc'::text, now()) else null end
+    coalesce(nullif(trim(new.raw_user_meta_data ->> 'name'), ''), '사용자')
   )
   on conflict (user_id) do nothing;
   return new;
@@ -743,20 +741,6 @@ $$;
 
 drop trigger if exists on_auth_user_created_create_profile on auth.users;
 create trigger on_auth_user_created_create_profile after insert on auth.users for each row execute procedure public.handle_new_profile();
-
-create or replace function public.has_confirmed_age()
-returns boolean
-language sql
-stable
-security definer
-set search_path = public, pg_temp
-as $$
-  select auth.uid() is not null and exists (
-    select 1 from public.profiles where user_id = auth.uid() and age_confirmed_at is not null
-  );
-$$;
-revoke all on function public.has_confirmed_age() from public;
-grant execute on function public.has_confirmed_age() to authenticated;
 
 drop policy if exists "Public can read app settings" on public.app_settings;
 create policy "Public can read non-sensitive app settings" on public.app_settings for select using (key <> 'owner_user_ids');
@@ -913,19 +897,19 @@ create policy "Public can read unmoderated visible worlds or owners can read the
 
 drop policy if exists "Users can insert their own characters" on public.characters;
 create policy "Users can insert their own characters" on public.characters for insert with check (
-  auth.uid() = owner_user_id and (visibility <> 'public' or (public.has_confirmed_age() and rights_attested_at is not null))
+  auth.uid() = owner_user_id and (visibility <> 'public' or rights_attested_at is not null)
 );
 drop policy if exists "Users can update their own characters" on public.characters;
 create policy "Users can update their own characters" on public.characters for update using (auth.uid() = owner_user_id) with check (
-  auth.uid() = owner_user_id and (visibility <> 'public' or (public.has_confirmed_age() and rights_attested_at is not null))
+  auth.uid() = owner_user_id and (visibility <> 'public' or rights_attested_at is not null)
 );
 drop policy if exists "Users can insert their own worlds" on public.worlds;
 create policy "Users can insert their own worlds" on public.worlds for insert with check (
-  auth.uid() = owner_user_id and (visibility <> 'public' or (public.has_confirmed_age() and rights_attested_at is not null))
+  auth.uid() = owner_user_id and (visibility <> 'public' or rights_attested_at is not null)
 );
 drop policy if exists "Users can update their own worlds" on public.worlds;
 create policy "Users can update their own worlds" on public.worlds for update using (auth.uid() = owner_user_id) with check (
-  auth.uid() = owner_user_id and (visibility <> 'public' or (public.has_confirmed_age() and rights_attested_at is not null))
+  auth.uid() = owner_user_id and (visibility <> 'public' or rights_attested_at is not null)
 );
 
 create or replace function public.apply_content_report_action(p_report_id uuid, p_action text, p_note text default '')
@@ -1111,9 +1095,6 @@ grant execute on function public.refund_daily_chat_message(text, integer) to aut
 
 -- Supabase may grant function execution to API roles through default privileges.
 -- Keep callable SECURITY DEFINER functions limited to the roles that own their API contract.
-revoke all on function public.has_confirmed_age() from public, anon;
-grant execute on function public.has_confirmed_age() to authenticated;
-
 revoke all on function public.apply_content_report_action(uuid, text, text) from public, anon;
 grant execute on function public.apply_content_report_action(uuid, text, text) to authenticated;
 
@@ -1138,3 +1119,9 @@ begin
     execute 'revoke all on function public.rls_auto_enable() from public, anon, authenticated';
   end if;
 end $$;
+
+-- Remove the retired age-attestation field and any legacy signup metadata.
+update auth.users
+set raw_user_meta_data = coalesce(raw_user_meta_data, '{}'::jsonb) - 'ageConfirmed'
+where coalesce(raw_user_meta_data, '{}'::jsonb) ? 'ageConfirmed';
+alter table public.profiles drop column if exists age_confirmed_at;

@@ -351,7 +351,7 @@ test('creator flows keep practical prompt editors and require public publishing 
   assert.ok(source.includes('공개 범위'));
   assert.ok(source.includes('공개 전 확인'));
   assert.ok(source.includes('rightsConfirmed'));
-  assert.ok(source.includes('ageConfirmed'));
+  assert.equal(source.includes('ageConfirmed'), false);
   assert.equal(source.includes('월드 설명'), false);
   assert.equal(source.includes('캐릭터 설정'), false);
 });
@@ -386,13 +386,13 @@ test('ops page exposes banner auto/manual controls and delete actions', async ()
   assert.ok(source.includes('삭제'));
 });
 
-test('footer exposes privacy policy link and 17+ service notice', async () => {
+test('footer exposes product identity and privacy policy without an age gate', async () => {
   const scaffoldPath = path.join(srcRoot, 'components/platform/PlatformScaffold.tsx');
   const source = await readFile(scaffoldPath, 'utf8');
 
   assert.ok(source.includes('<footer className={cn(\'border-t'));
   assert.ok(source.includes('© V-MATE'));
-  assert.ok(source.includes('17+'));
+  assert.equal(source.includes('17+'), false);
   assert.ok(source.includes('개인정보처리방침'));
   assert.ok(source.includes("onNavigate('/privacy')"));
 });
@@ -421,6 +421,14 @@ test('platform shell uses mobile bottom navigation, compact top tabs, and a conv
   assert.ok(source.includes('max-w-[1280px]'));
   assert.ok(source.includes('lg:hidden'));
   assert.equal(source.includes('isMobileNavOpen'), false);
+});
+
+test('platform header gives icon and search controls accessible names', async () => {
+  const scaffoldPath = path.join(srcRoot, 'components/platform/PlatformScaffold.tsx');
+  const source = await readFile(scaffoldPath, 'utf8');
+
+  assert.ok(source.includes('aria-label="캐릭터와 월드 검색"'));
+  assert.ok(source.includes("aria-label={user ? '보관함 열기' : '로그인'}"));
 });
 
 test('home keeps the exact two-column starter catalog while library grids remain responsive', async () => {

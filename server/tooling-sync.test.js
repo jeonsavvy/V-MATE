@@ -81,11 +81,12 @@ test('schema no longer depends on character-world link tables for room creation'
 
 test('b2c migration keeps owner authority private and user profile writes column-scoped', async () => {
   const migration = await readUtf8('supabase/migrations/20260718_b2c_platform.sql');
+  const schema = await readUtf8('supabase/schema.sql');
   const repository = await readUtf8('server/platform/supabase-platform-repository.js');
 
   assert.ok(migration.includes('create table if not exists public.owner_users'));
   assert.ok(migration.includes('revoke insert, update on public.profiles from anon, authenticated'));
-  assert.ok(migration.includes('grant update (handle, display_name, avatar_url, bio, age_confirmed_at, updated_at)'));
+  assert.ok(schema.includes('grant update (handle, display_name, avatar_url, bio, updated_at)'));
   assert.ok(migration.includes("key <> 'owner_user_ids'"));
   assert.equal(repository.includes(".eq('is_owner', true)"), false);
   assert.equal(repository.includes("owner_user_ids"), false);
@@ -119,7 +120,6 @@ test('function privilege migration exposes only intentional RPC contracts', asyn
   const migration = await readUtf8('supabase/migrations/20260721_function_privileges.sql');
   const schema = await readUtf8('supabase/schema.sql');
   const restrictedRpcSignatures = [
-    'public.has_confirmed_age()',
     'public.apply_content_report_action(uuid, text, text)',
     'public.get_daily_chat_quota(integer)',
     'public.reserve_daily_chat_message(text, integer)',
@@ -146,6 +146,33 @@ test('function privilege migration exposes only intentional RPC contracts', asyn
 
   assert.equal(migration.includes('public.is_owner_user() from public, anon'), false);
   assert.equal(migration.includes('public.is_content_publicly_allowed(text, uuid) from public, anon'), false);
+});
+
+test('age restriction removal keeps only rights attestation as the public publishing gate', async () => {
+  const migration = await readUtf8('supabase/migrations/20260721_remove_age_restrictions.sql');
+  const schema = await readUtf8('supabase/schema.sql');
+  const runtimeSources = await Promise.all([
+    readUtf8('server/platform/api.js'),
+    readUtf8('server/platform/supabase-platform-repository.js'),
+    readUtf8('src/components/AuthDialog.tsx'),
+    readUtf8('src/components/platform/Pages.tsx'),
+    readUtf8('src/components/platform/PlatformScaffold.tsx'),
+    readUtf8('src/lib/platform/apiClient.ts'),
+  ]);
+
+  assert.ok(migration.includes('drop function if exists public.has_confirmed_age()'));
+  assert.ok(migration.includes('alter table public.profiles drop column if exists age_confirmed_at'));
+  assert.ok(migration.includes("raw_user_meta_data, '{}'::jsonb) - 'ageConfirmed'"));
+  assert.ok(migration.includes("visibility <> 'public' or rights_attested_at is not null"));
+  assert.ok(schema.includes('alter table public.profiles drop column if exists age_confirmed_at'));
+  assert.ok(schema.includes("visibility <> 'public' or rights_attested_at is not null"));
+  assert.equal(schema.includes('create or replace function public.has_confirmed_age()'), false);
+  assert.equal(schema.includes('17+'), false);
+  for (const source of runtimeSources) {
+    assert.equal(source.includes('ageConfirmed'), false);
+    assert.equal(source.includes('AGE_CONFIRMATION_REQUIRED'), false);
+    assert.equal(source.includes('17+'), false);
+  }
 });
 
 test('production security cleanup keeps internal helpers and public bucket listings private', async () => {

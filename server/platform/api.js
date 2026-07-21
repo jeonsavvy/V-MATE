@@ -75,7 +75,6 @@ const normalizeCharacterPayload = (payload) => ({
   creatorName: String(payload.creatorName || '').trim(),
   sourceUrl: String(payload.sourceUrl || '').trim(),
   rightsConfirmed: payload.rightsConfirmed === true,
-  ageConfirmed: payload.ageConfirmed === true,
 });
 
 const normalizeWorldPayload = (payload) => ({
@@ -90,13 +89,11 @@ const normalizeWorldPayload = (payload) => ({
   creatorName: String(payload.creatorName || '').trim(),
   sourceUrl: String(payload.sourceUrl || '').trim(),
   rightsConfirmed: payload.rightsConfirmed === true,
-  ageConfirmed: payload.ageConfirmed === true,
 });
 
 const getPublishAttestationError = (payload) => {
   if (String(payload?.visibility || 'private') !== 'public') return null;
   if (payload?.rightsConfirmed !== true) return { error: '공개하려면 콘텐츠 권리 보유를 확인해야 합니다.', errorCode: 'RIGHTS_ATTESTATION_REQUIRED' };
-  if (payload?.ageConfirmed !== true) return { error: '공개하려면 17세 이상임을 확인해야 합니다.', errorCode: 'AGE_CONFIRMATION_REQUIRED' };
   return null;
 };
 const REPORT_REASONS = new Set(['sexual_content', 'minor_safety', 'hate_or_harassment', 'copyright', 'spam', 'other']);

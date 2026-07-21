@@ -208,9 +208,9 @@ export function PlatformShell({
           </nav>
           <label className="relative ml-auto block w-full max-w-[420px]" htmlFor="platform-search">
             <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-[#888]" />
-            <Input id="platform-search" value={searchValue} onChange={(event) => onSearchChange?.(event.target.value)} placeholder="캐릭터, 월드 검색" className="h-10 rounded-md border-[#dedede] bg-white pl-10 text-sm shadow-none placeholder:text-[#aaa]" />
+            <Input id="platform-search" aria-label="캐릭터와 월드 검색" value={searchValue} onChange={(event) => onSearchChange?.(event.target.value)} placeholder="캐릭터, 월드 검색" className="h-10 rounded-md border-[#dedede] bg-white pl-10 text-sm shadow-none placeholder:text-[#aaa]" />
           </label>
-          <button type="button" onClick={user ? () => onNavigate('/library') : onAuthRequest} className="flex size-10 shrink-0 items-center justify-center rounded-full border border-[#dedede] bg-white text-[#555] transition hover:border-[#bdbdbd] hover:text-[#171717]"><UserRound className="size-5" /></button>
+          <button type="button" aria-label={user ? '보관함 열기' : '로그인'} onClick={user ? () => onNavigate('/library') : onAuthRequest} className="flex size-10 shrink-0 items-center justify-center rounded-full border border-[#dedede] bg-white text-[#555] transition hover:border-[#bdbdbd] hover:text-[#171717]"><UserRound className="size-5" /></button>
         </div>
       </header>
 
@@ -235,7 +235,7 @@ export function PlatformShell({
           {children}
         </main>
         <footer className={cn('border-t border-[#e9e9e9] px-4 py-7 text-center text-xs text-[#808080]', showCombinationDock && 'mb-[150px] lg:mb-[86px]')}>
-          <span>© V-MATE · 17+</span><span className="mx-2">·</span><button type="button" onClick={() => onNavigate('/privacy')} className="underline-offset-4 hover:underline">개인정보처리방침</button>
+          <span>© V-MATE</span><span className="mx-2">·</span><button type="button" onClick={() => onNavigate('/privacy')} className="underline-offset-4 hover:underline">개인정보처리방침</button>
         </footer>
       </div>
 

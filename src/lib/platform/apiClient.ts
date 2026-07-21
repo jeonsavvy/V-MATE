@@ -125,7 +125,6 @@ export const platformApi = {
     sourceType: string
     sourceUrl?: string
     rightsConfirmed?: boolean
-    ageConfirmed?: boolean
     creatorName?: string
     coverImageUrl?: string
     avatarImageUrl?: string
@@ -143,7 +142,6 @@ export const platformApi = {
     sourceType: string
     sourceUrl?: string
     rightsConfirmed?: boolean
-    ageConfirmed?: boolean
     creatorName?: string
     coverImageUrl?: string
     avatarImageUrl?: string
@@ -162,7 +160,6 @@ export const platformApi = {
     sourceType: string
     sourceUrl?: string
     rightsConfirmed?: boolean
-    ageConfirmed?: boolean
     creatorName?: string
     coverImageUrl?: string
     worldRulesMarkdown?: string
@@ -178,7 +175,6 @@ export const platformApi = {
     sourceType: string
     sourceUrl?: string
     rightsConfirmed?: boolean
-    ageConfirmed?: boolean
     creatorName?: string
     coverImageUrl?: string
     worldRulesMarkdown?: string

@@ -42,7 +42,6 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
   const [signUpEmail, setSignUpEmail] = useState("")
   const [signUpPassword, setSignUpPassword] = useState("")
   const [signUpConfirmPassword, setSignUpConfirmPassword] = useState("")
-  const [signUpAgeConfirmed, setSignUpAgeConfirmed] = useState(false)
   const [resetEmail, setResetEmail] = useState("")
 
   useEffect(() => {
@@ -103,11 +102,6 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
       toast.error("비밀번호가 일치하지 않습니다.")
       return
     }
-    if (!signUpAgeConfirmed) {
-      toast.error("V-MATE는 만 17세 이상만 가입할 수 있습니다.")
-      return
-    }
-
     setIsLoading(true)
 
     try {
@@ -118,7 +112,6 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
         options: {
           data: {
             name: signUpName,
-            ageConfirmed: true,
           },
           ...(redirectOrigin ? { emailRedirectTo: redirectOrigin } : {}),
         },
@@ -142,7 +135,6 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
           setSignUpPassword("")
           setSignUpConfirmPassword("")
           setSignUpName("")
-          setSignUpAgeConfirmed(false)
           onSuccess?.()
         } else {
           toast.success("회원가입 성공! 이메일을 확인해주세요.")
@@ -151,7 +143,6 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
           setSignUpPassword("")
           setSignUpConfirmPassword("")
           setSignUpName("")
-          setSignUpAgeConfirmed(false)
         }
       }
     } catch (error: unknown) {
@@ -338,10 +329,6 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
                       autoComplete="new-password"
                     />
                   </div>
-                  <label className="flex items-start gap-3 rounded-lg border border-border bg-secondary/35 p-3 text-sm text-muted-foreground">
-                    <input type="checkbox" checked={signUpAgeConfirmed} onChange={(event) => setSignUpAgeConfirmed(event.target.checked)} className="mt-0.5 size-4 accent-[#ff5148]" />
-                    <span><strong className="text-foreground">만 17세 이상입니다.</strong><br />로맨스·갈등·비노골적 폭력 표현이 포함될 수 있습니다.</span>
-                  </label>
                   <Button type="submit" className="w-full" disabled={isLoading}>
                     {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                     회원가입

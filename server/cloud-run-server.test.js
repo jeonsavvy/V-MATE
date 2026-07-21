@@ -214,18 +214,10 @@ test('public character publishing requires a rights attestation at the api bound
     assert.equal(rejected.status, 400);
     assert.equal((await rejected.json()).error_code, 'RIGHTS_ATTESTATION_REQUIRED');
 
-    const ageRejected = await fetch(`${baseUrl}/api/characters`, {
-      method: 'POST',
-      headers: { Origin: 'http://localhost:5173', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...body, rightsConfirmed: true }),
-    });
-    assert.equal(ageRejected.status, 400);
-    assert.equal((await ageRejected.json()).error_code, 'AGE_CONFIRMATION_REQUIRED');
-
     const accepted = await fetch(`${baseUrl}/api/characters`, {
       method: 'POST',
       headers: { Origin: 'http://localhost:5173', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...body, rightsConfirmed: true, ageConfirmed: true }),
+      body: JSON.stringify({ ...body, rightsConfirmed: true }),
     });
     assert.equal(accepted.status, 201);
     const payload = await accepted.json();

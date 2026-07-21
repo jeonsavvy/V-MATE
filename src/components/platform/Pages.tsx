@@ -937,11 +937,10 @@ const CreateTypeTabs = ({ active, onNavigate }: { active: 'character' | 'world';
   </div>
 )
 
-const PublishingAttestation = ({ rightsConfirmed, ageConfirmed, onRightsChange, onAgeChange }: { rightsConfirmed: boolean; ageConfirmed: boolean; onRightsChange: (value: boolean) => void; onAgeChange: (value: boolean) => void }) => (
+const PublishingAttestation = ({ rightsConfirmed, onRightsChange }: { rightsConfirmed: boolean; onRightsChange: (value: boolean) => void }) => (
   <div className="space-y-3 rounded-lg border border-[#e7e7e7] bg-[#fff7f6] p-4 text-sm text-[#5f5551]">
     <p className="font-bold text-[#ff5148]">공개 전 확인</p>
     <label className="flex items-start gap-3"><input type="checkbox" checked={rightsConfirmed} onChange={(event) => onRightsChange(event.target.checked)} className="mt-0.5 size-4 accent-[#ff5148]" /><span>이 콘텐츠와 업로드 이미지의 공개 권리를 보유하고 있습니다.</span></label>
-    <label className="flex items-start gap-3"><input type="checkbox" checked={ageConfirmed} onChange={(event) => onAgeChange(event.target.checked)} className="mt-0.5 size-4 accent-[#ff5148]" /><span>만 17세 이상이며 커뮤니티 운영 정책에 동의합니다.</span></label>
   </div>
 )
 
@@ -954,7 +953,6 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
   const [sourceUrl, setSourceUrl] = useState('')
   const [visibility, setVisibility] = useState<'private' | 'public'>('private')
   const [rightsConfirmed, setRightsConfirmed] = useState(false)
-  const [ageConfirmed, setAgeConfirmed] = useState(false)
   const [characterPrompt, setCharacterPrompt] = useState('')
   const [characterIntro, setCharacterIntro] = useState('')
   const [processingSlotId, setProcessingSlotId] = useState<string | null>(null)
@@ -1079,7 +1077,7 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
               </select>
             </label>
             {sourceType === 'derivative' ? <Input value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} placeholder="원작 또는 출처 URL" /> : null}
-            {visibility === 'public' ? <PublishingAttestation rightsConfirmed={rightsConfirmed} ageConfirmed={ageConfirmed} onRightsChange={setRightsConfirmed} onAgeChange={setAgeConfirmed} /> : null}
+            {visibility === 'public' ? <PublishingAttestation rightsConfirmed={rightsConfirmed} onRightsChange={setRightsConfirmed} /> : null}
           </div>
         </PageSection>
 
@@ -1149,7 +1147,7 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
               <Trash2 className="h-4 w-4" />캐릭터 삭제
             </Button>
           ) : <span />}
-          <Button disabled={isHydrating || processingSlotId !== null || !name.trim() || !headline.trim() || !characterPrompt.trim() || !mainSlot.previewUrl || (visibility === 'public' && (!rightsConfirmed || !ageConfirmed))} onClick={() => {
+          <Button disabled={isHydrating || processingSlotId !== null || !name.trim() || !headline.trim() || !characterPrompt.trim() || !mainSlot.previewUrl || (visibility === 'public' && !rightsConfirmed)} onClick={() => {
             void (async () => {
               const slotAssets = imageSlots.flatMap((slot) => slot.assets)
               const uploadedAssets = slotAssets.length > 0
@@ -1176,7 +1174,6 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
                 sourceType,
                 sourceUrl: sourceType === 'derivative' ? sourceUrl.trim() : '',
                 rightsConfirmed,
-                ageConfirmed,
                 creatorName,
                 coverImageUrl: detailUrl,
                 avatarImageUrl: cardUrl,
@@ -1219,7 +1216,6 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
   const [sourceUrl, setSourceUrl] = useState('')
   const [visibility, setVisibility] = useState<'private' | 'public'>('private')
   const [rightsConfirmed, setRightsConfirmed] = useState(false)
-  const [ageConfirmed, setAgeConfirmed] = useState(false)
   const [worldPrompt, setWorldPrompt] = useState('')
   const [worldIntro, setWorldIntro] = useState('')
   const [processingSlotId, setProcessingSlotId] = useState<string | null>(null)
@@ -1343,7 +1339,7 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
               </select>
             </label>
             {sourceType === 'derivative' ? <Input value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} placeholder="원작 또는 출처 URL" /> : null}
-            {visibility === 'public' ? <PublishingAttestation rightsConfirmed={rightsConfirmed} ageConfirmed={ageConfirmed} onRightsChange={setRightsConfirmed} onAgeChange={setAgeConfirmed} /> : null}
+            {visibility === 'public' ? <PublishingAttestation rightsConfirmed={rightsConfirmed} onRightsChange={setRightsConfirmed} /> : null}
           </div>
         </PageSection>
 
@@ -1412,7 +1408,7 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
               <Trash2 className="h-4 w-4" />월드 삭제
             </Button>
           ) : <span />}
-          <Button disabled={isHydrating || processingSlotId !== null || !name.trim() || !headline.trim() || !worldPrompt.trim() || !mainSlot.previewUrl || (visibility === 'public' && (!rightsConfirmed || !ageConfirmed))} onClick={() => {
+          <Button disabled={isHydrating || processingSlotId !== null || !name.trim() || !headline.trim() || !worldPrompt.trim() || !mainSlot.previewUrl || (visibility === 'public' && !rightsConfirmed)} onClick={() => {
             void (async () => {
               const slotAssets = imageSlots.flatMap((slot) => slot.assets)
               const uploadedAssets = slotAssets.length > 0
@@ -1430,7 +1426,6 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
                 sourceType,
                 sourceUrl: sourceType === 'derivative' ? sourceUrl.trim() : '',
                 rightsConfirmed,
-                ageConfirmed,
                 creatorName,
                 coverImageUrl: heroUrl,
                 worldRulesMarkdown: worldPrompt,

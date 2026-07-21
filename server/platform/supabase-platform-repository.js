@@ -844,10 +844,6 @@ export const getLibraryPayload = async ({ event, userId }) => {
 export const createCharacter = async ({ event, userId, payload }) => {
   const client = await userClient(event);
   if (!client) return null;
-  if (payload.visibility === 'public' && payload.ageConfirmed) {
-    const { error: profileError } = await client.from('profiles').upsert({ user_id: userId, age_confirmed_at: nowIso(), updated_at: nowIso() }, { onConflict: 'user_id' });
-    if (profileError) throw profileError;
-  }
   const creatorName = String(payload.creatorName || payload.profileJson?.creatorName || payload.promptProfileJson?.creatorName || '').trim();
   const insertPayload = {
     owner_user_id: userId,
@@ -881,10 +877,6 @@ export const createCharacter = async ({ event, userId, payload }) => {
 export const updateCharacter = async ({ event, userId, slug, payload }) => {
   const client = await userClient(event);
   if (!client) return null;
-  if (payload.visibility === 'public' && payload.ageConfirmed) {
-    const { error: profileError } = await client.from('profiles').upsert({ user_id: userId, age_confirmed_at: nowIso(), updated_at: nowIso() }, { onConflict: 'user_id' });
-    if (profileError) throw profileError;
-  }
   const creatorName = String(payload.creatorName || payload.profileJson?.creatorName || payload.promptProfileJson?.creatorName || '').trim();
   const updatePayload = {
     name: payload.name,
@@ -918,10 +910,6 @@ export const updateCharacter = async ({ event, userId, slug, payload }) => {
 export const createWorld = async ({ event, userId, payload }) => {
   const client = await userClient(event);
   if (!client) return null;
-  if (payload.visibility === 'public' && payload.ageConfirmed) {
-    const { error: profileError } = await client.from('profiles').upsert({ user_id: userId, age_confirmed_at: nowIso(), updated_at: nowIso() }, { onConflict: 'user_id' });
-    if (profileError) throw profileError;
-  }
   const creatorName = String(payload.creatorName || payload.promptProfileJson?.creatorName || '').trim();
   const insertPayload = {
     owner_user_id: userId,
@@ -953,10 +941,6 @@ export const createWorld = async ({ event, userId, payload }) => {
 export const updateWorld = async ({ event, userId, slug, payload }) => {
   const client = await userClient(event);
   if (!client) return null;
-  if (payload.visibility === 'public' && payload.ageConfirmed) {
-    const { error: profileError } = await client.from('profiles').upsert({ user_id: userId, age_confirmed_at: nowIso(), updated_at: nowIso() }, { onConflict: 'user_id' });
-    if (profileError) throw profileError;
-  }
   const creatorName = String(payload.creatorName || payload.promptProfileJson?.creatorName || '').trim();
   const updatePayload = {
     name: payload.name,
