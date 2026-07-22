@@ -175,7 +175,7 @@ function SelectionSlot({ item, type, onClear, onNavigate }: { item: EntitySummar
         <>
           <img src={imageUrl} alt="" decoding="async" className="size-10 shrink-0 rounded-md object-cover" />
           <div className="min-w-0 flex-1">
-            <p className="text-[10px] font-semibold text-[#8c8c8c]">{type === 'character' ? '캐릭터' : '월드 · 선택 사항'}</p>
+            <p className="text-[10px] font-semibold text-[#666]">{type === 'character' ? '캐릭터' : '월드 · 선택 사항'}</p>
             <p className="truncate text-sm font-bold text-[#171717]">{item.name}</p>
           </div>
           <button type="button" onClick={onClear} aria-label={`${item.name} 선택 해제`} className="flex size-10 shrink-0 items-center justify-center rounded-md text-[#888888] transition hover:bg-[#f3f3f3] hover:text-[#171717]"><X className="size-4" /></button>
@@ -183,7 +183,7 @@ function SelectionSlot({ item, type, onClear, onNavigate }: { item: EntitySummar
       ) : (
         <button type="button" onClick={() => onNavigate('/')} className="flex w-full items-center gap-2.5 text-left">
           <span className="flex size-10 shrink-0 items-center justify-center rounded-md border border-dashed border-[#cfcfcf] bg-white text-[#ff5148]">+</span>
-          <span><span className="block text-[10px] font-semibold text-[#8c8c8c]">{type === 'character' ? '필수' : '선택 사항'}</span><span className="block text-sm font-bold text-[#4d4d4d]">{type === 'character' ? '캐릭터 선택' : '월드 선택'}</span></span>
+          <span><span className="block text-[10px] font-semibold text-[#666]">{type === 'character' ? '필수' : '선택 사항'}</span><span className="block text-sm font-bold text-[#4d4d4d]">{type === 'character' ? '캐릭터 선택' : '월드 선택'}</span></span>
         </button>
       )}
     </div>
@@ -203,7 +203,7 @@ function CombinationDock({ character, world, isStarting, onClear, onStart, onNav
       <div className="mx-auto grid max-w-[1440px] grid-cols-2 items-stretch gap-2 sm:flex">
         <SelectionSlot item={character} type="character" onClear={() => onClear?.('character')} onNavigate={onNavigate} />
         <SelectionSlot item={world} type="world" onClear={() => onClear?.('world')} onNavigate={onNavigate} />
-        <Button onClick={() => void onStart?.()} disabled={isStarting || !character} className="col-span-2 h-11 shrink-0 rounded-md bg-[#ff5148] px-5 font-bold text-white shadow-none hover:bg-[#e94740] sm:h-auto sm:min-h-14 sm:min-w-[210px]">
+        <Button onClick={() => void onStart?.()} disabled={isStarting || !character} className="col-span-2 h-11 shrink-0 rounded-md bg-[#d43a34] px-5 font-bold text-white shadow-none hover:bg-[#c9342f] sm:h-auto sm:min-h-14 sm:min-w-[210px]">
           {isStarting ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
           {isStarting ? '대화 여는 중…' : character ? '대화 시작' : '캐릭터를 선택하세요'}
           {!isStarting ? <ChevronRight className="ml-1 size-4" /> : null}
@@ -232,14 +232,14 @@ export function PlatformShell({
 }: PlatformShellProps) {
   return (
     <div className="min-h-dvh bg-white text-[#171717]">
-      <a href="#platform-main" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[70] focus:rounded-md focus:bg-[#ff5148] focus:px-4 focus:py-2 focus:text-white">본문으로 건너뛰기</a>
+      <a href="#platform-main" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[70] focus:rounded-md focus:bg-[#d43a34] focus:px-4 focus:py-2 focus:text-white">본문으로 건너뛰기</a>
 
       <header className="fixed inset-x-0 top-0 z-50 h-16 border-b border-[#e7e7e7] bg-white">
         <div className="flex h-full items-center gap-3 px-4 sm:px-5">
           <NavigationLink path="/" onNavigate={onNavigate} className="w-auto shrink-0 text-left lg:w-[212px]" ariaLabel="V-MATE 홈"><BrandMark /></NavigationLink>
           <nav className="hidden h-full items-center gap-1 lg:flex" aria-label="주요 메뉴">
             {navItems.map(({ label, path }) => (
-              <NavigationLink key={path} path={path} onNavigate={onNavigate} className={cn('relative flex h-full items-center px-3 text-sm font-bold transition', isNavActive(path) ? 'text-[#171717] after:absolute after:inset-x-3 after:bottom-0 after:h-0.5 after:bg-[#ff5148]' : 'text-[#686868] hover:text-[#171717]')}>
+              <NavigationLink key={path} path={path} onNavigate={onNavigate} className={cn('relative flex h-full items-center px-3 text-sm font-bold transition', isNavActive(path) ? 'text-[#171717] after:absolute after:inset-x-3 after:bottom-0 after:h-0.5 after:bg-[#d43a34]' : 'text-[#686868] hover:text-[#171717]')}>
                 {label}
               </NavigationLink>
             ))}
@@ -271,7 +271,7 @@ export function PlatformShell({
         <main id="platform-main" className={cn('mx-auto w-full max-w-[1280px] px-4 py-5 sm:px-6 sm:py-8 lg:px-10', showCombinationDock ? 'pb-44 sm:pb-36 lg:pb-28' : 'pb-24 lg:pb-10')}>
           {children}
         </main>
-        <footer className={cn('border-t border-[#e9e9e9] px-4 py-7 text-center text-xs text-[#808080]', showCombinationDock && 'mb-[150px] lg:mb-[86px]')}>
+        <footer className={cn('border-t border-[#e9e9e9] px-4 py-7 text-center text-xs text-[#666]', showCombinationDock && 'mb-[150px] lg:mb-[86px]')}>
           <span>© V-MATE</span><span className="mx-2">·</span><NavigationLink path="/privacy" onNavigate={onNavigate} className="underline-offset-4 hover:underline">개인정보처리방침</NavigationLink>
         </footer>
       </div>
@@ -304,7 +304,7 @@ export function ArtworkFrame({ src, srcSet, sizes, alt, aspectClassName, imageCl
 }
 
 export function FilterChip({ active = false, children, onClick }: { active?: boolean; children: ReactNode; onClick?: () => void }) {
-  return <button type="button" onClick={onClick} className={cn('min-h-11 rounded-full border px-3 py-1.5 text-xs font-semibold transition', active ? 'border-[#ff5148] bg-[#ff5148] text-white' : 'border-[#dedede] bg-white text-[#666] hover:border-[#bdbdbd] hover:text-[#171717]')}>{children}</button>
+  return <button type="button" onClick={onClick} className={cn('min-h-11 rounded-full border px-3 py-1.5 text-xs font-semibold transition', active ? 'border-[#d43a34] bg-[#d43a34] text-white' : 'border-[#dedede] bg-white text-[#666] hover:border-[#bdbdbd] hover:text-[#171717]')}>{children}</button>
 }
 
 type ArtworkSources = {
@@ -312,14 +312,19 @@ type ArtworkSources = {
   srcSet?: string
 }
 
-const OFFICIAL_STARTER_SLOTS: Record<string, CharacterImageSlot> = {
-  '/starter/character-a.webp': { id: 'character-a-main', slot: 'main', usage: '대표', trigger: '', priority: 0, thumbUrl: '/starter/character-a-thumb-v1.webp', cardUrl: '/starter/character-a-card-v1.webp', detailUrl: '/starter/character-a-detail-v1.webp' },
-  '/starter/character-b.webp': { id: 'character-b-main', slot: 'main', usage: '대표', trigger: '', priority: 0, thumbUrl: '/starter/character-b-thumb-v1.webp', cardUrl: '/starter/character-b-card-v1.webp', detailUrl: '/starter/character-b-detail-v1.webp' },
-  '/starter/world-a.webp': { id: 'world-a-main', slot: 'main', usage: '대표', trigger: '', priority: 0, thumbUrl: '/starter/world-a-thumb-v1.webp', cardUrl: '/starter/world-a-card-v1.webp', detailUrl: '/starter/world-a-hero-v1.webp' },
-  '/starter/world-b.webp': { id: 'world-b-main', slot: 'main', usage: '대표', trigger: '', priority: 0, thumbUrl: '/starter/world-b-thumb-v1.webp', cardUrl: '/starter/world-b-card-v1.webp', detailUrl: '/starter/world-b-hero-v1.webp' },
+type ArtworkSlot = CharacterImageSlot & {
+  feedUrl?: string
+  feedWidth?: number
 }
 
-const resolveArtworkSlot = (item: EntitySummary) => {
+const OFFICIAL_STARTER_SLOTS: Record<string, ArtworkSlot> = {
+  '/starter/character-a.webp': { id: 'character-a-main', slot: 'main', usage: '대표', trigger: '', priority: 0, thumbUrl: '/starter/character-a-thumb-v1.webp', feedUrl: '/starter/character-a-feed-v2.webp', feedWidth: 400, cardUrl: '/starter/character-a-card-v1.webp', detailUrl: '/starter/character-a-detail-v1.webp' },
+  '/starter/character-b.webp': { id: 'character-b-main', slot: 'main', usage: '대표', trigger: '', priority: 0, thumbUrl: '/starter/character-b-thumb-v1.webp', feedUrl: '/starter/character-b-feed-v2.webp', feedWidth: 400, cardUrl: '/starter/character-b-card-v1.webp', detailUrl: '/starter/character-b-detail-v1.webp' },
+  '/starter/world-a.webp': { id: 'world-a-main', slot: 'main', usage: '대표', trigger: '', priority: 0, thumbUrl: '/starter/world-a-thumb-v1.webp', feedUrl: '/starter/world-a-feed-v2.webp', feedWidth: 400, cardUrl: '/starter/world-a-card-v1.webp', detailUrl: '/starter/world-a-hero-v1.webp' },
+  '/starter/world-b.webp': { id: 'world-b-main', slot: 'main', usage: '대표', trigger: '', priority: 0, thumbUrl: '/starter/world-b-thumb-v1.webp', feedUrl: '/starter/world-b-feed-v2.webp', feedWidth: 400, cardUrl: '/starter/world-b-card-v1.webp', detailUrl: '/starter/world-b-hero-v1.webp' },
+}
+
+const resolveArtworkSlot = (item: EntitySummary): ArtworkSlot | undefined => {
   const imageSlots = 'imageSlots' in item && Array.isArray(item.imageSlots) ? item.imageSlots : []
   const generatedSlot = imageSlots.find((entry) => entry.slot === 'main') || imageSlots.find((entry) => entry.detailUrl || entry.cardUrl || entry.thumbUrl)
   if (generatedSlot) return generatedSlot
@@ -327,11 +332,15 @@ const resolveArtworkSlot = (item: EntitySummary) => {
   return OFFICIAL_STARTER_SLOTS[officialSource] || OFFICIAL_STARTER_SLOTS[item.coverImageUrl]
 }
 
-const buildArtworkSrcSet = (item: EntitySummary, slot?: CharacterImageSlot) => {
+const buildArtworkSrcSet = (item: EntitySummary, slot?: ArtworkSlot) => {
   if (!slot) return undefined
   const widths = item.entityType === 'character' ? [300, 600, 768] : [320, 640, 1280]
-  const urls = [slot.thumbUrl, slot.cardUrl, slot.detailUrl]
-  const candidates = urls.flatMap((url, index) => url ? [`${url} ${widths[index]}w`] : [])
+  const candidates = [
+    slot.thumbUrl ? `${slot.thumbUrl} ${widths[0]}w` : '',
+    slot.feedUrl && slot.feedWidth ? `${slot.feedUrl} ${slot.feedWidth}w` : '',
+    slot.cardUrl ? `${slot.cardUrl} ${widths[1]}w` : '',
+    slot.detailUrl ? `${slot.detailUrl} ${widths[2]}w` : '',
+  ].filter(Boolean)
   return candidates.length > 1 ? candidates.join(', ') : undefined
 }
 
@@ -358,8 +367,8 @@ export function EntityCard({ item, meta, onClick, onSelect, cta = '상세 보기
       </button>
       <div className="flex flex-1 flex-col pt-3">
         <button type="button" onClick={onClick} className="text-left"><h3 className="line-clamp-1 text-[1.02rem] font-bold tracking-[-0.025em] text-[#171717]">{item.name}</h3><p className="mt-1 line-clamp-2 min-h-10 text-sm leading-5 text-[#666]">{item.headline || item.summary}</p></button>
-        <div className="mt-2 flex flex-wrap gap-x-2 gap-y-1">{item.tags.slice(0, 3).map((tag) => <span key={tag} className="text-[11px] font-medium text-[#888]">#{tag}</span>)}</div>
-        <div className="mt-auto flex items-center justify-between gap-2 pt-3"><span className="truncate text-[11px] text-[#777]">{meta || `제작자 ${item.creator.name}`}</span>{onSelect ? <Button size="sm" variant={selected ? 'default' : 'outline'} onClick={onSelect} className={cn('h-11 rounded-md px-3 text-xs shadow-none', selected ? 'bg-[#ff5148] hover:bg-[#e94740]' : 'border-[#d8d8d8] bg-white hover:border-[#ff5148] hover:bg-white hover:text-[#ff5148]')}>{selected ? '선택됨' : '선택'}</Button> : <span className="text-xs font-bold text-[#ff5148]">{cta}</span>}</div>
+        <div className="mt-2 flex flex-wrap gap-x-2 gap-y-1">{item.tags.slice(0, 3).map((tag) => <span key={tag} className="text-[11px] font-medium text-[#666]">#{tag}</span>)}</div>
+        <div className="mt-auto flex items-center justify-between gap-2 pt-3"><span className="truncate text-[11px] text-[#707070]">{meta || `제작자 ${item.creator.name}`}</span>{onSelect ? <Button size="sm" variant={selected ? 'default' : 'outline'} onClick={onSelect} className={cn('h-11 rounded-md px-3 text-xs shadow-none', selected ? 'bg-[#d43a34] hover:bg-[#c9342f]' : 'border-[#d8d8d8] bg-white hover:border-[#ff5148] hover:bg-white hover:text-[#c9342f]')}>{selected ? '선택됨' : '선택'}</Button> : <span className="text-xs font-bold text-[#c9342f]">{cta}</span>}</div>
       </div>
     </article>
   )

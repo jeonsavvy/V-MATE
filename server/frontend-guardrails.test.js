@@ -13,6 +13,7 @@ test('versioned frontend assets use immutable browser caching and bounded image 
   const headers = await readFile(path.join(repoRoot, 'public', '_headers'), 'utf8');
   assert.match(headers, /\/assets\/\*/);
   assert.match(headers, /\/starter\/\*-v1\.webp/);
+  assert.match(headers, /\/starter\/\*-v2\.webp/);
   assert.match(headers, /Cache-Control: public, max-age=31556952, immutable/);
 
   const assetLimits = {
@@ -28,12 +29,21 @@ test('versioned frontend assets use immutable browser caching and bounded image 
     'world-b-thumb-v1.webp': 25_000,
     'world-b-card-v1.webp': 70_000,
     'world-b-hero-v1.webp': 210_000,
+    'character-a-feed-v2.webp': 70_000,
+    'character-b-feed-v2.webp': 60_000,
+    'world-a-feed-v2.webp': 30_000,
+    'world-b-feed-v2.webp': 30_000,
   };
 
   for (const [fileName, maxBytes] of Object.entries(assetLimits)) {
     const file = await stat(path.join(repoRoot, 'public', 'starter', fileName));
     assert.ok(file.size <= maxBytes, `${fileName} exceeds ${maxBytes} bytes (${file.size})`);
   }
+});
+
+test('robots policy remains valid without restricting public routes', async () => {
+  const robots = await readFile(path.join(repoRoot, 'public', 'robots.txt'), 'utf8');
+  assert.equal(robots, 'User-agent: *\nDisallow:\n');
 });
 
 const walkFiles = async (rootDir) => {

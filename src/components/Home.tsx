@@ -106,14 +106,14 @@ export function Home(props: HomeProps) {
             <h2 id="character-title" className="text-xl font-black tracking-[-0.04em] text-[#171717]">캐릭터</h2>
             <div className="flex gap-1.5"><FilterChip active={characterFilter === 'popular'} onClick={() => setCharacterFilter('popular')}>인기순</FilterChip><FilterChip active={characterFilter === 'new'} onClick={() => setCharacterFilter('new')}>신작</FilterChip></div>
           </div>
-          {isLoading ? <CardSkeletons type="character" count={2} /> : characters.length === 0 ? <EmptyState title={searchQuery ? '검색 결과가 없습니다' : '공개된 캐릭터가 없습니다'} description={searchQuery ? '다른 이름이나 태그로 검색해 보세요.' : '직접 캐릭터를 만들 수 있습니다.'} action={!searchQuery ? <Button onClick={() => user ? onNavigate('/create/character') : onAuthRequest()} className="bg-[#ff5148] shadow-none hover:bg-[#e94740]">캐릭터 만들기</Button> : null} /> : (
+          {isLoading ? <CardSkeletons type="character" count={2} /> : characters.length === 0 ? <EmptyState title={searchQuery ? '검색 결과가 없습니다' : '공개된 캐릭터가 없습니다'} description={searchQuery ? '다른 이름이나 태그로 검색해 보세요.' : '직접 캐릭터를 만들 수 있습니다.'} action={!searchQuery ? <Button onClick={() => user ? onNavigate('/create/character') : onAuthRequest()} className="bg-[#d43a34] shadow-none hover:bg-[#c9342f]">캐릭터 만들기</Button> : null} /> : (
             <div data-catalog-grid="characters" className="grid grid-cols-2 gap-x-3 gap-y-8 sm:gap-x-5">{characters.map((item, index) => <EntityCard key={item.id} item={item} priority={index === 0} selected={selectedCharacter?.id === item.id} onClick={() => onNavigate(`/characters/${item.slug}`)} onSelect={() => onSelectEntity(item)} />)}</div>
           )}
         </section>
 
         <section aria-labelledby="world-title" className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3"><h2 id="world-title" className="text-xl font-black tracking-[-0.04em] text-[#171717]">월드</h2><div className="flex gap-1.5"><FilterChip active={worldFilter === 'new'} onClick={() => setWorldFilter('new')}>신작</FilterChip><FilterChip active={worldFilter === 'popular'} onClick={() => setWorldFilter('popular')}>인기순</FilterChip></div></div>
-          {isLoading ? <CardSkeletons type="world" count={2} /> : worlds.length === 0 ? <EmptyState title={searchQuery ? '검색 결과가 없습니다' : '공개된 월드가 없습니다'} description={searchQuery ? '다른 이름이나 태그로 검색해 보세요.' : '직접 월드를 만들 수 있습니다.'} action={!searchQuery ? <Button onClick={() => user ? onNavigate('/create/world') : onAuthRequest()} className="bg-[#ff5148] shadow-none hover:bg-[#e94740]">월드 만들기</Button> : null} /> : (
+          {isLoading ? <CardSkeletons type="world" count={2} /> : worlds.length === 0 ? <EmptyState title={searchQuery ? '검색 결과가 없습니다' : '공개된 월드가 없습니다'} description={searchQuery ? '다른 이름이나 태그로 검색해 보세요.' : '직접 월드를 만들 수 있습니다.'} action={!searchQuery ? <Button onClick={() => user ? onNavigate('/create/world') : onAuthRequest()} className="bg-[#d43a34] shadow-none hover:bg-[#c9342f]">월드 만들기</Button> : null} /> : (
             <div data-catalog-grid="worlds" className="grid grid-cols-2 gap-x-3 gap-y-8 sm:gap-x-5">{worlds.map((item, index) => <EntityCard key={item.id} item={item} priority={index === 0} selected={selectedWorld?.id === item.id} onClick={() => onNavigate(`/worlds/${item.slug}`)} onSelect={() => onSelectEntity(item)} />)}</div>
           )}
         </section>

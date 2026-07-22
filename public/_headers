@@ -3,3 +3,6 @@
 
 /starter/*-v1.webp
   Cache-Control: public, max-age=31556952, immutable
+
+/starter/*-v2.webp
+  Cache-Control: public, max-age=31556952, immutable

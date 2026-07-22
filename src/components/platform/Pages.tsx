@@ -101,7 +101,7 @@ const OwnedContentDeleteDialog = ({
       </div>
       <div className="flex justify-end gap-3">
         <Button variant="outline" onClick={onCancel} disabled={isDeleting}>취소</Button>
-        <Button className="bg-[#ff5148] text-white hover:bg-[#e94740]" onClick={onConfirm} disabled={isDeleting}>
+        <Button className="bg-[#d43a34] text-white hover:bg-[#c9342f]" onClick={onConfirm} disabled={isDeleting}>
           {isDeleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}삭제
         </Button>
       </div>
@@ -120,7 +120,7 @@ const ReportDialog = ({ open, onOpenChange, entityType, entityId, entityName }: 
       .catch((error) => toast.error(error instanceof Error ? error.message : '신고를 접수하지 못했습니다.'))
       .finally(() => setIsSubmitting(false))
   }
-  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="rounded-xl border-[#e7e7e7] bg-white sm:max-w-md"><DialogHeader><DialogTitle>{entityName} 신고</DialogTitle><DialogDescription>신고 사유를 선택해 주세요. 같은 콘텐츠는 한 번만 신고할 수 있습니다.</DialogDescription></DialogHeader><label className="space-y-2 text-sm font-semibold text-[#555]" htmlFor="report-reason"><span>신고 사유</span><select id="report-reason" name="report-reason" value={reason} onChange={(event) => setReason(event.target.value)} className="h-11 w-full rounded-lg border border-[#d8d8d8] bg-white px-3 text-sm font-normal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2"><option value="sexual_content">노골적인 성적 콘텐츠</option><option value="minor_safety">미성년자 안전</option><option value="hate_or_harassment">혐오·괴롭힘</option><option value="copyright">저작권·권리 침해</option><option value="spam">스팸·기만</option><option value="other">기타</option></select></label><label className="space-y-2 text-sm font-semibold text-[#555]" htmlFor="report-details"><span>상세 내용 <span className="font-normal text-[#888]">(선택)</span></span><textarea id="report-details" name="report-details" value={details} onChange={(event) => setDetails(event.target.value)} placeholder="검토에 필요한 내용을 적어 주세요." className="min-h-28 w-full rounded-lg border border-[#d8d8d8] bg-white px-4 py-3 text-sm font-normal text-[#171717] placeholder:text-[#aaaaaa] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2" maxLength={1000} /></label><DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>취소</Button><Button onClick={submit} disabled={isSubmitting} className="bg-[#ff5148] text-white hover:bg-[#e94740]">{isSubmitting ? <Loader2 className="size-4 animate-spin" /> : <Flag className="size-4" />}{isSubmitting ? '접수 중…' : '신고 접수'}</Button></DialogFooter></DialogContent></Dialog>
+  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="rounded-xl border-[#e7e7e7] bg-white sm:max-w-md"><DialogHeader><DialogTitle>{entityName} 신고</DialogTitle><DialogDescription>신고 사유를 선택해 주세요. 같은 콘텐츠는 한 번만 신고할 수 있습니다.</DialogDescription></DialogHeader><label className="space-y-2 text-sm font-semibold text-[#555]" htmlFor="report-reason"><span>신고 사유</span><select id="report-reason" name="report-reason" value={reason} onChange={(event) => setReason(event.target.value)} className="h-11 w-full rounded-lg border border-[#d8d8d8] bg-white px-3 text-sm font-normal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2"><option value="sexual_content">노골적인 성적 콘텐츠</option><option value="minor_safety">미성년자 안전</option><option value="hate_or_harassment">혐오·괴롭힘</option><option value="copyright">저작권·권리 침해</option><option value="spam">스팸·기만</option><option value="other">기타</option></select></label><label className="space-y-2 text-sm font-semibold text-[#555]" htmlFor="report-details"><span>상세 내용 <span className="font-normal text-[#888]">(선택)</span></span><textarea id="report-details" name="report-details" value={details} onChange={(event) => setDetails(event.target.value)} placeholder="검토에 필요한 내용을 적어 주세요." className="min-h-28 w-full rounded-lg border border-[#d8d8d8] bg-white px-4 py-3 text-sm font-normal text-[#171717] placeholder:text-[#aaaaaa] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2" maxLength={1000} /></label><DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>취소</Button><Button onClick={submit} disabled={isSubmitting} className="bg-[#d43a34] text-white hover:bg-[#c9342f]">{isSubmitting ? <Loader2 className="size-4 animate-spin" /> : <Flag className="size-4" />}{isSubmitting ? '접수 중…' : '신고 접수'}</Button></DialogFooter></DialogContent></Dialog>
 }
 
 // 상세 화면은 공개 조회와 새 방 진입을 함께 책임진다.
@@ -246,7 +246,7 @@ export function CharacterDetailPage({ chrome, slug }: { chrome: PlatformPageChro
           </div>
 
           <div className="flex flex-wrap gap-3">
-            <Button onClick={() => handleStart(null)} disabled={isStartingRoom} className="bg-[#ff5148] text-white hover:bg-[#e94740]">{isStartingRoom ? <Loader2 className="h-4 w-4 animate-spin" /> : <MessageCircle className="h-4 w-4" />}{isStartingRoom ? '대화 여는 중…' : '바로 대화'}</Button>
+            <Button onClick={() => handleStart(null)} disabled={isStartingRoom} className="bg-[#d43a34] text-white hover:bg-[#c9342f]">{isStartingRoom ? <Loader2 className="h-4 w-4 animate-spin" /> : <MessageCircle className="h-4 w-4" />}{isStartingRoom ? '대화 여는 중…' : '바로 대화'}</Button>
             <Button variant="outline" onClick={() => setPickerOpen(true)} disabled={isStartingRoom}>월드와 시작</Button>
             <Button variant="ghost" onClick={() => chrome.onSelectEntity(item)}><PlusCircle className="h-4 w-4" />{chrome.selectedCharacter?.id === item.id ? '조합에 담김' : '조합에 담기'}</Button>
             <Button variant="outline" onClick={handleBookmarkToggle}><BookMarked className="h-4 w-4" />{isBookmarked ? '즐겨찾기 해제' : '즐겨찾기 저장'}</Button>
@@ -387,7 +387,7 @@ export function WorldDetailPage({ chrome, slug }: { chrome: PlatformPageChromePr
               {item.tags.map((tag) => <span key={tag} className="rounded bg-[#f3f3f3] px-3 py-1 text-xs text-[#565656]">{tag}</span>)}
             </div>
             <div className="flex flex-wrap gap-3">
-              <Button onClick={() => setPickerOpen(true)} disabled={isStartingRoom} className="bg-[#ff5148] text-white hover:bg-[#e94740]">{isStartingRoom ? <Loader2 className="h-4 w-4 animate-spin" /> : <MessageCircle className="h-4 w-4" />}{isStartingRoom ? '대화 여는 중…' : '캐릭터 선택'}</Button>
+              <Button onClick={() => setPickerOpen(true)} disabled={isStartingRoom} className="bg-[#d43a34] text-white hover:bg-[#c9342f]">{isStartingRoom ? <Loader2 className="h-4 w-4 animate-spin" /> : <MessageCircle className="h-4 w-4" />}{isStartingRoom ? '대화 여는 중…' : '캐릭터 선택'}</Button>
               <Button variant="ghost" onClick={() => chrome.onSelectEntity(item)}><PlusCircle className="h-4 w-4" />{chrome.selectedWorld?.id === item.id ? '조합에 담김' : '조합에 담기'}</Button>
               <Button variant="outline" onClick={handleBookmarkToggle}><BookMarked className="h-4 w-4" />{isBookmarked ? '즐겨찾기 해제' : '즐겨찾기 저장'}</Button>
               {chrome.user?.id === item.creator.id ? <Button variant="outline" onClick={() => chrome.onNavigate(`/edit/world/${item.slug}`)}>수정</Button> : null}
@@ -928,7 +928,7 @@ const selectStyle = { colorScheme: 'light' as const }
 const CreateTypeTabs = ({ active, onNavigate }: { active: 'character' | 'world'; onNavigate: (path: string) => void }) => (
   <div className="flex items-center justify-between gap-3">
     <h1 className="text-3xl font-black tracking-[-0.05em] text-[#171717]">{active === 'character' ? '캐릭터 만들기' : '월드 만들기'}</h1>
-    <div role="group" aria-label="만들기 유형" className="flex rounded-lg border border-[#d8d8d8] bg-white p-1"><button type="button" aria-pressed={active === 'character'} onClick={() => onNavigate('/create/character')} className={`min-h-10 rounded-md px-3 py-2 text-xs font-bold ${active === 'character' ? 'bg-[#ff5148] text-white' : 'text-[#666666]'}`}>캐릭터</button><button type="button" aria-pressed={active === 'world'} onClick={() => onNavigate('/create/world')} className={`min-h-10 rounded-md px-3 py-2 text-xs font-bold ${active === 'world' ? 'bg-[#ff5148] text-white' : 'text-[#666666]'}`}>월드</button></div>
+    <div role="group" aria-label="만들기 유형" className="flex rounded-lg border border-[#d8d8d8] bg-white p-1"><button type="button" aria-pressed={active === 'character'} onClick={() => onNavigate('/create/character')} className={`min-h-10 rounded-md px-3 py-2 text-xs font-bold ${active === 'character' ? 'bg-[#d43a34] text-white' : 'text-[#666666]'}`}>캐릭터</button><button type="button" aria-pressed={active === 'world'} onClick={() => onNavigate('/create/world')} className={`min-h-10 rounded-md px-3 py-2 text-xs font-bold ${active === 'world' ? 'bg-[#d43a34] text-white' : 'text-[#666666]'}`}>월드</button></div>
   </div>
 )
 
@@ -1636,7 +1636,7 @@ export function OpsPage({ chrome }: { chrome: PlatformPageChromeProps }) {
           </div>
           <div className="flex justify-end gap-3">
             <Button variant="outline" onClick={() => setPendingDelete(null)}>취소</Button>
-            <Button className="bg-[#ff5148] text-white hover:bg-[#e94740]" onClick={() => {
+            <Button className="bg-[#d43a34] text-white hover:bg-[#c9342f]" onClick={() => {
               if (!pendingDelete) return
               void platformApi.deleteContent(pendingDelete.entityType, pendingDelete.id)
                 .then(() => {
@@ -1656,7 +1656,7 @@ export function OpsPage({ chrome }: { chrome: PlatformPageChromeProps }) {
       ) : (
         <div className="space-y-6">
           <PageSection title={`신고 큐 ${reports.length ? `(${reports.length})` : ''}`}>
-            {reports.length === 0 ? <EmptyState title="검토할 신고가 없습니다" description="새 신고가 들어오면 콘텐츠와 사유가 여기에 표시됩니다." /> : <div className="space-y-3">{reports.map((report) => <div key={report.id} className="rounded-lg border border-[#e7e7e7] bg-[#ffffff] p-4"><div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div className="min-w-0"><p className="font-bold text-[#171717]">{report.entityName}</p><p className="mt-1 text-xs font-semibold text-[#ff5148]">{report.entityType === 'character' ? '캐릭터' : '월드'} · {report.reason}</p>{report.details ? <p className="mt-2 break-words text-sm text-[#666666]">{report.details}</p> : null}</div><div className="grid shrink-0 grid-cols-2 gap-2 sm:flex sm:flex-wrap"><Button size="sm" variant="outline" onClick={() => reviewReport(report.id, 'dismiss')}>기각</Button><Button size="sm" variant="outline" onClick={() => reviewReport(report.id, 'restore')}>복구</Button><Button size="sm" className="bg-[#ff5148] text-white hover:bg-[#e94740]" onClick={() => reviewReport(report.id, 'quarantine')}>격리</Button><Button size="sm" variant="destructive" onClick={() => reviewReport(report.id, 'remove')}>차단</Button></div></div></div>)}</div>}
+            {reports.length === 0 ? <EmptyState title="검토할 신고가 없습니다" description="새 신고가 들어오면 콘텐츠와 사유가 여기에 표시됩니다." /> : <div className="space-y-3">{reports.map((report) => <div key={report.id} className="rounded-lg border border-[#e7e7e7] bg-[#ffffff] p-4"><div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div className="min-w-0"><p className="font-bold text-[#171717]">{report.entityName}</p><p className="mt-1 text-xs font-semibold text-[#ff5148]">{report.entityType === 'character' ? '캐릭터' : '월드'} · {report.reason}</p>{report.details ? <p className="mt-2 break-words text-sm text-[#666666]">{report.details}</p> : null}</div><div className="grid shrink-0 grid-cols-2 gap-2 sm:flex sm:flex-wrap"><Button size="sm" variant="outline" onClick={() => reviewReport(report.id, 'dismiss')}>기각</Button><Button size="sm" variant="outline" onClick={() => reviewReport(report.id, 'restore')}>복구</Button><Button size="sm" className="bg-[#d43a34] text-white hover:bg-[#c9342f]" onClick={() => reviewReport(report.id, 'quarantine')}>격리</Button><Button size="sm" variant="destructive" onClick={() => reviewReport(report.id, 'remove')}>차단</Button></div></div></div>)}</div>}
           </PageSection>
           <PageSection title="콘텐츠 관리">
             <div className="space-y-4">

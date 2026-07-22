@@ -69,7 +69,7 @@ export function ChatComposer({
           </p>
         ) : <span />}
         <Button
-          className="min-w-24 bg-[#ff5148] text-white shadow-none hover:bg-[#e94740]"
+          className="min-w-24 bg-[#d43a34] text-white shadow-none hover:bg-[#c9342f]"
           disabled={isDisabled}
           onClick={submit}
         >

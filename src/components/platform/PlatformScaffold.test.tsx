@@ -107,6 +107,7 @@ describe('EntityCard artwork delivery', () => {
     const image = screen.getByRole('img', { name: '캐릭터A' })
     expect(image.getAttribute('src')).toBe('/starter/character-a-card-v1.webp')
     expect(image.getAttribute('srcset')).toContain('/starter/character-a-thumb-v1.webp 300w')
+    expect(image.getAttribute('srcset')).toContain('/starter/character-a-feed-v2.webp 400w')
     expect(image.getAttribute('srcset')).toContain('/starter/character-a-detail-v1.webp 768w')
     expect(image.getAttribute('sizes')).toBe('(min-width: 1024px) 520px, 50vw')
     expect(image.getAttribute('fetchpriority')).toBe('high')
