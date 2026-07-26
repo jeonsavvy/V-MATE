@@ -659,3 +659,39 @@ exception when duplicate_object then null; end $$;
 insert into public.app_settings (key, value_json)
 values ('test.upgrade.sentinel', '{"preserved":true}'::jsonb)
 on conflict (key) do update set value_json = excluded.value_json;
+
+-- Simulate an interrupted sequence backfill: the first row was assigned before
+-- a retry, while later rows remain null. The expand migration must preserve the
+-- existing ordinal and assign the remaining deterministic positions.
+insert into auth.users (
+  id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
+  raw_app_meta_data, raw_user_meta_data, created_at, updated_at
+) values (
+  '91000000-0000-4000-8000-000000000001', '00000000-0000-0000-0000-000000000000',
+  'authenticated', 'authenticated', 'sequence-upgrade@example.test', '', now(),
+  '{}'::jsonb, '{}'::jsonb, now(), now()
+) on conflict (id) do nothing;
+
+insert into public.characters (
+  id, owner_user_id, slug, name, summary, visibility, display_status,
+  source_type, tags, profile_json, speech_style_json, prompt_profile_json
+) values (
+  '92000000-0000-4000-8000-000000000002', '91000000-0000-4000-8000-000000000001',
+  'sequence-upgrade-character', 'Sequence upgrade character', '', 'private', 'draft',
+  'original', '{}'::text[], '{}'::jsonb, '{}'::jsonb, '{}'::jsonb
+) on conflict (id) do nothing;
+
+insert into public.rooms (
+  id, user_id, character_id, title, bridge_profile_json, resolved_prompt_snapshot_json
+) values (
+  '93000000-0000-4000-8000-000000000003', '91000000-0000-4000-8000-000000000001',
+  '92000000-0000-4000-8000-000000000002', 'Sequence upgrade room', '{}'::jsonb, '{}'::jsonb
+) on conflict (id) do nothing;
+
+alter table public.room_messages add column if not exists sequence_no bigint;
+insert into public.room_messages (id, room_id, role, content_json, created_at, sequence_no)
+values
+  ('94000000-0000-4000-8000-000000000004', '93000000-0000-4000-8000-000000000003', 'user', '{"text":"first"}'::jsonb, '2026-06-30T00:00:00Z', 1),
+  ('94000000-0000-4000-8000-000000000005', '93000000-0000-4000-8000-000000000003', 'assistant', '{"text":"second"}'::jsonb, '2026-06-30T00:00:00Z', null),
+  ('94000000-0000-4000-8000-000000000006', '93000000-0000-4000-8000-000000000003', 'assistant', '{"text":"third"}'::jsonb, '2026-06-30T00:00:01Z', null)
+on conflict (id) do nothing;

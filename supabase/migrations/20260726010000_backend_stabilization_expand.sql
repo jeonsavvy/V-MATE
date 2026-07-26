@@ -1,16 +1,23 @@
 -- Additive backend stabilization. Apply before the Worker cutover.
 -- No existing client privileges are removed in this phase.
 
+-- Fail fast instead of waiting indefinitely behind production traffic, while
+-- still allowing the bounded message-history backfill to complete.
+set lock_timeout = '5s';
+set statement_timeout = '15min';
+
 -- Rooms retain an immutable prompt snapshot and chat history. Shared source
 -- content deletion must detach those references, not delete another user's room.
 alter table public.rooms alter column character_id drop not null;
 alter table public.rooms alter column world_id drop not null;
 alter table public.rooms drop constraint if exists rooms_character_id_fkey;
 alter table public.rooms add constraint rooms_character_id_fkey
-  foreign key (character_id) references public.characters (id) on delete set null;
+  foreign key (character_id) references public.characters (id) on delete set null not valid;
 alter table public.rooms drop constraint if exists rooms_world_id_fkey;
 alter table public.rooms add constraint rooms_world_id_fkey
-  foreign key (world_id) references public.worlds (id) on delete set null;
+  foreign key (world_id) references public.worlds (id) on delete set null not valid;
+alter table public.rooms validate constraint rooms_character_id_fkey;
+alter table public.rooms validate constraint rooms_world_id_fkey;
 
 alter table public.chat_usage_events add column if not exists route text not null default 'room';
 alter table public.chat_usage_events add column if not exists room_id uuid references public.rooms on delete cascade;
@@ -21,13 +28,18 @@ alter table public.chat_usage_events add column if not exists attempt_count inte
 alter table public.rooms add column if not exists version bigint not null default 0;
 alter table public.room_messages add column if not exists sequence_no bigint;
 
-with ranked as (
-  select id, row_number() over (
-    partition by room_id
-    order by created_at, case role when 'user' then 0 when 'assistant' then 1 else 2 end, id
-  ) as sequence_no
+with room_max as (
+  select room_id, coalesce(max(sequence_no), 0) as max_sequence_no
   from public.room_messages
-  where sequence_no is null
+  group by room_id
+), ranked as (
+  select messages.id, room_max.max_sequence_no + row_number() over (
+    partition by messages.room_id
+    order by messages.created_at, case messages.role when 'user' then 0 when 'assistant' then 1 else 2 end, messages.id
+  ) as sequence_no
+  from public.room_messages messages
+  join room_max on room_max.room_id = messages.room_id
+  where messages.sequence_no is null
 )
 update public.room_messages messages
 set sequence_no = ranked.sequence_no
@@ -544,7 +556,11 @@ alter table public.characters add constraint characters_backend_input_contract c
   and octet_length(speech_style_json::text) <= 16384
   and octet_length(prompt_profile_json::text) <= 16384
   and (source_type <> 'derivative' or (btrim(coalesce(source_url, '')) ~ '^https://' and char_length(btrim(coalesce(source_url, ''))) <= 2048))
-  and (visibility <> 'public' or (rights_attested_at is not null and nullif(btrim(coalesce(cover_image_url, '')), '') is not null))
+  and (
+    visibility <> 'public'
+    or created_at < timestamptz '2026-07-01 00:00:00+00'
+    or (rights_attested_at is not null and nullif(btrim(coalesce(cover_image_url, '')), '') is not null)
+  )
 ) not valid;
 
 alter table public.worlds drop constraint if exists worlds_backend_input_contract;
@@ -556,7 +572,11 @@ alter table public.worlds add constraint worlds_backend_input_contract check (
   and public.tags_within_contract(tags)
   and octet_length(prompt_profile_json::text) <= 16384
   and (source_type <> 'derivative' or (btrim(coalesce(source_url, '')) ~ '^https://' and char_length(btrim(coalesce(source_url, ''))) <= 2048))
-  and (visibility <> 'public' or (rights_attested_at is not null and nullif(btrim(coalesce(cover_image_url, '')), '') is not null))
+  and (
+    visibility <> 'public'
+    or created_at < timestamptz '2026-07-01 00:00:00+00'
+    or (rights_attested_at is not null and nullif(btrim(coalesce(cover_image_url, '')), '') is not null)
+  )
 ) not valid;
 
 -- Client reads remain RLS-scoped while all mutations move behind the Worker.
@@ -688,3 +708,6 @@ for each row execute function public.cleanup_legacy_user_rows_before_auth_delete
 
 revoke all on function public.cleanup_legacy_user_rows_before_auth_delete()
   from public, anon, authenticated, service_role;
+
+reset statement_timeout;
+reset lock_timeout;

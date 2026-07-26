@@ -11,7 +11,10 @@ const readUtf8 = (relativePath) => readFile(path.join(repoRoot, relativePath), '
 test('expand migration preserves message order and bounds quota lease recovery', async () => {
   const migration = await readUtf8('supabase/migrations/20260726010000_backend_stabilization_expand.sql');
 
-  assert.match(migration, /order by created_at, case role when 'user' then 0 when 'assistant' then 1 else 2 end, id/);
+  assert.match(migration, /set\s+(?:local\s+)?lock_timeout\s*=\s*'[^']+'/i);
+  assert.match(migration, /set\s+(?:local\s+)?statement_timeout\s*=\s*'[^']+'/i);
+  assert.match(migration, /order by (?:messages\.)?created_at, case (?:messages\.)?role when 'user' then 0 when 'assistant' then 1 else 2 end, (?:messages\.)?id/);
+  assert.match(migration, /with room_max as \([\s\S]*max\(sequence_no\)[\s\S]*max_sequence_no[\s\S]*max_sequence_no \+ row_number\(\) over/);
   assert.match(migration, /existing_event\.status = 'reserved' and existing_event\.attempt_count >= 2/);
   assert.doesNotMatch(migration, /retry_exhausted/);
   for (const disposition of ['reserved', 'replay', 'in_progress', 'conflict', 'limit_exceeded']) {
@@ -50,8 +53,8 @@ test('room commit and content constraints remain atomic and null-safe', async ()
 
   assert.match(migration, /alter table public\.rooms alter column character_id drop not null;/);
   assert.match(migration, /alter table public\.rooms alter column world_id drop not null;/);
-  assert.match(migration, /foreign key \(character_id\) references public\.characters \(id\) on delete set null;/);
-  assert.match(migration, /foreign key \(world_id\) references public\.worlds \(id\) on delete set null;/);
+  assert.match(migration, /foreign key \(character_id\) references public\.characters \(id\) on delete set null(?: not valid)?;/);
+  assert.match(migration, /foreign key \(world_id\) references public\.worlds \(id\) on delete set null(?: not valid)?;/);
   assert.match(migration, /insert into public\.room_state_summaries[\s\S]*on conflict \(room_id\) do update set/);
   assert.match(migration, /commit_room_turn_v2[\s\S]*status = 'completed'/);
   assert.doesNotMatch(migration, /source_url ~ '\^https:\/\/'/);

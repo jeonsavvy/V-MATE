@@ -1,6 +1,6 @@
 begin;
 
-select plan(32);
+select plan(40);
 
 -- Seed as the database owner. Every user-facing assertion below explicitly
 -- switches to anon, authenticated, or service_role before exercising the API.
@@ -337,6 +337,75 @@ select ok(
   'daily quota enforces the configured limit'
 );
 reset role;
+
+select lives_ok(
+  $$insert into public.characters (
+    id, owner_user_id, slug, name, summary, visibility, display_status,
+    source_type, tags, profile_json, speech_style_json, prompt_profile_json, created_at
+  ) values (
+    'a1000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001',
+    'legacy-public-character', 'Legacy public character', '', 'public', 'visible',
+    'original', '{}'::text[], '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '2026-06-30T23:59:59Z'
+  )$$,
+  'pre-cutoff public character without rights or image remains a valid legacy row'
+);
+select lives_ok(
+  $$insert into public.worlds (
+    id, owner_user_id, slug, name, summary, visibility, display_status,
+    source_type, tags, prompt_profile_json, created_at
+  ) values (
+    'a2000000-0000-4000-8000-000000000002', '10000000-0000-4000-8000-000000000001',
+    'legacy-public-world', 'Legacy public world', '', 'public', 'visible',
+    'original', '{}'::text[], '{}'::jsonb, '2026-06-30T23:59:59Z'
+  )$$,
+  'pre-cutoff public world without rights or image remains a valid legacy row'
+);
+select lives_ok(
+  $$update public.characters set favorite_count = favorite_count + 1
+    where id = 'a1000000-0000-4000-8000-000000000001'$$,
+  'legacy public character counter updates remain possible'
+);
+select lives_ok(
+  $$update public.characters set summary = 'legacy character metadata update'
+    where id = 'a1000000-0000-4000-8000-000000000001'$$,
+  'legacy public character general updates remain possible'
+);
+select lives_ok(
+  $$update public.worlds set chat_start_count = chat_start_count + 1
+    where id = 'a2000000-0000-4000-8000-000000000002'$$,
+  'legacy public world counter updates remain possible'
+);
+select lives_ok(
+  $$update public.worlds set summary = 'legacy world metadata update'
+    where id = 'a2000000-0000-4000-8000-000000000002'$$,
+  'legacy public world general updates remain possible'
+);
+select throws_like(
+  $$insert into public.characters (
+    id, owner_user_id, slug, name, summary, visibility, display_status,
+    source_type, tags, profile_json, speech_style_json, prompt_profile_json,
+    cover_image_url, created_at
+  ) values (
+    'a3000000-0000-4000-8000-000000000003', '10000000-0000-4000-8000-000000000001',
+    'post-cutoff-character-no-rights', 'Post cutoff character', '', 'public', 'visible',
+    'original', '{}'::text[], '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
+    'https://example.test/post-cutoff-character.webp', '2026-07-01T00:00:00Z'
+  )$$,
+  '%characters_backend_input_contract%',
+  'post-cutoff public character without rights attestation is rejected'
+);
+select throws_like(
+  $$insert into public.worlds (
+    id, owner_user_id, slug, name, summary, visibility, display_status,
+    source_type, tags, prompt_profile_json, rights_attested_at, created_at
+  ) values (
+    'a4000000-0000-4000-8000-000000000004', '10000000-0000-4000-8000-000000000001',
+    'post-cutoff-world-no-image', 'Post cutoff world', '', 'public', 'visible',
+    'original', '{}'::text[], '{}'::jsonb, '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z'
+  )$$,
+  '%worlds_backend_input_contract%',
+  'post-cutoff public world without a main image is rejected'
+);
 
 select * from finish();
 
