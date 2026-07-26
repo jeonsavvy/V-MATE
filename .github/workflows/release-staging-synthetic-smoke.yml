@@ -98,7 +98,7 @@ jobs:
           if (files.length !== 1) process.exit(1);
           const value = JSON.parse(fs.readFileSync(files[0], 'utf8'));
           const projectRefHash = crypto.createHash('sha256').update(process.env.PROJECT_REF).digest('hex');
-          if (!(value.schemaVersion === 3 && value.target === 'staging' && value.operation === 'apply-expand' && value.commit === process.env.GITHUB_SHA && value.migration === '20260726010000_backend_stabilization_expand.sql' && value.projectRefHash === projectRefHash)) process.exit(1);
+          if (!(value.schemaVersion === 3 && value.target === 'staging' && value.operation === 'apply-expand' && value.commit === process.env.GITHUB_SHA && value.migration === '20260726190559_backend_stabilization_expand.sql' && value.projectRefHash === projectRefHash)) process.exit(1);
           NODE
 
       - name: Prove selected Worker remains at zero traffic

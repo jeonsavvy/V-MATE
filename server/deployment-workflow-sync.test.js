@@ -83,8 +83,8 @@ test('database release stages expand and lockdown separately behind evidence gat
   assert.match(release, /evidence\.allPassed === true/);
   assert.match(release, /previousStableWorkerVersionId/);
   assert.match(release, /expandProjectRefHash/);
-  assert.match(release, /20260726010000_backend_stabilization_expand\.sql/);
-  assert.match(release, /20260726020000_backend_stabilization_lockdown\.sql/);
+  assert.match(release, /20260726190559_backend_stabilization_expand\.sql/);
+  assert.match(release, /20260727000000_backend_stabilization_lockdown\.sql/);
   assert.match(release, /Verify consolidated legacy baseline before expand/);
   assert.match(release, /Require successful CI for this default-branch commit/);
   assert.match(release, /actions\/workflows\/ci\.yml\/runs\?head_sha=/);

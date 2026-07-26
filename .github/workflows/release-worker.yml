@@ -168,7 +168,7 @@ jobs:
             && evidence.target === '${{ inputs.target }}'
             && evidence.operation === 'apply-expand'
             && evidence.commit === process.env.GITHUB_SHA
-            && evidence.migration === '20260726010000_backend_stabilization_expand.sql'
+            && evidence.migration === '20260726190559_backend_stabilization_expand.sql'
             && evidence.projectRefHash === refHash
             && Number.isFinite(Date.parse(evidence.appliedAt || ''));
           if (!valid) process.exit(1);

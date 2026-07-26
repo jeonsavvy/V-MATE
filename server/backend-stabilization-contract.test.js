@@ -9,7 +9,7 @@ const repoRoot = path.resolve(dirname, '..');
 const readUtf8 = (relativePath) => readFile(path.join(repoRoot, relativePath), 'utf8');
 
 test('expand migration preserves message order and bounds quota lease recovery', async () => {
-  const migration = await readUtf8('supabase/migrations/20260726010000_backend_stabilization_expand.sql');
+  const migration = await readUtf8('supabase/migrations/20260726190559_backend_stabilization_expand.sql');
 
   assert.match(migration, /set\s+(?:local\s+)?lock_timeout\s*=\s*'[^']+'/i);
   assert.match(migration, /set\s+(?:local\s+)?statement_timeout\s*=\s*'[^']+'/i);
@@ -25,7 +25,7 @@ test('expand migration preserves message order and bounds quota lease recovery',
 });
 
 test('storage deletion outbox has an exclusive lease and retry-order index', async () => {
-  const migration = await readUtf8('supabase/migrations/20260726010000_backend_stabilization_expand.sql');
+  const migration = await readUtf8('supabase/migrations/20260726190559_backend_stabilization_expand.sql');
 
   assert.match(migration, /lease_expires_at timestamp with time zone/);
   assert.match(migration, /status in \('prepared', 'processing', 'completed'\)/);
@@ -35,7 +35,7 @@ test('storage deletion outbox has an exclusive lease and retry-order index', asy
 });
 
 test('account storage cleanup fence is bounded and service-only', async () => {
-  const migration = await readUtf8('supabase/migrations/20260726010000_backend_stabilization_expand.sql');
+  const migration = await readUtf8('supabase/migrations/20260726190559_backend_stabilization_expand.sql');
 
   assert.match(migration, /create table if not exists public\.account_storage_cleanup_fences/);
   assert.match(migration, /account_storage_cleanup_fences_due[\s\S]*\(cleanup_until, user_id\)/);
@@ -49,7 +49,7 @@ test('account storage cleanup fence is bounded and service-only', async () => {
 });
 
 test('room commit and content constraints remain atomic and null-safe', async () => {
-  const migration = await readUtf8('supabase/migrations/20260726010000_backend_stabilization_expand.sql');
+  const migration = await readUtf8('supabase/migrations/20260726190559_backend_stabilization_expand.sql');
 
   assert.match(migration, /alter table public\.rooms alter column character_id drop not null;/);
   assert.match(migration, /alter table public\.rooms alter column world_id drop not null;/);
@@ -62,8 +62,8 @@ test('room commit and content constraints remain atomic and null-safe', async ()
 });
 
 test('v2 mutation RPCs are service-only and lockdown removes direct mutation paths', async () => {
-  const expand = await readUtf8('supabase/migrations/20260726010000_backend_stabilization_expand.sql');
-  const lockdown = await readUtf8('supabase/migrations/20260726020000_backend_stabilization_lockdown.sql');
+  const expand = await readUtf8('supabase/migrations/20260726190559_backend_stabilization_expand.sql');
+  const lockdown = await readUtf8('supabase/migrations/20260727000000_backend_stabilization_lockdown.sql');
   const functions = [
     'reserve_chat_message_v2',
     'complete_legacy_chat_message_v2',
@@ -85,8 +85,8 @@ test('v2 mutation RPCs are service-only and lockdown removes direct mutation pat
 test('schema snapshot exactly carries the latest stabilization phases', async () => {
   const [schema, expand, lockdown] = await Promise.all([
     readUtf8('supabase/schema.sql'),
-    readUtf8('supabase/migrations/20260726010000_backend_stabilization_expand.sql'),
-    readUtf8('supabase/migrations/20260726020000_backend_stabilization_lockdown.sql'),
+    readUtf8('supabase/migrations/20260726190559_backend_stabilization_expand.sql'),
+    readUtf8('supabase/migrations/20260727000000_backend_stabilization_lockdown.sql'),
   ]);
 
   assert.ok(schema.endsWith(`${lockdown.trim()}\n`) || schema.endsWith(`${lockdown.trim()}\r\n`));

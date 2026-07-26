@@ -78,7 +78,7 @@ jobs:
             && value.target === '${{ inputs.target }}'
             && value.operation === 'apply-lockdown'
             && value.commit === process.env.GITHUB_SHA
-            && value.migration === '20260726020000_backend_stabilization_lockdown.sql'
+            && value.migration === '20260727000000_backend_stabilization_lockdown.sql'
             && value.projectRefHash === refHash
             && /^[A-Za-z0-9_-]+$/.test(String(value.workerVersionId || ''))
             && /^[A-Za-z0-9_-]+$/.test(String(value.previousStableWorkerVersionId || ''));

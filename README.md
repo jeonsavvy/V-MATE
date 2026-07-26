@@ -222,7 +222,7 @@ supabase/schema.sql
 - `vmate-assets` Storage bucket
 - 운영 기본 설정(`home.hero`)
 
-기존 프로젝트에는 migration version 순서대로 적용합니다. 2026-07-21 migration 파일은 운영 migration history의 version과 이름을 그대로 유지합니다. 백엔드 안정화 단계는 `20260726010000_backend_stabilization_expand.sql`을 먼저 적용하고 v2 Worker 검증을 마친 뒤 `20260726020000_backend_stabilization_lockdown.sql`을 별도 승인으로 적용합니다. lockdown 이후에는 브라우저 직접 쓰기 권한을 되살리는 down migration 대신 v2-compatible Worker 복원 또는 forward migration을 사용합니다.
+기존 프로젝트에는 migration version 순서대로 적용합니다. 2026-07-21 migration 파일은 운영 migration history의 version과 이름을 그대로 유지합니다. 백엔드 안정화 단계는 `20260726190559_backend_stabilization_expand.sql`을 먼저 적용하고 v2 Worker 검증을 마친 뒤 `20260727000000_backend_stabilization_lockdown.sql`을 별도 승인으로 적용합니다. lockdown 이후에는 브라우저 직접 쓰기 권한을 되살리는 down migration 대신 v2-compatible Worker 복원 또는 forward migration을 사용합니다.
 
 ## 운영실 권한 설정
 

@@ -131,8 +131,8 @@ jobs:
             [[ "$PROJECT_REF" == "$PRODUCTION_PROJECT_REF" ]] || { echo '::error::production project guard mismatch'; exit 1; }
           fi
           case '${{ inputs.operation }}' in
-            dry-run-expand|apply-expand) migration='20260726010000_backend_stabilization_expand.sql' ;;
-            dry-run-lockdown|apply-lockdown) migration='20260726020000_backend_stabilization_lockdown.sql' ;;
+            dry-run-expand|apply-expand) migration='20260726190559_backend_stabilization_expand.sql' ;;
+            dry-run-lockdown|apply-lockdown) migration='20260727000000_backend_stabilization_lockdown.sql' ;;
             *) echo '::error::unsupported migration operation'; exit 1 ;;
           esac
           [[ -f "supabase/migrations/$migration" ]] || { echo '::error::allowlisted migration is absent'; exit 1; }
