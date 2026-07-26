@@ -1,6 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { extractBearerToken } from '../modules/auth-guard.js';
+import { toSafeErrorMeta } from '../modules/safe-error-meta.js';
 import { logServerWarn } from '../modules/server-logger.js';
+import { normalizeQuotaResult } from './quota-contract.js';
+import {
+  claimStorageDeletionJob,
+  confirmAuthUserAbsent,
+  drainStorageDeletionOutbox,
+  prepareStorageDeletionJob,
+  processStorageDeletionJob,
+} from './storage-deletion-saga.js';
 import {
   buildConversationTurns,
   buildRecentRawHistory,
@@ -18,6 +27,11 @@ import {
 
 // Supabase persistence adapter는 platform API가 기대하는 동일한 메서드 집합을 DB/Storage 기반으로 구현한다.
 const STORAGE_BUCKET = process.env.PUBLIC_ASSETS_BUCKET || 'vmate-assets';
+const STORAGE_SCAN_LIMITS = Object.freeze({ maxEntries: 10_000, maxFolders: 1_000, maxDepth: 8, maxPages: 2_000 });
+const CONTENT_REFERENCE_SCAN_LIMITS = Object.freeze({ maxRows: 10_000, maxAssets: 10_000, pageSize: 100, idBatchSize: 100 });
+const ACCOUNT_STORAGE_CLEANUP_TABLE = 'account_storage_cleanup_fences';
+const SIGNED_UPLOAD_URL_TTL_MS = 2 * 60 * 60 * 1000;
+const ACCOUNT_STORAGE_CLEANUP_BUFFER_MS = 10 * 60 * 1000;
 
 const resolveSupabaseConfig = () => {
   const supabaseUrl = String(
@@ -52,6 +66,25 @@ const resolveSupabaseConfig = () => {
 };
 
 export const isPersistentPlatformAvailable = () => resolveSupabaseConfig().configured;
+export const isPersistentPlatformRequired = () => {
+  const explicit = String(process.env.REQUIRE_CONFIGURED_SUPABASE_URL || '').trim().toLowerCase();
+  if (explicit) return explicit !== 'false';
+  const runtimeEnv = String(process.env.APP_ENV || process.env.NODE_ENV || '').trim().toLowerCase();
+  return runtimeEnv === 'production' || runtimeEnv === 'prod';
+};
+export const isPersistentMutationAvailable = () => {
+  const config = resolveSupabaseConfig();
+  return Boolean(config.configured && config.supabaseServiceRoleKey);
+};
+export const getPlatformPersistenceConfig = () => {
+  const config = resolveSupabaseConfig();
+  return {
+    supabaseUrl: config.supabaseUrl,
+    storageBucket: STORAGE_BUCKET,
+    configured: config.configured,
+    mutationConfigured: Boolean(config.configured && config.supabaseServiceRoleKey),
+  };
+};
 
 let createClientPromise = null;
 const getCreateClient = async () => {
@@ -116,16 +149,14 @@ export const resolveDataOrFallback = async ({ label, queryPromise, fallback }) =
     const result = await queryPromise;
     if (result?.error) {
       logServerWarn('[V-MATE] Query failed, using fallback data', {
-        label,
-        message: result.error?.message || String(result.error),
+        ...toSafeErrorMeta(result.error),
       });
       return fallback;
     }
     return typeof result?.data === 'undefined' || result?.data === null ? fallback : result.data;
   } catch (error) {
     logServerWarn('[V-MATE] Query threw, using fallback data', {
-      label,
-      message: error?.message || String(error),
+      ...toSafeErrorMeta(error),
     });
     return fallback;
   }
@@ -137,8 +168,7 @@ export const resolveAsyncOrFallback = async ({ label, promise, fallback }) => {
     return typeof value === 'undefined' || value === null ? fallback : value;
   } catch (error) {
     logServerWarn('[V-MATE] Async task threw, using fallback data', {
-      label,
-      message: error?.message || String(error),
+      ...toSafeErrorMeta(error),
     });
     return fallback;
   }
@@ -289,30 +319,161 @@ const getSetting = async (client, key) => {
   return data?.value_json || null;
 };
 
-// public URL만 저장된 자산도 bucket 내부 경로를 역산해 정리할 수 있게 유지한다.
-const resolveStoragePathFromPublicUrl = (url) => {
+// 삭제 대상은 configured origin/bucket/owner/entity prefix를 모두 만족한 경로로 제한한다.
+export const resolveStoragePathFromPublicUrl = (url, { ownerUserId, entityType } = {}) => {
   try {
     const parsed = new URL(String(url || ''));
-    const marker = `/object/public/${STORAGE_BUCKET}/`;
-    const index = parsed.pathname.indexOf(marker);
-    if (index === -1) return null;
-    return decodeURIComponent(parsed.pathname.slice(index + marker.length));
+    const { supabaseUrl } = resolveSupabaseConfig();
+    if (!supabaseUrl || parsed.origin !== new URL(supabaseUrl).origin || parsed.search || parsed.hash) return null;
+    const marker = `/storage/v1/object/public/${STORAGE_BUCKET}/`;
+    if (!parsed.pathname.startsWith(marker)) return null;
+    const rawPath = parsed.pathname.slice(marker.length);
+    // Storage keys accepted by this contract are ASCII-only. Refuse escapes
+    // before decoding so encoded separators cannot broaden deletion targets.
+    if (rawPath.includes('%')) return null;
+    const path = decodeURIComponent(rawPath);
+    if (path.includes('\\') || path.split('/').some((part) => !part || part === '.' || part === '..')) return null;
+    if (!ownerUserId || !['character', 'world'].includes(entityType)) return null;
+    const escapedUserId = String(ownerUserId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`^${escapedUserId}/${entityType}/[0-9]{10,}-[A-Za-z0-9]{8}/[A-Za-z0-9_-]{1,32}/[A-Za-z0-9_-]{1,32}\\.webp$`);
+    return pattern.test(path) ? path : null;
   } catch {
     return null;
   }
 };
 
-const removeStorageObjectsByUrls = async ({ client, urls }) => {
-  const paths = urls.map(resolveStoragePathFromPublicUrl).filter(Boolean);
-  if (!paths.length) return;
-  const { error } = await client.storage.from(STORAGE_BUCKET).remove(paths);
-  if (error) throw error;
+export const buildAssetStoragePath = ({ userId, entityType, uploadId, slot, variant }) => {
+  const normalizedUserId = String(userId || '').trim();
+  const normalizedUploadId = String(uploadId || '').trim();
+  const normalizedSlot = String(slot || '').trim();
+  const normalizedVariant = String(variant || '').trim();
+  if (!/^[A-Za-z0-9-]{1,64}$/.test(normalizedUserId)
+    || !['character', 'world'].includes(entityType)
+    || !/^[0-9]{10,}-[A-Za-z0-9]{8}$/.test(normalizedUploadId)
+    || !/^[A-Za-z0-9_-]{1,32}$/.test(normalizedSlot)
+    || !/^[A-Za-z0-9_-]{1,32}$/.test(normalizedVariant)) return null;
+  return `${normalizedUserId}/${entityType}/${normalizedUploadId}/${normalizedSlot}/${normalizedVariant}.webp`;
 };
 
-const removeAccountStorageObjectsByUrls = async ({ client, urls }) => {
-  const normalizedUrls = Array.from(new Set(urls.map((url) => String(url || '').trim()).filter(Boolean)));
-  await removeStorageObjectsByUrls({ client, urls: normalizedUrls });
-  return normalizedUrls.length;
+const resolveStoragePathsByUrls = ({ urls, ownerUserId, entityType }) => Array.from(new Set(
+  urls.map((url) => resolveStoragePathFromPublicUrl(url, { ownerUserId, entityType })).filter(Boolean),
+));
+
+const removeStorageObjectsByPaths = async ({ client, paths }) => {
+  if (!paths.length) return 0;
+  for (let index = 0; index < paths.length; index += 100) {
+    const { error } = await client.storage.from(STORAGE_BUCKET).remove(paths.slice(index, index + 100));
+    if (error) throw error;
+  }
+  return paths.length;
+};
+
+export const listOwnedStoragePaths = async ({ client, userId, entityType, pageSize = 100 }) => {
+  if (!client || !userId || !['character', 'world'].includes(entityType)) return [];
+  const rootPrefix = `${userId}/${entityType}`;
+  const safePageSize = Math.max(1, Math.min(100, Math.floor(Number(pageSize) || 100)));
+  const pending = [{ prefix: rootPrefix, depth: 0 }];
+  const visited = new Set();
+  const files = [];
+  let scannedEntries = 0;
+  let scannedPages = 0;
+  while (pending.length) {
+    const { prefix, depth } = pending.shift();
+    if (visited.has(prefix)) continue;
+    visited.add(prefix);
+    if (visited.size > STORAGE_SCAN_LIMITS.maxFolders || depth > STORAGE_SCAN_LIMITS.maxDepth) {
+      const error = new Error('Owned storage prefix exceeds the safe folder scan limit.');
+      error.code = 'STORAGE_PREFIX_SCAN_LIMIT_EXCEEDED';
+      throw error;
+    }
+    let offset = 0;
+    while (true) {
+      scannedPages += 1;
+      if (scannedPages > STORAGE_SCAN_LIMITS.maxPages) {
+        const error = new Error('Owned storage prefix exceeds the safe page scan limit.');
+        error.code = 'STORAGE_PREFIX_SCAN_LIMIT_EXCEEDED';
+        throw error;
+      }
+      const { data, error } = await client.storage.from(STORAGE_BUCKET).list(prefix, {
+        limit: safePageSize,
+        offset,
+        sortBy: { column: 'name', order: 'asc' },
+      });
+      if (error) throw error;
+      const entries = data || [];
+      scannedEntries += entries.length;
+      if (scannedEntries > STORAGE_SCAN_LIMITS.maxEntries) {
+        const error = new Error('Owned storage prefix exceeds the safe entry scan limit.');
+        error.code = 'STORAGE_PREFIX_SCAN_LIMIT_EXCEEDED';
+        throw error;
+      }
+      for (const entry of entries) {
+        const name = String(entry?.name || '').trim();
+        if (!name || name === '.' || name === '..' || name.includes('/') || name.includes('\\')) continue;
+        const path = `${prefix}/${name}`;
+        if (!path.startsWith(`${rootPrefix}/`)) continue;
+        if (entry?.id || entry?.metadata) files.push(path);
+        else pending.push({ prefix: path, depth: depth + 1 });
+      }
+      if (entries.length < safePageSize) break;
+      offset += safePageSize;
+    }
+  }
+  return Array.from(new Set(files));
+};
+
+const removeAccountStorageObjectsByPrefix = async ({ client, userId }) => {
+  const paths = [
+    ...(await listOwnedStoragePaths({ client, userId, entityType: 'character' })),
+    ...(await listOwnedStoragePaths({ client, userId, entityType: 'world' })),
+  ];
+  try {
+    return await removeStorageObjectsByPaths({ client, paths });
+  } catch (cause) {
+    const error = new Error('Account storage cleanup state is unknown.');
+    error.code = 'ACCOUNT_DELETE_STORAGE_STATE_UNKNOWN';
+    error.cause = cause;
+    throw error;
+  }
+};
+
+const getAccountStorageCleanupFence = async ({ client, userId }) => {
+  const result = await client
+    .from(ACCOUNT_STORAGE_CLEANUP_TABLE)
+    .select('user_id, cleanup_until')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (result?.error) {
+    const error = new Error('Account upload state could not be confirmed.');
+    error.code = 'ASSET_UPLOAD_STATE_UNKNOWN';
+    error.cause = result.error;
+    throw error;
+  }
+  return result?.data || null;
+};
+
+const assertAssetUploadsAllowed = async ({ client, userId }) => {
+  if (!await getAccountStorageCleanupFence({ client, userId })) return;
+  const error = new Error('Account deletion is already in progress.');
+  error.code = 'ACCOUNT_DELETE_IN_PROGRESS';
+  throw error;
+};
+
+const beginAccountStorageCleanup = async ({ client, userId }) => {
+  const requestedCleanupUntil = new Date(
+    Date.now() + SIGNED_UPLOAD_URL_TTL_MS + ACCOUNT_STORAGE_CLEANUP_BUFFER_MS,
+  ).toISOString();
+  const result = await client.rpc('begin_account_storage_cleanup_v1', {
+    p_user_id: userId,
+    p_cleanup_until: requestedCleanupUntil,
+  });
+  if (result?.error || !result?.data) {
+    const error = new Error('Account storage cleanup fence could not be created.');
+    error.code = 'ACCOUNT_DELETE_STORAGE_STATE_UNKNOWN';
+    error.cause = result?.error;
+    throw error;
+  }
+  return String(result.data);
 };
 
 const throwIfSupabaseError = (label, result) => {
@@ -322,15 +483,6 @@ const throwIfSupabaseError = (label, result) => {
     throw error;
   }
   return result;
-};
-
-const deleteRows = async ({ client, table, column, value }) => {
-  throwIfSupabaseError(`${table}.delete`, await client.from(table).delete().eq(column, value));
-};
-
-const deleteRowsIn = async ({ client, table, column, values }) => {
-  if (!values.length) return;
-  throwIfSupabaseError(`${table}.delete`, await client.from(table).delete().in(column, values));
 };
 
 export const collectContentAssetUrls = ({ entityType, row, assets = [] }) => {
@@ -354,6 +506,7 @@ export const collectContentAssetUrls = ({ entityType, row, assets = [] }) => {
     pushUrl(slot?.thumbUrl);
     pushUrl(slot?.cardUrl);
     pushUrl(slot?.detailUrl);
+    pushUrl(slot?.heroUrl);
   }
 
   for (const asset of assets) {
@@ -402,16 +555,14 @@ export const incrementChatStartCountsBestEffort = async ({ client, character, wo
       const result = await operation.run();
       if (result?.error) {
         logServerWarn('[V-MATE] chat_start_count update skipped', {
-          label: operation.label,
-          entityId: operation.entityId,
-          message: result.error?.message || String(result.error),
+          isWorldCounter: operation.label === 'world',
+          ...toSafeErrorMeta(result.error),
         });
       }
     } catch (error) {
       logServerWarn('[V-MATE] chat_start_count update threw and was ignored', {
-        label: operation.label,
-        entityId: operation.entityId,
-        message: error?.message || String(error),
+        isWorldCounter: operation.label === 'world',
+        ...toSafeErrorMeta(error),
       });
     }
   }
@@ -539,12 +690,19 @@ const mergeRowsById = (primaryRows, fallbackRows) => {
   return Array.from(merged.values());
 };
 
-export const getCharacterDetail = async (slug) => {
+export const getCharacterDetail = async (input) => {
+  const slug = typeof input === 'string' ? input : input?.slug;
+  const event = typeof input === 'string' ? null : input?.event;
+  const userId = typeof input === 'string' ? '' : String(input?.userId || '');
   const client = await publicClient();
+  const authenticatedClient = userId ? await userClient(event) : null;
   if (!client) return null;
-  const character = await getCharacterRowBySlug(client, slug);
+  const character = await getOwnedCharacterRowBySlug(authenticatedClient, slug, userId)
+    || await getCharacterRowBySlug(client, slug);
   if (!character) return null;
-  const { data: assets } = await client.from('character_assets').select('url').eq('character_id', character.id).order('created_at', { ascending: true });
+  const readClient = character.owner_user_id === userId && authenticatedClient ? authenticatedClient : client;
+  const { data: assets, error: assetError } = await readClient.from('character_assets').select('url').eq('character_id', character.id).order('created_at', { ascending: true });
+  if (assetError) throw assetError;
   const profileJson = character.profile_json || {};
   const speechJson = character.speech_style_json || {};
   const sections = [
@@ -562,12 +720,19 @@ export const getCharacterDetail = async (slug) => {
   };
 };
 
-export const getWorldDetail = async (slug) => {
+export const getWorldDetail = async (input) => {
+  const slug = typeof input === 'string' ? input : input?.slug;
+  const event = typeof input === 'string' ? null : input?.event;
+  const userId = typeof input === 'string' ? '' : String(input?.userId || '');
   const client = await publicClient();
+  const authenticatedClient = userId ? await userClient(event) : null;
   if (!client) return null;
-  const world = await getWorldRowBySlug(client, slug);
+  const world = await getOwnedWorldRowBySlug(authenticatedClient, slug, userId)
+    || await getWorldRowBySlug(client, slug);
   if (!world) return null;
-  const { data: assets } = await client.from('world_assets').select('url').eq('world_id', world.id).order('created_at', { ascending: true });
+  const readClient = world.owner_user_id === userId && authenticatedClient ? authenticatedClient : client;
+  const { data: assets, error: assetError } = await readClient.from('world_assets').select('url').eq('world_id', world.id).order('created_at', { ascending: true });
+  if (assetError) throw assetError;
   return {
     ...summarizeWorld(world),
     worldSections: [{ title: '월드 소개', body: world.summary }],
@@ -622,10 +787,8 @@ export const persistRecentView = async ({ client, userId, entityType, targetId, 
   }
 
   logServerWarn('[V-MATE] recent_views upsert fallback to replace flow', {
-    userId,
-    entityType,
-    targetId,
-    message,
+    usedReplaceFallback: true,
+    ...toSafeErrorMeta(error),
   });
 
   const { error: deleteError } = await client
@@ -688,7 +851,7 @@ const hydrateRoom = async ({ client, publicClientInstance, row }) => {
     row.world_id ? getWorldRowsByIds(publicClientInstance, [row.world_id]) : Promise.resolve([]),
     row.world_id ? getOwnedWorldRowsByIds(client, [row.world_id], row.user_id) : Promise.resolve([]),
     client.from('room_state_summaries').select('*').eq('room_id', row.id).maybeSingle(),
-    client.from('room_messages').select('*').eq('room_id', row.id).order('created_at', { ascending: true }),
+    client.from('room_messages').select('*').eq('room_id', row.id).order('sequence_no', { ascending: true }).order('created_at', { ascending: true }),
   ]);
 
   const characterRows = mergeRowsById(publicCharacterRows, ownedCharacterRows);
@@ -722,6 +885,7 @@ const hydrateRoom = async ({ client, publicClientInstance, row }) => {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastMessageAt: row.last_message_at,
+    version: Number(row.version || 0),
   };
 };
 
@@ -740,9 +904,7 @@ export const listRecentRooms = async ({ event, userId }) => {
       }
     } catch (hydrateError) {
       logServerWarn('[V-MATE] Skipping recent room hydrate failure', {
-        userId,
-        roomId: row?.id || null,
-        message: hydrateError?.message || String(hydrateError),
+        ...toSafeErrorMeta(hydrateError),
       });
     }
   }
@@ -834,135 +996,174 @@ export const getLibraryPayload = async ({ event, userId }) => {
     };
   } catch (error) {
     logServerWarn('[V-MATE] Returning empty library payload after unexpected failure', {
-      userId,
-      message: error?.message || String(error),
+      ...toSafeErrorMeta(error),
     });
     return buildEmptyLibraryPayload();
   }
 };
 
-export const createCharacter = async ({ event, userId, payload }) => {
-  const client = await userClient(event);
-  if (!client) return null;
-  const creatorName = String(payload.creatorName || payload.profileJson?.creatorName || payload.promptProfileJson?.creatorName || '').trim();
-  const insertPayload = {
+const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value || {}, key);
+const assetKindForRow = (asset) => String(asset?.variant || asset?.kind || '').split(':').pop();
+const isUuid = (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ''));
+const matchContentIdOrSlug = (query, value) => query.eq(isUuid(value) ? 'id' : 'slug', value);
+
+export const buildCharacterWritePayload = ({ payload, existing = null, create = false, userId }) => {
+  const output = create ? {
     owner_user_id: userId,
     slug: payload.slug || createHash('sha1').update(`${userId}:${payload.name}:${Date.now()}`).digest('hex').slice(0, 10),
-    name: payload.name,
-    headline: payload.headline,
-    summary: payload.summary,
-    cover_image_url: payload.coverImageUrl,
-    avatar_image_url: payload.avatarImageUrl || payload.coverImageUrl,
-    visibility: payload.visibility,
-    display_status: payload.visibility === 'public' ? 'visible' : 'draft',
-    source_type: payload.sourceType,
-    source_url: payload.sourceUrl || null,
-    rights_attested_at: payload.visibility === 'public' && payload.rightsConfirmed ? nowIso() : null,
-    tags: payload.tags,
-    profile_json: { creatorName, ...(payload.profileJson || { personality: payload.summary, relationship: '처음 대화를 시작하는 거리감' }) },
-    speech_style_json: payload.speechStyleJson || { voice: payload.headline || payload.summary },
-    prompt_profile_json: { creatorName, ...(payload.promptProfileJson || { persona: [payload.summary], speechStyle: [payload.headline || payload.summary], relationshipBaseline: '처음 대화를 시작하는 거리감' }) },
-    published_at: payload.visibility === 'public' ? nowIso() : null,
+  } : {};
+  const map = {
+    name: 'name',
+    headline: 'headline',
+    summary: 'summary',
+    coverImageUrl: 'cover_image_url',
+    avatarImageUrl: 'avatar_image_url',
+    visibility: 'visibility',
+    sourceType: 'source_type',
+    sourceUrl: 'source_url',
+    tags: 'tags',
   };
+  for (const [source, target] of Object.entries(map)) {
+    if (create || hasOwn(payload, source)) output[target] = source === 'sourceUrl' ? payload[source] || null : payload[source];
+  }
+  if (create && !output.avatar_image_url) output.avatar_image_url = output.cover_image_url || '';
+  const creatorName = String(payload.creatorName ?? existing?.profile_json?.creatorName ?? existing?.prompt_profile_json?.creatorName ?? '').trim();
+  if (create || hasOwn(payload, 'profileJson') || hasOwn(payload, 'creatorName')) {
+    output.profile_json = {
+      ...(create ? { personality: payload.summary, relationship: '처음 대화를 시작하는 거리감' } : {}),
+      ...(existing?.profile_json || {}),
+      ...(payload.profileJson || {}),
+      creatorName,
+    };
+  }
+  if (create || hasOwn(payload, 'speechStyleJson')) {
+    output.speech_style_json = {
+      ...(create ? { voice: payload.headline || payload.summary } : {}),
+      ...(existing?.speech_style_json || {}),
+      ...(payload.speechStyleJson || {}),
+    };
+  }
+  if (create || hasOwn(payload, 'promptProfileJson') || hasOwn(payload, 'creatorName')) {
+    output.prompt_profile_json = {
+      ...(create ? {
+        persona: [payload.summary],
+        speechStyle: [payload.headline || payload.summary],
+        relationshipBaseline: '처음 대화를 시작하는 거리감',
+      } : {}),
+      ...(existing?.prompt_profile_json || {}),
+      ...(payload.promptProfileJson || {}),
+      creatorName,
+    };
+  }
+  if (create || hasOwn(payload, 'visibility')) {
+    output.display_status = payload.visibility === 'public' ? 'visible' : 'draft';
+    output.published_at = payload.visibility === 'public' ? nowIso() : null;
+  }
+  if (payload.visibility === 'public' && payload.rightsConfirmed) output.rights_attested_at = nowIso();
+  if (!create) output.updated_at = nowIso();
+  return output;
+};
+
+export const buildWorldWritePayload = ({ payload, existing = null, create = false, userId }) => {
+  const output = create ? {
+    owner_user_id: userId,
+    slug: payload.slug || createHash('sha1').update(`${userId}:${payload.name}:${Date.now()}`).digest('hex').slice(0, 10),
+  } : {};
+  const map = {
+    name: 'name',
+    headline: 'headline',
+    summary: 'summary',
+    coverImageUrl: 'cover_image_url',
+    visibility: 'visibility',
+    sourceType: 'source_type',
+    sourceUrl: 'source_url',
+    tags: 'tags',
+    worldRulesMarkdown: 'world_rules_markdown',
+  };
+  for (const [source, target] of Object.entries(map)) {
+    if (create || hasOwn(payload, source)) output[target] = source === 'sourceUrl' ? payload[source] || null : payload[source];
+  }
+  const creatorName = String(payload.creatorName ?? existing?.prompt_profile_json?.creatorName ?? '').trim();
+  if (create || hasOwn(payload, 'promptProfileJson') || hasOwn(payload, 'creatorName')) {
+    output.prompt_profile_json = {
+      ...(create ? {
+        tone: payload.headline || payload.summary,
+        rules: [payload.worldRulesMarkdown || payload.summary],
+        starterLocations: ['첫 장면 위치'],
+        worldTerms: payload.tags || [],
+      } : {}),
+      ...(existing?.prompt_profile_json || {}),
+      ...(payload.promptProfileJson || {}),
+      creatorName,
+    };
+  }
+  if (create || hasOwn(payload, 'visibility')) {
+    output.display_status = payload.visibility === 'public' ? 'visible' : 'draft';
+    output.published_at = payload.visibility === 'public' ? nowIso() : null;
+  }
+  if (payload.visibility === 'public' && payload.rightsConfirmed) output.rights_attested_at = nowIso();
+  if (!create) output.updated_at = nowIso();
+  return output;
+};
+
+export const createCharacter = async ({ userId, payload }) => {
+  const client = await createSupabaseAdminClient();
+  if (!client) return null;
+  const insertPayload = buildCharacterWritePayload({ payload, create: true, userId });
   const { data, error } = await client.from('characters').insert(insertPayload).select('*').single();
   if (error) throw error;
   if (Array.isArray(payload.assets) && payload.assets.length > 0) {
-    const assetRows = payload.assets.map((asset) => ({ character_id: data.id, asset_kind: asset.kind, url: asset.url, width: asset.width, height: asset.height }));
+    const assetRows = payload.assets.map((asset) => ({ character_id: data.id, asset_kind: assetKindForRow(asset), url: asset.url, width: asset.width, height: asset.height }));
     const { error: assetError } = await client.from('character_assets').insert(assetRows);
     if (assetError) throw assetError;
   }
   return summarizeCharacter(data);
 };
 
-export const updateCharacter = async ({ event, userId, slug, payload }) => {
-  const client = await userClient(event);
+export const updateCharacter = async ({ userId, slug, payload }) => {
+  const client = await createSupabaseAdminClient();
   if (!client) return null;
-  const creatorName = String(payload.creatorName || payload.profileJson?.creatorName || payload.promptProfileJson?.creatorName || '').trim();
-  const updatePayload = {
-    name: payload.name,
-    headline: payload.headline,
-    summary: payload.summary,
-    cover_image_url: payload.coverImageUrl,
-    avatar_image_url: payload.avatarImageUrl || payload.coverImageUrl,
-    visibility: payload.visibility,
-    display_status: payload.visibility === 'public' ? 'visible' : 'draft',
-    source_type: payload.sourceType,
-    source_url: payload.sourceUrl || null,
-    rights_attested_at: payload.visibility === 'public' && payload.rightsConfirmed ? nowIso() : null,
-    tags: payload.tags,
-    profile_json: { creatorName, ...(payload.profileJson || {}) },
-    speech_style_json: payload.speechStyleJson || {},
-    prompt_profile_json: { creatorName, ...(payload.promptProfileJson || {}) },
-    updated_at: nowIso(),
-    published_at: payload.visibility === 'public' ? nowIso() : null,
-  };
+  const { data: existing, error: existingError } = await client.from('characters').select('*').eq('owner_user_id', userId).eq('slug', slug).maybeSingle();
+  if (existingError) throw existingError;
+  if (!existing) return null;
+  const updatePayload = buildCharacterWritePayload({ payload, existing, userId });
   const { data, error } = await client.from('characters').update(updatePayload).eq('owner_user_id', userId).eq('slug', slug).select('*').maybeSingle();
   if (error) throw error;
   if (!data) return null;
   if (Array.isArray(payload.assets) && payload.assets.length > 0) {
-    const assetRows = payload.assets.map((asset) => ({ character_id: data.id, asset_kind: asset.kind, url: asset.url, width: asset.width, height: asset.height }));
+    const assetRows = payload.assets.map((asset) => ({ character_id: data.id, asset_kind: assetKindForRow(asset), url: asset.url, width: asset.width, height: asset.height }));
     const { error: assetError } = await client.from('character_assets').insert(assetRows);
     if (assetError) throw assetError;
   }
   return summarizeCharacter(data);
 };
 
-export const createWorld = async ({ event, userId, payload }) => {
-  const client = await userClient(event);
+export const createWorld = async ({ userId, payload }) => {
+  const client = await createSupabaseAdminClient();
   if (!client) return null;
-  const creatorName = String(payload.creatorName || payload.promptProfileJson?.creatorName || '').trim();
-  const insertPayload = {
-    owner_user_id: userId,
-    slug: payload.slug || createHash('sha1').update(`${userId}:${payload.name}:${Date.now()}`).digest('hex').slice(0, 10),
-    name: payload.name,
-    headline: payload.headline,
-    summary: payload.summary,
-    cover_image_url: payload.coverImageUrl,
-    visibility: payload.visibility,
-    display_status: payload.visibility === 'public' ? 'visible' : 'draft',
-    source_type: payload.sourceType,
-    source_url: payload.sourceUrl || null,
-    rights_attested_at: payload.visibility === 'public' && payload.rightsConfirmed ? nowIso() : null,
-    tags: payload.tags,
-    world_rules_markdown: payload.worldRulesMarkdown,
-    prompt_profile_json: { creatorName, ...(payload.promptProfileJson || { tone: payload.headline || payload.summary, rules: [payload.worldRulesMarkdown || payload.summary], starterLocations: ['첫 장면 위치'], worldTerms: payload.tags || [] }) },
-    published_at: payload.visibility === 'public' ? nowIso() : null,
-  };
+  const insertPayload = buildWorldWritePayload({ payload, create: true, userId });
   const { data, error } = await client.from('worlds').insert(insertPayload).select('*').single();
   if (error) throw error;
   if (Array.isArray(payload.assets) && payload.assets.length > 0) {
-    const assetRows = payload.assets.map((asset) => ({ world_id: data.id, asset_kind: asset.kind, url: asset.url, width: asset.width, height: asset.height }));
+    const assetRows = payload.assets.map((asset) => ({ world_id: data.id, asset_kind: assetKindForRow(asset), url: asset.url, width: asset.width, height: asset.height }));
     const { error: assetError } = await client.from('world_assets').insert(assetRows);
     if (assetError) throw assetError;
   }
   return summarizeWorld(data);
 };
 
-export const updateWorld = async ({ event, userId, slug, payload }) => {
-  const client = await userClient(event);
+export const updateWorld = async ({ userId, slug, payload }) => {
+  const client = await createSupabaseAdminClient();
   if (!client) return null;
-  const creatorName = String(payload.creatorName || payload.promptProfileJson?.creatorName || '').trim();
-  const updatePayload = {
-    name: payload.name,
-    headline: payload.headline,
-    summary: payload.summary,
-    cover_image_url: payload.coverImageUrl,
-    visibility: payload.visibility,
-    display_status: payload.visibility === 'public' ? 'visible' : 'draft',
-    source_type: payload.sourceType,
-    source_url: payload.sourceUrl || null,
-    rights_attested_at: payload.visibility === 'public' && payload.rightsConfirmed ? nowIso() : null,
-    tags: payload.tags,
-    world_rules_markdown: payload.worldRulesMarkdown,
-    prompt_profile_json: { creatorName, ...(payload.promptProfileJson || {}) },
-    updated_at: nowIso(),
-    published_at: payload.visibility === 'public' ? nowIso() : null,
-  };
+  const { data: existing, error: existingError } = await client.from('worlds').select('*').eq('owner_user_id', userId).eq('slug', slug).maybeSingle();
+  if (existingError) throw existingError;
+  if (!existing) return null;
+  const updatePayload = buildWorldWritePayload({ payload, existing, userId });
   const { data, error } = await client.from('worlds').update(updatePayload).eq('owner_user_id', userId).eq('slug', slug).select('*').maybeSingle();
   if (error) throw error;
   if (!data) return null;
   if (Array.isArray(payload.assets) && payload.assets.length > 0) {
-    const assetRows = payload.assets.map((asset) => ({ world_id: data.id, asset_kind: asset.kind, url: asset.url, width: asset.width, height: asset.height }));
+    const assetRows = payload.assets.map((asset) => ({ world_id: data.id, asset_kind: assetKindForRow(asset), url: asset.url, width: asset.width, height: asset.height }));
     const { error: assetError } = await client.from('world_assets').insert(assetRows);
     if (assetError) throw assetError;
   }
@@ -1010,12 +1211,41 @@ const buildRoomSummaryFromContext = ({
 });
 
 export const createRoom = async ({ event, userId, characterSlug, worldSlug = null, userAlias = '나' }) => {
-  const client = await userClient(event);
-  const publicReadClient = await publicClient();
-  if (!client || !publicReadClient) return null;
-  const character = await getCharacterRowBySlug(publicReadClient, characterSlug);
-  const world = worldSlug ? await getWorldRowBySlug(publicReadClient, worldSlug) : null;
-  if (!character) return null;
+  const client = await createSupabaseAdminClient();
+  if (!client) return null;
+  const { data: character, error: characterError } = await client.from('characters').select('*').eq('slug', characterSlug).maybeSingle();
+  if (characterError) throw characterError;
+  const { data: world, error: worldError } = worldSlug
+    ? await client.from('worlds').select('*').eq('slug', worldSlug).maybeSingle()
+    : { data: null, error: null };
+  if (worldError) throw worldError;
+  if (!character || (worldSlug && !world)) {
+    const error = new Error('ROOM_TARGET_NOT_FOUND');
+    error.code = 'ROOM_TARGET_NOT_FOUND';
+    throw error;
+  }
+  const targetRows = [{ entityType: 'character', row: character }, ...(world ? [{ entityType: 'world', row: world }] : [])];
+  for (const target of targetRows) {
+    const isOwner = target.row.owner_user_id === userId;
+    const publiclyStartable = target.row.visibility === 'public' && target.row.display_status === 'visible';
+    if (!isOwner && !publiclyStartable) {
+      const error = new Error('ROOM_TARGET_NOT_FOUND');
+      error.code = 'ROOM_TARGET_NOT_FOUND';
+      throw error;
+    }
+    const { data: moderation, error: moderationError } = await client
+      .from('content_moderation')
+      .select('status')
+      .eq('entity_type', target.entityType)
+      .eq('entity_id', target.row.id)
+      .maybeSingle();
+    if (moderationError) throw moderationError;
+    if (target.row.display_status === 'hidden' || ['quarantined', 'blocked'].includes(moderation?.status)) {
+      const error = new Error('ROOM_TARGET_NOT_STARTABLE');
+      error.code = 'ROOM_TARGET_NOT_STARTABLE';
+      throw error;
+    }
+  }
   const bridgeProfile = generateBridgeProfile({ character: {
     name: character.name,
     headline: character.headline,
@@ -1040,77 +1270,44 @@ export const createRoom = async ({ event, userId, characterSlug, worldSlug = nul
     promptProfile: world.prompt_profile_json,
   } : null, bridgeProfile, state });
   const storedPromptSnapshot = buildStoredPromptSnapshot({ basePromptSnapshot: promptSnapshot });
-
-  const { data: roomRow, error: roomError } = await client.from('rooms').insert({
-    user_id: userId,
-    character_id: character.id,
-    world_id: world?.id || null,
-    user_alias: userAlias,
-    title: world ? `${character.name} · ${world.name}` : character.name,
-    bridge_profile_json: bridgeProfile,
-    resolved_prompt_snapshot_json: storedPromptSnapshot,
-    last_message_at: nowIso(),
-  }).select('*').single();
-  if (roomError) {
-    logServerWarn('[V-MATE] room insert failed', { message: roomError.message, code: roomError.code, userId, characterSlug, worldSlug });
-    throw roomError;
-  }
-
-  const { error: stateError } = await client.from('room_state_summaries').insert({
-    room_id: roomRow.id,
-    current_situation: state.currentSituation,
-    location: state.location,
-    relationship_state: state.relationshipState,
-    inventory_json: state.inventory,
-    appearance_json: state.appearance,
-    pose_json: state.pose,
-    future_promises_json: state.futurePromises,
-    world_notes_json: state.worldNotes,
-  });
-  if (stateError) {
-    logServerWarn('[V-MATE] room state insert failed', { message: stateError.message, code: stateError.code, roomId: roomRow.id });
-    throw stateError;
-  }
-
   const greeting = buildGreetingMessage({ userAlias, characterName: character.name, bridgeProfile });
-  const { data: greetingRow, error: messageError } = await client
-    .from('room_messages')
-    .insert({ room_id: roomRow.id, ...greeting })
-    .select('id, created_at')
-    .single();
-  if (messageError) {
-    logServerWarn('[V-MATE] room greeting insert failed', { message: messageError.message, code: messageError.code, roomId: roomRow.id });
-    throw messageError;
-  }
-
-  await incrementChatStartCountsBestEffort({ client, character, world });
-
-  return buildRoomSummaryFromContext({
-    roomRow,
-    character,
-    world,
-    bridgeProfile,
-    state,
-    greetingRow,
-    greeting,
-    userAlias,
+  const { data, error } = await client.rpc('create_room_v2', {
+    p_user_id: userId,
+    p_character_slug: characterSlug,
+    p_world_slug: worldSlug,
+    p_user_alias: userAlias,
+    p_title: world ? `${character.name} · ${world.name}` : character.name,
+    p_bridge_profile: bridgeProfile,
+    p_prompt_snapshot: storedPromptSnapshot,
+    p_state: state,
+    p_greeting: greeting.content_json,
   });
+  if (error) throw error;
+  const roomId = data?.room_id || data?.roomId || data;
+  return getRoom({ event, roomId, userId });
 };
 
-export const getRoom = async ({ event, roomId }) => {
+export const getRoom = async ({ event, roomId, userId }) => {
   const client = await userClient(event);
   const publicReadClient = await publicClient();
   if (!client || !publicReadClient) return null;
-  const { data: row, error } = await client.from('rooms').select('*').eq('id', roomId).maybeSingle();
+  let query = client.from('rooms').select('*').eq('id', roomId);
+  if (userId) query = query.eq('user_id', userId);
+  const { data: row, error } = await query.maybeSingle();
   if (error) throw error;
   if (!row) return null;
   return hydrateRoom({ client, publicClientInstance: publicReadClient, row });
 };
 
-export const getRoomHistoryForModel = async ({ event, roomId }) => {
+export const getRoomHistoryForModel = async ({ event, roomId, userId }) => {
   const client = await userClient(event);
   if (!client) return [];
-  const { data, error } = await client.from('room_messages').select('*').eq('room_id', roomId).order('created_at', { ascending: true });
+  if (userId) {
+    const { data: ownedRoom, error: roomError } = await client.from('rooms').select('id').eq('id', roomId).eq('user_id', userId).maybeSingle();
+    if (roomError) throw roomError;
+    if (!ownedRoom) return [];
+  }
+  const { data, error } = await client.from('room_messages').select('*').eq('room_id', roomId).order('sequence_no', { ascending: true }).order('created_at', { ascending: true });
   if (error) throw error;
   const history = (data || []).map((item) => ({
     role: item.role,
@@ -1119,11 +1316,13 @@ export const getRoomHistoryForModel = async ({ event, roomId }) => {
   return buildRecentRawHistory(history);
 };
 
-export const getRoomPromptContext = async ({ event, roomId }) => {
+export const getRoomPromptContext = async ({ event, roomId, userId }) => {
   const client = await userClient(event);
   if (!client) return null;
   const [roomResult, stateResult] = await Promise.all([
-    client.from('rooms').select('resolved_prompt_snapshot_json, bridge_profile_json').eq('id', roomId).maybeSingle(),
+    userId
+      ? client.from('rooms').select('resolved_prompt_snapshot_json, bridge_profile_json').eq('id', roomId).eq('user_id', userId).maybeSingle()
+      : client.from('rooms').select('resolved_prompt_snapshot_json, bridge_profile_json').eq('id', roomId).maybeSingle(),
     client.from('room_state_summaries').select('*').eq('room_id', roomId).maybeSingle(),
   ]);
   if (roomResult.error) throw roomResult.error;
@@ -1136,6 +1335,7 @@ export const getRoomPromptContext = async ({ event, roomId }) => {
       storedPromptSnapshot: roomResult.data.resolved_prompt_snapshot_json,
       state,
     }),
+    storedPromptSnapshot: roomResult.data.resolved_prompt_snapshot_json,
     bridgeProfile: roomResult.data.bridge_profile_json,
   };
 };
@@ -1198,6 +1398,80 @@ export const appendRoomMessages = async ({ event, roomId, userMessage, assistant
   return hydrateRoom({ client, publicClientInstance: publicReadClient, row: nextRoomRow });
 };
 
+export const commitRoomTurn = async ({
+  event,
+  userId,
+  roomId,
+  requestId,
+  requestFingerprint,
+  expectedVersion,
+  userMessage,
+  assistantMessage,
+  response,
+}) => {
+  const room = await getRoom({ event, roomId, userId });
+  if (!room) return null;
+  const admin = await createSupabaseAdminClient();
+  if (!admin) return null;
+  const nextState = updateRoomStateFromMessages({ state: clone(room.state), assistantMessage, userMessage });
+  const nextMessages = [
+    ...room.messages,
+    { role: 'user', content: userMessage },
+    { role: 'assistant', content: assistantMessage },
+  ];
+  const turns = buildConversationTurns(nextMessages);
+  const promptContext = await getRoomPromptContext({ event, roomId, userId });
+  const storedPromptSnapshot = normalizeStoredPromptSnapshot(
+    promptContext?.storedPromptSnapshot || room.resolvedPromptSnapshotJson || {}
+  );
+  const compactedTurns = turns.slice(0, Math.max(0, turns.length - ROOM_MEMORY_CONFIG.recentRawTurns));
+  const nextStoredPromptSnapshot = shouldRefreshRunningSummary({
+    totalUserTurns: turns.length,
+    compactedUserTurns: storedPromptSnapshot.compactedUserTurns,
+  })
+    ? buildStoredPromptSnapshot({
+        basePromptSnapshot: storedPromptSnapshot.basePromptSnapshot,
+        runningSummary: buildRunningSummary({ turns: compactedTurns, state: nextState }),
+        compactedUserTurns: turns.length,
+      })
+    : storedPromptSnapshot;
+  const { data, error } = await admin.rpc('commit_room_turn_v2', {
+    p_user_id: userId,
+    p_room_id: roomId,
+    p_request_id: requestId,
+    p_request_fingerprint: requestFingerprint,
+    p_expected_version: Number(expectedVersion || 0),
+    p_user_content: { text: userMessage },
+    p_assistant_content: assistantMessage,
+    p_next_state: nextState,
+    p_next_prompt_snapshot: nextStoredPromptSnapshot,
+    p_response_json: response || {},
+  });
+  if (error) throw error;
+  const committedAt = nowIso();
+  const commitResult = Array.isArray(data) ? data[0] : data;
+  const rpcVersion = Number(commitResult?.version);
+  const nextVersion = Number.isFinite(rpcVersion)
+    ? rpcVersion
+    : Number(expectedVersion ?? room.version ?? 0) + 1;
+  const messageId = (role) => `${role}-${createHash('sha256')
+    .update(`${requestId}:${role}`)
+    .digest('hex')
+    .slice(0, 24)}`;
+  return {
+    ...room,
+    state: nextState,
+    messages: [
+      ...room.messages,
+      { id: messageId('user'), role: 'user', createdAt: committedAt, content: userMessage },
+      { id: messageId('assistant'), role: 'assistant', createdAt: committedAt, content: assistantMessage },
+    ],
+    updatedAt: committedAt,
+    lastMessageAt: committedAt,
+    version: nextVersion,
+  };
+};
+
 export const getOpsDashboard = async ({ event, userId }) => {
   const client = await userClient(event);
   if (!client) return null;
@@ -1235,64 +1509,180 @@ export const getOpsDashboard = async ({ event, userId }) => {
   };
 };
 
-export const setContentVisibility = async ({ event, entityType, id, status }) => {
-  const client = await userClient(event);
+export const setContentVisibility = async ({ event, userId, entityType, id, status }) => {
+  if (!await isOwnerUser({ event, userId })) return false;
+  const client = await createSupabaseAdminClient();
   if (!client) return false;
   const table = entityType === 'character' ? 'characters' : 'worlds';
-  const { error } = await client.from(table).update({ display_status: status, updated_at: nowIso() }).or(`id.eq.${id},slug.eq.${id}`);
+  const { error } = await matchContentIdOrSlug(
+    client.from(table).update({ display_status: status, updated_at: nowIso() }),
+    id,
+  );
   if (error) throw error;
   return true;
 };
 
-export const deleteContent = async ({ event, entityType, id }) => {
-  const client = await userClient(event);
-  if (!client) return false;
-  const table = entityType === 'character' ? 'characters' : 'worlds';
-  const assetTable = entityType === 'character' ? 'character_assets' : 'world_assets';
-  const fkColumn = entityType === 'character' ? 'character_id' : 'world_id';
-  const selectFields = entityType === 'character'
-    ? 'id, cover_image_url, avatar_image_url, prompt_profile_json'
-    : 'id, cover_image_url, prompt_profile_json';
-  const { data: row, error: rowError } = await client.from(table).select(selectFields).or(`id.eq.${id},slug.eq.${id}`).maybeSingle();
-  if (rowError) throw rowError;
-  if (!row?.id) return false;
-  const { data: assets, error: assetError } = await client.from(assetTable).select('url').eq(fkColumn, row.id);
-  if (assetError) throw assetError;
-  await removeStorageObjectsByUrls({
-    client,
-    urls: collectContentAssetUrls({ entityType, row, assets: assets || [] }),
-  });
-  const { error } = await client.from(table).delete().eq('id', row.id);
-  if (error) throw error;
-  return true;
-};
-
-export const deleteOwnedContent = async ({ event, userId, entityType, id }) => {
-  const client = await userClient(event);
-  if (!client) return false;
+// Content rows can intentionally reuse a canonical object owned by the same
+// user. Resolve live references at cleanup time so deleting one row never
+// turns a remaining row into a broken image. This runs for retries too; a
+// reference lookup failure therefore defers cleanup rather than risking data.
+const resolveUnsharedContentStoragePaths = async ({ client, job, paths }) => {
+  if (job?.operation_kind !== 'content' || !['character', 'world'].includes(job.entity_type)) {
+    return paths;
+  }
+  const entityType = job.entity_type;
   const table = entityType === 'character' ? 'characters' : 'worlds';
   const assetTable = entityType === 'character' ? 'character_assets' : 'world_assets';
   const fkColumn = entityType === 'character' ? 'character_id' : 'world_id';
   const selectFields = entityType === 'character'
     ? 'id, owner_user_id, cover_image_url, avatar_image_url, prompt_profile_json'
     : 'id, owner_user_id, cover_image_url, prompt_profile_json';
-  const { data: row, error: rowError } = await client
-    .from(table)
-    .select(selectFields)
-    .eq('owner_user_id', userId)
-    .or(`id.eq.${id},slug.eq.${id}`)
-    .maybeSingle();
+  const allOwnedRows = [];
+  for (let offset = 0; ; offset += CONTENT_REFERENCE_SCAN_LIMITS.pageSize) {
+    const rowsResult = await client
+      .from(table)
+      .select(selectFields)
+      .eq('owner_user_id', job.subject_user_id)
+      .range(offset, offset + CONTENT_REFERENCE_SCAN_LIMITS.pageSize - 1);
+    if (rowsResult?.error) throw rowsResult.error;
+    const page = Array.isArray(rowsResult?.data)
+      ? rowsResult.data
+      : rowsResult?.data ? [rowsResult.data] : [];
+    allOwnedRows.push(...page);
+    if (allOwnedRows.length > CONTENT_REFERENCE_SCAN_LIMITS.maxRows) {
+      const error = new Error('Content reference scan exceeds the safe row limit.');
+      error.code = 'CONTENT_REFERENCE_SCAN_LIMIT_EXCEEDED';
+      throw error;
+    }
+    if (page.length < CONTENT_REFERENCE_SCAN_LIMITS.pageSize) break;
+  }
+  const remainingRows = allOwnedRows.filter((row) => row?.id && row.id !== job.entity_id);
+  if (!remainingRows.length) return paths;
+
+  const referencedAssetUrls = [];
+  const remainingIds = remainingRows.map((row) => row.id);
+  for (let start = 0; start < remainingIds.length; start += CONTENT_REFERENCE_SCAN_LIMITS.idBatchSize) {
+    const ids = remainingIds.slice(start, start + CONTENT_REFERENCE_SCAN_LIMITS.idBatchSize);
+    for (let offset = 0; ; offset += CONTENT_REFERENCE_SCAN_LIMITS.pageSize) {
+      const assetsResult = await client
+        .from(assetTable)
+        .select('url')
+        .in(fkColumn, ids)
+        .range(offset, offset + CONTENT_REFERENCE_SCAN_LIMITS.pageSize - 1);
+      if (assetsResult?.error) throw assetsResult.error;
+      const page = Array.isArray(assetsResult?.data)
+        ? assetsResult.data
+        : assetsResult?.data ? [assetsResult.data] : [];
+      referencedAssetUrls.push(...page.map((asset) => asset?.url));
+      if (referencedAssetUrls.length > CONTENT_REFERENCE_SCAN_LIMITS.maxAssets) {
+        const error = new Error('Content asset reference scan exceeds the safe row limit.');
+        error.code = 'CONTENT_REFERENCE_SCAN_LIMIT_EXCEEDED';
+        throw error;
+      }
+      if (page.length < CONTENT_REFERENCE_SCAN_LIMITS.pageSize) break;
+    }
+  }
+  const referencedUrls = [
+    ...remainingRows.flatMap((row) => collectContentAssetUrls({ entityType, row, assets: [] })),
+    ...referencedAssetUrls,
+  ];
+  const referencedPaths = new Set(resolveStoragePathsByUrls({
+    urls: referencedUrls,
+    ownerUserId: job.subject_user_id,
+    entityType,
+  }));
+  return paths.filter((path) => !referencedPaths.has(path));
+};
+
+const deleteContentWithStorageSaga = async ({ client, userId, entityType, id, ownerOnly }) => {
+  if (!['character', 'world'].includes(entityType)) return false;
+  const table = entityType === 'character' ? 'characters' : 'worlds';
+  const assetTable = entityType === 'character' ? 'character_assets' : 'world_assets';
+  const fkColumn = entityType === 'character' ? 'character_id' : 'world_id';
+  const selectFields = entityType === 'character'
+    ? 'id, owner_user_id, cover_image_url, avatar_image_url, prompt_profile_json'
+    : 'id, owner_user_id, cover_image_url, prompt_profile_json';
+  await drainStorageDeletionOutbox({
+    client,
+    bucket: STORAGE_BUCKET,
+    limit: 3,
+    resolveRemovablePaths: resolveUnsharedContentStoragePaths,
+  });
+  const rowQuery = ownerOnly
+    ? client.from(table).select(selectFields).eq('owner_user_id', userId)
+    : client.from(table).select(selectFields);
+  const { data: row, error: rowError } = await matchContentIdOrSlug(
+    rowQuery,
+    id,
+  ).maybeSingle();
   if (rowError) throw rowError;
   if (!row?.id) return false;
   const { data: assets, error: assetError } = await client.from(assetTable).select('url').eq(fkColumn, row.id);
   if (assetError) throw assetError;
-  await removeStorageObjectsByUrls({
-    client,
+  const paths = resolveStoragePathsByUrls({
     urls: collectContentAssetUrls({ entityType, row, assets: assets || [] }),
+    ownerUserId: row.owner_user_id,
+    entityType,
   });
-  const { error } = await client.from(table).delete().eq('id', row.id).eq('owner_user_id', userId);
-  if (error) throw error;
+  const job = await prepareStorageDeletionJob({
+    client,
+    operationKey: `content:${entityType}:${row.id}`,
+    operationKind: 'content',
+    subjectUserId: row.owner_user_id,
+    entityType,
+    entityId: row.id,
+    paths,
+  });
+  let deleteQuery = client.from(table).delete().eq('id', row.id);
+  if (ownerOnly) deleteQuery = deleteQuery.eq('owner_user_id', userId);
+  let deleteError = null;
+  try {
+    const result = await deleteQuery;
+    deleteError = result?.error || null;
+  } catch (error) {
+    deleteError = error;
+  }
+  if (deleteError) {
+    let verification;
+    try {
+      verification = await client.from(table).select('id').eq('id', row.id).maybeSingle();
+    } catch (error) {
+      verification = { data: null, error };
+    }
+    if (verification?.error) {
+      const error = new Error('Content deletion state could not be confirmed.');
+      error.code = 'CONTENT_DELETE_STATE_UNKNOWN';
+      error.cause = deleteError;
+      throw error;
+    }
+    if (verification?.data) throw deleteError;
+  }
+  if (job) {
+    const claimedJob = await claimStorageDeletionJob({ client, job });
+    if (claimedJob) {
+      await processStorageDeletionJob({
+        client,
+        job: claimedJob,
+        bucket: STORAGE_BUCKET,
+        destructiveStateConfirmed: true,
+        resolveRemovablePaths: resolveUnsharedContentStoragePaths,
+      });
+    }
+  }
   return true;
+};
+
+export const deleteContent = async ({ event, userId, entityType, id }) => {
+  if (!await isOwnerUser({ event, userId })) return false;
+  const client = await createSupabaseAdminClient();
+  if (!client) return false;
+  return deleteContentWithStorageSaga({ client, userId, entityType, id, ownerOnly: false });
+};
+
+export const deleteOwnedContent = async ({ userId, entityType, id }) => {
+  const client = await createSupabaseAdminClient();
+  if (!client) return false;
+  return deleteContentWithStorageSaga({ client, userId, entityType, id, ownerOnly: true });
 };
 
 export const deleteAccount = async ({ userId }) => {
@@ -1303,6 +1693,8 @@ export const deleteAccount = async ({ userId }) => {
       reason: 'admin_not_configured',
     };
   }
+
+  await beginAccountStorageCleanup({ client, userId });
 
   const [
     characterResult,
@@ -1324,48 +1716,36 @@ export const deleteAccount = async ({ userId }) => {
   const worldIds = worldRows.map((row) => row.id).filter(Boolean);
   const roomIds = roomRows.map((row) => row.id).filter(Boolean);
 
-  const [characterAssetResult, worldAssetResult] = await Promise.all([
-    characterIds.length
-      ? client.from('character_assets').select('character_id, url').in('character_id', characterIds)
-      : Promise.resolve({ data: [], error: null }),
-    worldIds.length
-      ? client.from('world_assets').select('world_id, url').in('world_id', worldIds)
-      : Promise.resolve({ data: [], error: null }),
-  ]);
-  throwIfSupabaseError('character_assets.select', characterAssetResult);
-  throwIfSupabaseError('world_assets.select', worldAssetResult);
+  // The durable fence blocks new upload responses first. Existing signed URLs
+  // can still upload without auth, so cleanup runs before and immediately after
+  // Auth deletion and the scheduled reconciler keeps scanning through expiry.
+  let removedAssets = await removeAccountStorageObjectsByPrefix({ client, userId });
 
-  const removedAssets = await removeAccountStorageObjectsByUrls({
-    client,
-    urls: [
-      ...characterRows.flatMap((row) => collectContentAssetUrls({
-        entityType: 'character',
-        row,
-        assets: (characterAssetResult.data || []).filter((asset) => asset.character_id === row.id),
-      })),
-      ...worldRows.flatMap((row) => collectContentAssetUrls({
-        entityType: 'world',
-        row,
-        assets: (worldAssetResult.data || []).filter((asset) => asset.world_id === row.id),
-      })),
-    ],
-  });
-
-  await deleteRows({ client, table: 'chat_messages', column: 'user_id', value: userId });
-  await deleteRowsIn({ client, table: 'room_messages', column: 'room_id', values: roomIds });
-  await deleteRowsIn({ client, table: 'room_state_summaries', column: 'room_id', values: roomIds });
-  await deleteRows({ client, table: 'rooms', column: 'user_id', value: userId });
-  await deleteRows({ client, table: 'bookmarks', column: 'user_id', value: userId });
-  await deleteRows({ client, table: 'recent_views', column: 'user_id', value: userId });
-  await deleteRowsIn({ client, table: 'character_assets', column: 'character_id', values: characterIds });
-  await deleteRowsIn({ client, table: 'world_assets', column: 'world_id', values: worldIds });
-  await deleteRows({ client, table: 'characters', column: 'owner_user_id', value: userId });
-  await deleteRows({ client, table: 'worlds', column: 'owner_user_id', value: userId });
-  await deleteRows({ client, table: 'profiles', column: 'user_id', value: userId });
-
-  const { error: authDeleteError } = await client.auth.admin.deleteUser(userId);
+  let authDeleteError = null;
+  try {
+    const result = await client.auth.admin.deleteUser(userId);
+    authDeleteError = result?.error || null;
+  } catch (error) {
+    authDeleteError = error;
+  }
   if (authDeleteError) {
-    throw authDeleteError;
+    const deletionState = await confirmAuthUserAbsent({ client, userId });
+    if (deletionState !== 'absent') {
+      const error = new Error('Account deletion did not reach a confirmed final state.');
+      error.code = deletionState === 'present'
+        ? 'ACCOUNT_DELETE_PARTIAL_STORAGE_REMOVED'
+        : 'ACCOUNT_DELETE_STATE_UNKNOWN';
+      error.cause = authDeleteError;
+      throw error;
+    }
+  }
+
+  try {
+    removedAssets += await removeAccountStorageObjectsByPrefix({ client, userId });
+  } catch (error) {
+    // Auth deletion is already final. Keep the durable fence so scheduled
+    // maintenance can remove any late upload without exposing raw provider data.
+    logServerWarn('[V-MATE] Account storage cleanup remains queued', toSafeErrorMeta(error));
   }
 
   return {
@@ -1470,18 +1850,6 @@ export const applyReportAction = async ({ event, reportId, action, note }) => {
   return data || null;
 };
 
-const normalizeQuotaResult = (data, fallbackLimit) => {
-  const row = Array.isArray(data) ? data[0] : data;
-  return {
-    ...(Object.prototype.hasOwnProperty.call(row || {}, 'allowed') ? { allowed: Boolean(row.allowed) } : {}),
-    ...(Object.prototype.hasOwnProperty.call(row || {}, 'duplicate') ? { duplicate: Boolean(row.duplicate) } : {}),
-    ...(Object.prototype.hasOwnProperty.call(row || {}, 'response_json') ? { response: row.response_json || null } : {}),
-    limit: Number(row?.message_limit || row?.limit || fallbackLimit),
-    remaining: Number(row?.remaining || 0),
-    resetAt: row?.reset_at || row?.resetAt || '',
-  };
-};
-
 export const getChatQuota = async ({ event, limit = 30 }) => {
   const client = await userClient(event);
   if (!client) return { limit, remaining: 0, resetAt: '' };
@@ -1490,38 +1858,150 @@ export const getChatQuota = async ({ event, limit = 30 }) => {
   return normalizeQuotaResult(data, limit);
 };
 
-export const reserveChatQuota = async ({ event, requestId, limit = 30 }) => {
-  const client = await userClient(event);
+export const reserveChatQuota = async ({ userId, route = 'room', roomId = null, requestId, requestFingerprint, limit = 30 }) => {
+  const client = await createSupabaseAdminClient();
   if (!client) return { allowed: false, limit, remaining: 0, resetAt: '' };
-  const { data, error } = await client.rpc('reserve_daily_chat_message', { p_request_id: requestId, p_limit: limit });
+  const { data, error } = await client.rpc('reserve_chat_message_v2', {
+    p_user_id: userId,
+    p_route: route,
+    p_room_id: roomId,
+    p_request_id: requestId,
+    p_request_fingerprint: requestFingerprint,
+    p_limit: limit,
+    p_lease_seconds: 120,
+  });
   if (error) throw error;
-  return normalizeQuotaResult(data, limit);
+  return normalizeQuotaResult(data, limit, { requireDisposition: true });
 };
 
-export const completeChatQuota = async ({ event, requestId, response }) => {
-  const client = await userClient(event);
+export const completeChatQuota = async ({ userId, requestId, requestFingerprint, response }) => {
+  const client = await createSupabaseAdminClient();
   if (!client) return false;
-  const { data, error } = await client.rpc('complete_daily_chat_message', { p_request_id: requestId, p_response_json: response || {} });
+  const { data, error } = await client.rpc('complete_legacy_chat_message_v2', {
+    p_user_id: userId,
+    p_request_id: requestId,
+    p_request_fingerprint: requestFingerprint,
+    p_response_json: response || {},
+  });
   if (error) throw error;
   return data === true;
 };
 
-export const refundChatQuota = async ({ event, requestId, limit = 30 }) => {
-  const client = await userClient(event);
+export const refundChatQuota = async ({ userId, requestId, requestFingerprint, limit = 30 }) => {
+  const client = await createSupabaseAdminClient();
   if (!client) return { limit, remaining: 0, resetAt: '' };
-  const { data, error } = await client.rpc('refund_daily_chat_message', { p_request_id: requestId, p_limit: limit });
+  const { data, error } = await client.rpc('refund_chat_message_v2', {
+    p_user_id: userId,
+    p_request_id: requestId,
+    p_request_fingerprint: requestFingerprint,
+    p_limit: limit,
+  });
   if (error) throw error;
   return normalizeQuotaResult(data, limit);
 };
 
-export const prepareAssetUploads = async ({ event, userId, entityType, variants }) => {
-  const client = await userClient(event);
+export const reconcileExpiredChatReservations = async ({ limit = 100 } = {}) => {
+  const client = await createSupabaseAdminClient();
+  if (!client) return { skipped: true, reason: 'admin_not_configured', reconciled: 0 };
+  const safeLimit = Math.max(1, Math.min(1000, Math.floor(Number(limit) || 100)));
+  const { data, error } = await client.rpc('reconcile_expired_chat_reservations_v2', { p_limit: safeLimit });
+  if (error) throw error;
+  return {
+    skipped: false,
+    reconciled: Number(data?.reconciled ?? data?.refunded ?? data ?? 0),
+  };
+};
+
+export const reconcileStorageDeletionOutbox = async ({ limit = 5 } = {}) => {
+  const client = await createSupabaseAdminClient();
+  if (!client) return { skipped: true, reason: 'admin_not_configured', inspected: 0, completed: 0 };
+  return drainStorageDeletionOutbox({
+    client,
+    bucket: STORAGE_BUCKET,
+    limit,
+    strict: true,
+    resolveRemovablePaths: resolveUnsharedContentStoragePaths,
+  });
+};
+
+export const reconcileAccountStorageCleanupFences = async ({ limit = 5 } = {}) => {
+  const client = await createSupabaseAdminClient();
+  if (!client) return { skipped: true, reason: 'admin_not_configured', inspected: 0, completed: 0 };
+  const boundedLimit = Math.max(1, Math.min(20, Math.floor(Number(limit) || 5)));
+  const dueAt = new Date().toISOString();
+  const fencesResult = await client
+    .from(ACCOUNT_STORAGE_CLEANUP_TABLE)
+    .select('*')
+    .lte('cleanup_until', dueAt)
+    .order('last_scan_at', { ascending: true, nullsFirst: true })
+    .order('cleanup_until', { ascending: true })
+    .limit(boundedLimit);
+  throwIfSupabaseError('account_storage_cleanup_fences.select', fencesResult);
+
+  let completed = 0;
+  let firstError = null;
+  for (const fence of fencesResult.data || []) {
+    try {
+      const authState = await confirmAuthUserAbsent({ client, userId: fence.user_id });
+      if (authState === 'unknown') {
+        const error = new Error('Account deletion state could not be confirmed.');
+        error.code = 'ACCOUNT_DELETE_STATE_UNKNOWN';
+        throw error;
+      }
+      if (authState === 'absent') {
+        await removeAccountStorageObjectsByPrefix({ client, userId: fence.user_id });
+        const remainingPaths = [
+          ...(await listOwnedStoragePaths({ client, userId: fence.user_id, entityType: 'character' })),
+          ...(await listOwnedStoragePaths({ client, userId: fence.user_id, entityType: 'world' })),
+        ];
+        if (remainingPaths.length > 0) {
+          const error = new Error('Account storage cleanup remains incomplete.');
+          error.code = 'ACCOUNT_DELETE_STORAGE_STATE_UNKNOWN';
+          throw error;
+        }
+      }
+      // A present user means the account deletion was stopped. Do not remove
+      // their prefix; only release the expired fence after checking Auth.
+      const deletion = await client
+        .from(ACCOUNT_STORAGE_CLEANUP_TABLE)
+        .delete()
+        .eq('user_id', fence.user_id)
+        .eq('cleanup_until', fence.cleanup_until);
+      throwIfSupabaseError('account_storage_cleanup_fences.delete', deletion);
+      completed += 1;
+    } catch (error) {
+      firstError ||= error;
+      const failedAt = new Date().toISOString();
+      try {
+        await client
+          .from(ACCOUNT_STORAGE_CLEANUP_TABLE)
+          .update({
+            attempt_count: Math.max(0, Number(fence.attempt_count) || 0) + 1,
+            last_error_code: String(toSafeErrorMeta(error).errorClass || 'unknown').slice(0, 64),
+            last_scan_at: failedAt,
+            updated_at: failedAt,
+          })
+          .eq('user_id', fence.user_id)
+          .eq('cleanup_until', fence.cleanup_until);
+      } catch {
+        // Preserve the original cleanup failure for the scheduled gate.
+      }
+    }
+  }
+  if (firstError) throw firstError;
+  return { skipped: false, inspected: (fencesResult.data || []).length, completed };
+};
+
+export const prepareAssetUploads = async ({ userId, entityType, variants }) => {
+  const client = await createSupabaseAdminClient();
   if (!client) return null;
-  const baseDir = `${userId}/${entityType}/${Date.now()}-${randomUUID().slice(0, 8)}`;
+  await assertAssetUploadsAllowed({ client, userId });
+  const uploadId = `${Date.now()}-${randomUUID().slice(0, 8)}`;
   const uploads = [];
   for (const variant of variants) {
-    const path = `${baseDir}/${variant.kind}.webp`;
-    const { data, error } = await client.storage.from(STORAGE_BUCKET).createSignedUploadUrl(path, { upsert: true });
+    const path = buildAssetStoragePath({ userId, entityType, uploadId, slot: variant.slot, variant: variant.variant });
+    if (!path) throw new Error('INVALID_UPLOAD_PATH');
+    const { data, error } = await client.storage.from(STORAGE_BUCKET).createSignedUploadUrl(path, { upsert: false });
     if (error) throw error;
     const { data: publicUrlData } = client.storage.from(STORAGE_BUCKET).getPublicUrl(path);
     uploads.push({
@@ -1535,5 +2015,8 @@ export const prepareAssetUploads = async ({ event, userId, entityType, variants 
       bucket: STORAGE_BUCKET,
     });
   }
-  return { bucket: STORAGE_BUCKET, uploads };
+  // Close the check/sign race: a fence that appeared while URLs were being
+  // issued prevents those URLs from ever reaching the browser.
+  await assertAssetUploadsAllowed({ client, userId });
+  return { bucket: STORAGE_BUCKET, expiresAt: new Date(Date.now() + SIGNED_UPLOAD_URL_TTL_MS).toISOString(), uploads };
 };

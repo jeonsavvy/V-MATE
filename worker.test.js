@@ -129,7 +129,7 @@ test('returns configuration error for account deletion when service role secret 
 
     const payload = await response.json();
     assert.equal(response.status, 503);
-    assert.equal(payload.error_code, 'ACCOUNT_DELETE_NOT_CONFIGURED');
+    assert.equal(payload.error_code, 'FEATURE_TEMPORARILY_UNAVAILABLE');
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -243,9 +243,9 @@ test('allows originless POST when non-browser mode is enabled', async () => {
     ALLOW_NON_BROWSER_ORIGIN: 'true',
   });
 
-  assert.equal(response.status, 500);
+  assert.equal(response.status, 503);
   const payload = await response.json();
-  assert.equal(payload.error_code, 'SERVER_API_KEY_NOT_CONFIGURED');
+  assert.equal(payload.error_code, 'FEATURE_TEMPORARILY_UNAVAILABLE');
 });
 
 test('blocks originless POST when non-browser mode is disabled', async () => {
@@ -292,10 +292,10 @@ test('allows any origin when ALLOW_ALL_ORIGINS is enabled', async () => {
     ALLOW_NON_BROWSER_ORIGIN: 'false',
   });
 
-  assert.equal(response.status, 500);
+  assert.equal(response.status, 503);
   assert.equal(response.headers.get('access-control-allow-origin'), 'https://unknown-origin.example');
   const payload = await response.json();
-  assert.equal(payload.error_code, 'SERVER_API_KEY_NOT_CONFIGURED');
+  assert.equal(payload.error_code, 'FEATURE_TEMPORARILY_UNAVAILABLE');
 });
 
 test('returns wildcard allow-origin when ALLOW_ALL_ORIGINS is enabled for originless request', async () => {
@@ -317,10 +317,10 @@ test('returns wildcard allow-origin when ALLOW_ALL_ORIGINS is enabled for origin
     ALLOW_NON_BROWSER_ORIGIN: 'false',
   });
 
-  assert.equal(response.status, 500);
+  assert.equal(response.status, 503);
   assert.equal(response.headers.get('access-control-allow-origin'), '*');
   const payload = await response.json();
-  assert.equal(payload.error_code, 'SERVER_API_KEY_NOT_CONFIGURED');
+  assert.equal(payload.error_code, 'FEATURE_TEMPORARILY_UNAVAILABLE');
 });
 
 test('returns structured 413 when chat request body exceeds worker read limit', async () => {
@@ -354,6 +354,7 @@ test('returns structured 413 when chat request body exceeds worker read limit', 
 test('runs scheduled Supabase keepalive via waitUntil for staggered public table probes', async () => {
   const fetchCalls = [];
   const waitUntilPromises = [];
+  const cleanupFenceLimits = [];
   const isolatedWorker = createWorker({
     keepaliveFetchImpl: async (url, init) => {
       fetchCalls.push({
@@ -367,6 +368,19 @@ test('runs scheduled Supabase keepalive via waitUntil for staggered public table
           'Content-Type': 'application/json',
         },
       });
+    },
+    reconcileExpiredChatReservationsImpl: async ({ limit }) => ({
+      skipped: false,
+      reconciled: limit === 100 ? 2 : 0,
+    }),
+    reconcileStorageDeletionOutboxImpl: async ({ limit }) => ({
+      skipped: false,
+      inspected: limit === 20 ? 1 : 0,
+      completed: 1,
+    }),
+    reconcileAccountStorageCleanupFencesImpl: async ({ limit }) => {
+      cleanupFenceLimits.push(limit);
+      return { skipped: false, inspected: 1, completed: 1 };
     },
   });
 
@@ -410,6 +424,7 @@ test('runs scheduled Supabase keepalive via waitUntil for staggered public table
   assert.equal('authorization' in (fetchCalls[1]?.headers || {}), false);
   assert.equal('authorization' in (fetchCalls[2]?.headers || {}), false);
   assert.equal('authorization' in (fetchCalls[3]?.headers || {}), false);
+  assert.deepEqual(cleanupFenceLimits, [20]);
 });
 
 test('skips scheduled Supabase keepalive when public Supabase config is missing', async () => {
@@ -420,6 +435,17 @@ test('skips scheduled Supabase keepalive when public Supabase config is missing'
       called = true;
       return new Response('[]', { status: 200 });
     },
+    reconcileExpiredChatReservationsImpl: async () => ({
+      skipped: true,
+      reason: 'admin_not_configured',
+      reconciled: 0,
+    }),
+    reconcileStorageDeletionOutboxImpl: async () => ({
+      skipped: true,
+      reason: 'admin_not_configured',
+      inspected: 0,
+      completed: 0,
+    }),
   });
 
   await isolatedWorker.scheduled?.(
@@ -438,6 +464,70 @@ test('skips scheduled Supabase keepalive when public Supabase config is missing'
   assert.equal(waitUntilPromises.length, 1);
   await Promise.all(waitUntilPromises);
   assert.equal(called, false);
+});
+
+test('fails scheduled maintenance safely when reservation reconciliation fails', async () => {
+  const isolatedWorker = createWorker({
+    keepaliveFetchImpl: async () => new Response('[]', { status: 200 }),
+    reconcileExpiredChatReservationsImpl: async () => {
+      throw new Error('raw database error must not be logged');
+    },
+    reconcileStorageDeletionOutboxImpl: async () => ({ skipped: false, inspected: 0, completed: 0 }),
+  });
+
+  await assert.rejects(
+    isolatedWorker.scheduled?.(
+      { scheduledTime: Date.now() },
+      {
+        VITE_SUPABASE_URL: 'https://demo.supabase.co',
+        VITE_SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_demo',
+      },
+    ),
+    { message: 'Scheduled maintenance failed.' },
+  );
+});
+
+test('fails scheduled maintenance safely when deletion outbox reconciliation fails', async () => {
+  const isolatedWorker = createWorker({
+    keepaliveFetchImpl: async () => new Response('[]', { status: 200 }),
+    reconcileExpiredChatReservationsImpl: async () => ({ skipped: false, reconciled: 0 }),
+    reconcileStorageDeletionOutboxImpl: async () => {
+      throw new Error('raw storage database error must not be logged');
+    },
+  });
+
+  await assert.rejects(
+    isolatedWorker.scheduled?.(
+      { scheduledTime: Date.now() },
+      {
+        VITE_SUPABASE_URL: 'https://demo.supabase.co',
+        VITE_SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_demo',
+      },
+    ),
+    { message: 'Scheduled maintenance failed.' },
+  );
+});
+
+test('fails scheduled maintenance safely when account cleanup fence reconciliation fails', async () => {
+  const isolatedWorker = createWorker({
+    keepaliveFetchImpl: async () => new Response('[]', { status: 200 }),
+    reconcileExpiredChatReservationsImpl: async () => ({ skipped: false, reconciled: 0 }),
+    reconcileStorageDeletionOutboxImpl: async () => ({ skipped: false, inspected: 0, completed: 0 }),
+    reconcileAccountStorageCleanupFencesImpl: async () => {
+      throw new Error('raw account cleanup state must not be logged');
+    },
+  });
+
+  await assert.rejects(
+    isolatedWorker.scheduled?.(
+      { scheduledTime: Date.now() },
+      {
+        VITE_SUPABASE_URL: 'https://demo.supabase.co',
+        VITE_SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_demo',
+      },
+    ),
+    { message: 'Scheduled maintenance failed.' },
+  );
 });
 
 test('applies fallback cors/trace/cache headers when chat handler omits them', async () => {
@@ -683,11 +773,13 @@ test('injects runtime env script into html responses', async () => {
         }),
     },
     VITE_CHAT_API_BASE_URL: 'https://api.example.com',
+    SUPABASE_SERVICE_ROLE_KEY: 'server-only-key',
   });
 
   const html = await response.text();
   assert.match(html, /window\.__V_MATE_RUNTIME_ENV__=/);
-  assert.match(html, /VITE_CHAT_API_BASE_URL/);
+  assert.match(html, /chatApiBaseUrl/);
+  assert.doesNotMatch(html, /VITE_[A-Z_]+|SUPABASE_SERVICE_ROLE_KEY|GOOGLE_API_KEY/);
   assert.equal(response.headers.get('cache-control'), 'no-store, max-age=0');
   assert.equal(response.headers.get('pragma'), 'no-cache');
   assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
@@ -719,8 +811,9 @@ test('injects runtime env script into html responses even without html accept he
 
   const html = await response.text();
   assert.match(html, /window\.__V_MATE_RUNTIME_ENV__=/);
-  assert.match(html, /VITE_SUPABASE_URL/);
-  assert.match(html, /VITE_SUPABASE_PUBLISHABLE_KEY/);
+  assert.match(html, /supabaseUrl/);
+  assert.match(html, /supabasePublicKey/);
+  assert.doesNotMatch(html, /VITE_[A-Z_]+|SUPABASE_SERVICE_ROLE_KEY|GOOGLE_API_KEY/);
   assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
 });
 
@@ -744,7 +837,8 @@ test('normalizes whitespace around Cloudflare runtime env binding names', async 
   });
 
   const html = await response.text();
-  assert.match(html, /"VITE_SUPABASE_ANON_KEY":"anon-public-key"/);
+  assert.match(html, /"supabasePublicKey":"anon-public-key"/);
+  assert.doesNotMatch(html, /VITE_SUPABASE_ANON_KEY|SUPABASE_SERVICE_ROLE_KEY/);
 });
 
 test('serves index.html fallback for html route miss', async () => {

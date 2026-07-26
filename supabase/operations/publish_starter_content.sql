@@ -1,4 +1,4 @@
--- Manual operation: run only after reviewing 20260718_b2c_platform.sql in staging.
+-- Manual operation: run only after reviewing 20260721035619_b2c_platform_hardening.sql in staging.
 -- This publishes the four official test fixtures and hides, but never deletes, superseded starter rows.
 
 do $$

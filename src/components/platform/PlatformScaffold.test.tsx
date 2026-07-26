@@ -1,4 +1,5 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EntityCard, PlatformShell } from '@/components/platform/PlatformScaffold'
 import type { CharacterSummary, WorldSummary } from '@/lib/platform/types'
@@ -24,6 +25,7 @@ describe('PlatformShell combination dock', () => {
     render(
       <PlatformShell
         user={null}
+        authStatus="anonymous"
         userAvatarInitial="V"
         onNavigate={vi.fn()}
         onAuthRequest={vi.fn()}
@@ -57,6 +59,7 @@ describe('PlatformShell combination dock', () => {
     render(
       <PlatformShell
         user={null}
+        authStatus="anonymous"
         userAvatarInitial="V"
         onNavigate={vi.fn()}
         onAuthRequest={vi.fn()}
@@ -77,6 +80,7 @@ describe('PlatformShell combination dock', () => {
     render(
       <PlatformShell
         user={null}
+        authStatus="anonymous"
         userAvatarInitial="V"
         onNavigate={vi.fn()}
         onAuthRequest={vi.fn()}
@@ -88,6 +92,110 @@ describe('PlatformShell combination dock', () => {
       </PlatformShell>,
     )
     expect(screen.queryByRole('button', { name: /캐릭터를 선택하세요/ })).toBeNull()
+  })
+})
+
+describe('PlatformShell account dialog', () => {
+  const renderAuthenticatedShell = (onDeleteAccount = vi.fn(async () => undefined)) => render(
+    <PlatformShell
+      user={{ id: 'user-1', email: 'user@example.com', user_metadata: { name: '사용자' } } as never}
+      authStatus="authenticated"
+      userAvatarInitial="사"
+      onNavigate={vi.fn()}
+      onAuthRequest={vi.fn()}
+      onSignOut={vi.fn(async () => undefined)}
+      onDeleteAccount={onDeleteAccount}
+      showCombinationDock={false}
+    >
+      <p>본문</p>
+    </PlatformShell>,
+  )
+
+  it('does not show a login action while authentication is still being checked', () => {
+    render(
+      <PlatformShell
+        user={null}
+        authStatus="checking"
+        userAvatarInitial="V"
+        onNavigate={vi.fn()}
+        onAuthRequest={vi.fn()}
+        onSignOut={vi.fn()}
+        onDeleteAccount={vi.fn(async () => undefined)}
+        showCombinationDock={false}
+      >
+        <p>본문</p>
+      </PlatformShell>,
+    )
+
+    expect(screen.queryByRole('button', { name: '로그인' })).toBeNull()
+    expect(screen.getAllByRole('status', { name: '로그인 상태 확인 중' }).length).toBeGreaterThan(0)
+  })
+
+  it('keeps unavailable authentication distinct from the anonymous login CTA', () => {
+    render(
+      <PlatformShell
+        user={null}
+        authStatus="unavailable"
+        userAvatarInitial="V"
+        onNavigate={vi.fn()}
+        onAuthRequest={vi.fn()}
+        onSignOut={vi.fn()}
+        onDeleteAccount={vi.fn(async () => undefined)}
+        showCombinationDock={false}
+      >
+        <p>본문</p>
+      </PlatformShell>,
+    )
+
+    expect(screen.queryByRole('button', { name: '로그인' })).toBeNull()
+    expect(screen.getAllByRole('alert').some((alert) => alert.textContent?.includes('현재 로그인 상태는 확인되지 않았습니다'))).toBe(true)
+    expect(screen.getAllByRole('button', { name: '인증 다시 확인' }).length).toBeGreaterThan(0)
+  })
+
+  it('shares an accessible account dialog across desktop and mobile triggers and restores focus', async () => {
+    const user = userEvent.setup()
+    const { container } = renderAuthenticatedShell()
+    const trigger = screen.getByRole('button', { name: '계정 메뉴 열기' })
+    await user.click(trigger)
+
+    const dialog = screen.getByRole('dialog', { name: '계정' })
+    expect(within(dialog).getByRole('button', { name: '보관함' }).className).toContain('min-h-11')
+    expect(within(dialog).getByRole('button', { name: '운영실' }).className).toContain('min-h-11')
+    expect(container.querySelector('nav.grid-cols-5')).toBeTruthy()
+    await user.tab()
+    expect(dialog.contains(document.activeElement)).toBe(true)
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '계정' })).toBeNull())
+    expect(document.activeElement).toBe(trigger)
+
+    const mobileTrigger = screen.getByRole('button', { name: '모바일 계정 메뉴 열기' })
+    await user.click(mobileTrigger)
+    expect(screen.getByRole('dialog', { name: '계정' })).toBeTruthy()
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '계정' })).toBeNull())
+    expect(document.activeElement).toBe(mobileTrigger)
+  })
+
+  it('blocks duplicate account deletion and retains confirmation and dialog state on failure', async () => {
+    let rejectDelete: ((reason: Error) => void) | undefined
+    const onDeleteAccount = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectDelete = reject }))
+    const user = userEvent.setup()
+    renderAuthenticatedShell(onDeleteAccount)
+
+    await user.click(screen.getByRole('button', { name: '계정 메뉴 열기' }))
+    await user.click(screen.getByRole('button', { name: '계정 탈퇴' }))
+    const confirmation = screen.getByLabelText('계정 탈퇴 확인 문구') as HTMLInputElement
+    await user.type(confirmation, '탈퇴')
+    const deleteButton = screen.getByRole('button', { name: '영구 탈퇴' })
+    await user.click(deleteButton)
+    await user.click(deleteButton)
+    expect(onDeleteAccount).toHaveBeenCalledTimes(1)
+
+    rejectDelete?.(new Error('SUPABASE_SERVICE_ROLE_KEY stack trace'))
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('현재 계정과 콘텐츠 상태를 확인한 뒤'))
+    expect(screen.getByRole('alert').textContent).not.toMatch(/SUPABASE|stack/i)
+    expect(confirmation.value).toBe('탈퇴')
+    expect((screen.getByRole('button', { name: '영구 탈퇴' }) as HTMLButtonElement).disabled).toBe(false)
   })
 })
 

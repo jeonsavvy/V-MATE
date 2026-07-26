@@ -1,4 +1,5 @@
 import { getChatAuthConfig } from './runtime-config.js';
+import { toSafeErrorMeta } from './safe-error-meta.js';
 import { logServerWarn } from './server-logger.js';
 
 const NETWORK_ERROR_PATTERN = /(network|fetch|econn|eai_again|enotfound|etimedout|socket|tls)/i;
@@ -23,18 +24,22 @@ const readHeaderValue = (headers, headerName) => {
     return '';
 };
 
+export const hasAuthorizationHeader = (headers) => {
+    if (!headers || typeof headers !== 'object') {
+        return false;
+    }
+
+    return Object.keys(headers).some((key) => String(key || '').trim().toLowerCase() === 'authorization');
+};
+
 export const extractBearerToken = (headers) => {
     const authorization = readHeaderValue(headers, 'authorization');
     if (!authorization) {
         return '';
     }
 
-    const [scheme, token] = authorization.split(/\s+/, 2);
-    if (String(scheme || '').toLowerCase() !== 'bearer') {
-        return '';
-    }
-
-    return String(token || '').trim();
+    const match = authorization.match(/^Bearer\s+(\S+)\s*$/i);
+    return String(match?.[1] || '').trim();
 };
 
 const parseJwtPayload = (token) => {
@@ -65,21 +70,6 @@ const parseJwtPayload = (token) => {
 };
 
 const normalizeSupabaseUrl = (value) => String(value || '').trim().replace(/\/+$/, '');
-
-const isConfiguredSupabaseUrlRequired = () => {
-    const explicit = process.env.REQUIRE_CONFIGURED_SUPABASE_URL;
-    if (typeof explicit === 'string' && explicit.trim()) {
-        return explicit.trim().toLowerCase() !== 'false';
-    }
-
-    const runtimeEnv = String(
-        process.env.APP_ENV
-        || process.env.NODE_ENV
-        || process.env.VITE_APP_ENV
-        || ''
-    ).trim().toLowerCase();
-    return runtimeEnv === 'production' || runtimeEnv === 'prod';
-};
 
 export const resolveSupabaseUrlFromAccessToken = (accessToken) => {
     const payload = parseJwtPayload(accessToken);
@@ -198,8 +188,9 @@ const verifyAccessTokenWithAuthProvider = async ({
                 if (!userId) {
                     return toAuthFailure({
                         statusCode: 502,
-                        errorCode: 'AUTH_PROVIDER_INVALID_RESPONSE',
-                        error: 'Authentication provider returned invalid response.',
+                        errorCode: 'AUTH_TEMPORARILY_UNAVAILABLE',
+                        error: 'Authentication is temporarily unavailable. Please try again later.',
+                        retryable: true,
                     });
                 }
 
@@ -214,8 +205,9 @@ const verifyAccessTokenWithAuthProvider = async ({
                 if (looksLikeMissingApiKeyError(providerErrorMessage)) {
                     return toAuthFailure({
                         statusCode: 503,
-                        errorCode: 'AUTH_PROVIDER_NOT_CONFIGURED',
-                        error: 'Authentication provider API key is not configured.',
+                        errorCode: 'AUTH_TEMPORARILY_UNAVAILABLE',
+                        error: 'Authentication is temporarily unavailable. Please try again later.',
+                        retryable: true,
                     });
                 }
 
@@ -232,11 +224,9 @@ const verifyAccessTokenWithAuthProvider = async ({
 
             return toAuthFailure({
                 statusCode: isRetryableStatus(response.status) ? 503 : 502,
-                errorCode: isRetryableStatus(response.status)
-                    ? 'AUTH_PROVIDER_UNAVAILABLE'
-                    : 'AUTH_PROVIDER_ERROR',
-                error: 'Authentication provider is unavailable.',
-                retryable: isRetryableStatus(response.status),
+                errorCode: 'AUTH_TEMPORARILY_UNAVAILABLE',
+                error: 'Authentication is temporarily unavailable. Please try again later.',
+                retryable: true,
             });
         } catch (error) {
             if (isAbortFailure(error)) {
@@ -245,8 +235,8 @@ const verifyAccessTokenWithAuthProvider = async ({
                 }
                 return toAuthFailure({
                     statusCode: 504,
-                    errorCode: 'AUTH_PROVIDER_TIMEOUT',
-                    error: 'Authentication provider timed out.',
+                    errorCode: 'AUTH_TEMPORARILY_UNAVAILABLE',
+                    error: 'Authentication is temporarily unavailable. Please try again later.',
                     retryable: true,
                 });
             }
@@ -257,21 +247,22 @@ const verifyAccessTokenWithAuthProvider = async ({
                 }
                 return toAuthFailure({
                     statusCode: 503,
-                    errorCode: 'AUTH_PROVIDER_UNAVAILABLE',
-                    error: 'Authentication provider is unavailable.',
+                    errorCode: 'AUTH_TEMPORARILY_UNAVAILABLE',
+                    error: 'Authentication is temporarily unavailable. Please try again later.',
                     retryable: true,
                 });
             }
 
-            logServerWarn('[V-MATE] Auth provider request failed with non-retryable error', {
+            logServerWarn('[V-MATE] Authentication verification failed', {
                 traceId,
-                message: error?.message || String(error),
+                ...toSafeErrorMeta(error),
             });
 
             return toAuthFailure({
                 statusCode: 502,
-                errorCode: 'AUTH_PROVIDER_ERROR',
-                error: 'Authentication provider request failed.',
+                errorCode: 'AUTH_TEMPORARILY_UNAVAILABLE',
+                error: 'Authentication is temporarily unavailable. Please try again later.',
+                retryable: true,
             });
         } finally {
             clearTimeout(timeout);
@@ -280,8 +271,8 @@ const verifyAccessTokenWithAuthProvider = async ({
 
     return toAuthFailure({
         statusCode: 503,
-        errorCode: 'AUTH_PROVIDER_UNAVAILABLE',
-        error: 'Authentication provider is unavailable.',
+        errorCode: 'AUTH_TEMPORARILY_UNAVAILABLE',
+        error: 'Authentication is temporarily unavailable. Please try again later.',
         retryable: true,
     });
 };
@@ -309,46 +300,50 @@ export const resolveAuthenticatedUser = async ({
 
     const accessToken = extractBearerToken(event?.headers);
     if (!accessToken) {
+        const malformedCredential = hasAuthorizationHeader(event?.headers);
         return toAuthFailure({
             statusCode: 401,
-            errorCode: 'AUTH_REQUIRED',
-            error: 'Authentication required. Please sign in.',
+            errorCode: malformedCredential ? 'AUTH_UNAUTHORIZED' : 'AUTH_REQUIRED',
+            error: malformedCredential
+                ? 'Authentication failed. Please sign in again.'
+                : 'Authentication required. Please sign in.',
         });
     }
 
     if (typeof fetchImpl !== 'function') {
         return toAuthFailure({
             statusCode: 503,
-            errorCode: 'AUTH_PROVIDER_UNAVAILABLE',
-            error: 'Authentication provider fetch is not available.',
+            errorCode: 'AUTH_TEMPORARILY_UNAVAILABLE',
+            error: 'Authentication is temporarily unavailable. Please try again later.',
             retryable: true,
         });
     }
 
-    if (!configuredSupabaseUrl && isConfiguredSupabaseUrlRequired()) {
+    if (!configuredSupabaseUrl) {
         return toAuthFailure({
             statusCode: 503,
-            errorCode: 'AUTH_PROVIDER_NOT_CONFIGURED',
-            error: 'Authentication provider URL is not configured.',
+            errorCode: 'AUTH_TEMPORARILY_UNAVAILABLE',
+            error: 'Authentication is temporarily unavailable. Please try again later.',
+            retryable: true,
         });
     }
 
-    const resolvedSupabaseUrl = normalizeSupabaseUrl(
-        configuredSupabaseUrl || resolveSupabaseUrlFromAccessToken(accessToken)
-    );
+    const resolvedSupabaseUrl = normalizeSupabaseUrl(configuredSupabaseUrl);
     if (!resolvedSupabaseUrl) {
         return toAuthFailure({
             statusCode: 503,
-            errorCode: 'AUTH_PROVIDER_NOT_CONFIGURED',
-            error: 'Authentication provider is not configured.',
+            errorCode: 'AUTH_TEMPORARILY_UNAVAILABLE',
+            error: 'Authentication is temporarily unavailable. Please try again later.',
+            retryable: true,
         });
     }
 
     if (!String(supabaseAnonKey || '').trim()) {
         return toAuthFailure({
             statusCode: 503,
-            errorCode: 'AUTH_PROVIDER_NOT_CONFIGURED',
-            error: 'Authentication provider key is not configured.',
+            errorCode: 'AUTH_TEMPORARILY_UNAVAILABLE',
+            error: 'Authentication is temporarily unavailable. Please try again later.',
+            retryable: true,
         });
     }
 

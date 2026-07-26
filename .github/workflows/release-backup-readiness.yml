@@ -1,0 +1,106 @@
+name: release-backup-readiness
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Database target whose backup state is being approved before expand
+        required: true
+        type: choice
+        options: [staging, production]
+      project_ref:
+        description: Production project ref registered in the protected environment
+        required: true
+        type: string
+      pitr_readiness_approved:
+        description: Type BACKUP_APPROVED for staging or PITR_APPROVED for production; this workflow never restores or creates a backup
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ inputs.target }}-backup-readiness
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ inputs.target == 'production' && 'production-db-preflight' || 'staging-db-preflight' }}
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      PROJECT_REF: ${{ inputs.project_ref }}
+      EXPECTED_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+      PRODUCTION_PROJECT_REF: ${{ vars.PRODUCTION_SUPABASE_PROJECT_REF }}
+      PITR_READINESS_APPROVED: ${{ inputs.pitr_readiness_approved }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate protected database target
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$SUPABASE_ACCESS_TOKEN" ]] || { echo '::error::Database release credential is not configured'; exit 1; }
+          [[ "$PROJECT_REF" =~ ^[a-z0-9]{8,32}$ && "$PROJECT_REF" == "$EXPECTED_PROJECT_REF" && "$PRODUCTION_PROJECT_REF" =~ ^[a-z0-9]{8,32}$ ]] || { echo '::error::database project guard mismatch'; exit 1; }
+          if [[ '${{ inputs.target }}' == 'production' ]]; then
+            [[ "$PROJECT_REF" == "$PRODUCTION_PROJECT_REF" && "$PITR_READINESS_APPROVED" == 'PITR_APPROVED' ]] || { echo '::error::production PITR readiness requires protected-environment approval'; exit 1; }
+          else
+            [[ "$PROJECT_REF" != "$PRODUCTION_PROJECT_REF" && "$PITR_READINESS_APPROVED" == 'BACKUP_APPROVED' ]] || { echo '::error::staging backup readiness requires protected-environment approval'; exit 1; }
+          fi
+
+      - name: Capture sanitized physical backup readiness metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p private-artifacts artifacts
+          trap 'rm -rf private-artifacts' EXIT
+          # `supabase backups list` is read-only. Do not invoke `supabase backups restore` here.
+          npx --no-install supabase backups list --project-ref "$PROJECT_REF" --output-format json > private-artifacts/backups.json
+          node <<'NODE'
+          const crypto = require('node:crypto'); const fs = require('node:fs');
+          const source = JSON.parse(fs.readFileSync('private-artifacts/backups.json', 'utf8'));
+          const arrays = [];
+          const collectArrays = (value) => {
+            if (Array.isArray(value)) {
+              if (value.every((item) => item && typeof item === 'object')) arrays.push(value);
+              value.forEach(collectArrays);
+              return;
+            }
+            if (value && typeof value === 'object') Object.values(value).forEach(collectArrays);
+          };
+          collectArrays(source);
+          const values = Array.isArray(source) ? source : arrays.sort((left, right) => right.length - left.length)[0] || [];
+          const times = [];
+          const visit = (value, key = '') => {
+            if (Array.isArray(value)) return value.forEach((item) => visit(item));
+            if (!value || typeof value !== 'object') return;
+            for (const [name, item] of Object.entries(value)) {
+              if (typeof item === 'string' && /(created|updated|backup.*time|timestamp|completed)/i.test(name) && Number.isFinite(Date.parse(item))) times.push(Date.parse(item));
+              else visit(item, name);
+            }
+          };
+          values.forEach((value) => visit(value));
+          if (values.length < 1 || times.length < 1) process.exit(1);
+          const newestBackupAt = new Date(Math.max(...times)).toISOString();
+          const target = '${{ inputs.target }}';
+          const evidence = { schemaVersion: 1, target, operation: 'backup-readiness', commit: process.env.GITHUB_SHA, projectRefHash: crypto.createHash('sha256').update(process.env.PROJECT_REF).digest('hex'), physicalBackupPresent: true, backupReadinessApproved: true, backupInventoryHash: crypto.createHash('sha256').update(JSON.stringify(source)).digest('hex'), backupCount: values.length, newestBackupAt, pitrReadinessApproved: target === 'production', capturedAt: new Date().toISOString() };
+          fs.writeFileSync('artifacts/backup-readiness-evidence.json', `${JSON.stringify(evidence, null, 2)}\n`);
+          NODE
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: backup-readiness-evidence-${{ inputs.target }}-${{ github.run_id }}
+          path: artifacts/backup-readiness-evidence.json
+          if-no-files-found: error

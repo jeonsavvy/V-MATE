@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import {
   extractBearerToken,
+  hasAuthorizationHeader,
   resolveAuthenticatedUser,
   resolveSupabaseUrlFromAccessToken,
 } from './auth-guard.js';
@@ -65,7 +66,24 @@ test('extractBearerToken reads bearer token from mixed-case authorization header
     'token-456'
   );
   assert.equal(extractBearerToken({ authorization: 'Basic abcd' }), '');
+  assert.equal(extractBearerToken({ authorization: 'Bearer token extra' }), '');
+  assert.equal(hasAuthorizationHeader({ Authorization: '' }), true);
+  assert.equal(hasAuthorizationHeader({}), false);
   assert.equal(extractBearerToken({}), '');
+});
+
+test('resolveAuthenticatedUser classifies malformed authorization as unauthorized', async () => {
+  process.env.REQUIRE_AUTH_FOR_CHAT = 'true';
+  process.env.SUPABASE_URL = 'https://demo-project.supabase.co';
+  for (const authorization of ['Bearer', 'Bearer   ', 'Basic credentials', 'Bearer token extra']) {
+    const result = await resolveAuthenticatedUser({
+      event: { headers: { Authorization: authorization } },
+      requestTraceId: 'trace-malformed-auth',
+    });
+    assert.equal(result.ok, false, authorization);
+    assert.equal(result.statusCode, 401, authorization);
+    assert.equal(result.errorCode, 'AUTH_UNAUTHORIZED', authorization);
+  }
 });
 
 test('resolveSupabaseUrlFromAccessToken derives project url from jwt iss', () => {
@@ -209,7 +227,7 @@ test('resolveAuthenticatedUser maps invalid token to AUTH_UNAUTHORIZED', async (
   assert.equal(result.errorCode, 'AUTH_UNAUTHORIZED');
 });
 
-test('resolveAuthenticatedUser returns AUTH_PROVIDER_NOT_CONFIGURED when anon key is missing', async () => {
+test('resolveAuthenticatedUser returns a safe temporary failure when auth configuration is missing', async () => {
   process.env.REQUIRE_AUTH_FOR_CHAT = 'true';
   process.env.SUPABASE_URL = 'https://demo-project.supabase.co';
   delete process.env.SUPABASE_ANON_KEY;
@@ -232,7 +250,8 @@ test('resolveAuthenticatedUser returns AUTH_PROVIDER_NOT_CONFIGURED when anon ke
 
   assert.equal(result.ok, false);
   assert.equal(result.statusCode, 503);
-  assert.equal(result.errorCode, 'AUTH_PROVIDER_NOT_CONFIGURED');
+  assert.equal(result.errorCode, 'AUTH_TEMPORARILY_UNAVAILABLE');
+  assert.doesNotMatch(result.error, /provider|api|key|url|config/i);
 });
 
 test('resolveAuthenticatedUser rejects token-derived Supabase URL in production', async () => {
@@ -260,10 +279,11 @@ test('resolveAuthenticatedUser rejects token-derived Supabase URL in production'
 
   assert.equal(result.ok, false);
   assert.equal(result.statusCode, 503);
-  assert.equal(result.errorCode, 'AUTH_PROVIDER_NOT_CONFIGURED');
+  assert.equal(result.errorCode, 'AUTH_TEMPORARILY_UNAVAILABLE');
+  assert.doesNotMatch(result.error, /provider|api|key|url|config/i);
 });
 
-test('resolveAuthenticatedUser still allows token-derived Supabase URL outside production', async () => {
+test('resolveAuthenticatedUser never trusts a token-derived Supabase URL', async () => {
   process.env.REQUIRE_AUTH_FOR_CHAT = 'true';
   process.env.NODE_ENV = 'development';
   process.env.SUPABASE_ANON_KEY = 'anon-key';
@@ -284,14 +304,13 @@ test('resolveAuthenticatedUser still allows token-derived Supabase URL outside p
     },
     fetchImpl: async (url) => {
       fetchCalls.push(String(url));
-      return new Response(JSON.stringify({ id: 'user-1' }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
+      throw new Error('fetch should not be called without a configured Supabase URL');
     },
   });
 
-  assert.equal(result.ok, true);
-  assert.equal(result.userId, 'user-1');
-  assert.equal(fetchCalls[0], 'https://demo-project.supabase.co/auth/v1/user');
+  assert.equal(result.ok, false);
+  assert.equal(result.statusCode, 503);
+  assert.equal(result.errorCode, 'AUTH_TEMPORARILY_UNAVAILABLE');
+  assert.doesNotMatch(result.error, /provider|api|key|url|config/i);
+  assert.deepEqual(fetchCalls, []);
 });

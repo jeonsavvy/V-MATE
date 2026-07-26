@@ -5,15 +5,23 @@ import {
   completeChatQuota,
   createCharacter,
   createContentReport,
+  createRoom,
   createWorld,
+  deleteOwnedContent,
   getChatQuota,
+  getCharacterDetail,
   getHomePayload,
+  getRoom,
+  getRoomHistoryForModel,
+  getRoomPromptContext,
+  getWorldDetail,
   listCharacters,
   listContentModerationActions,
   listWorlds,
   reserveChatQuota,
   refundChatQuota,
   resetPlatformStoreForTests,
+  setContentVisibility,
   updateCharacter,
 } from './content-store.js';
 
@@ -93,6 +101,12 @@ test('three distinct open reports quarantine content and owner restore makes it 
   createContentReport({ userId: 'reporter-3', payload: { entityType: 'character', entityId: character.id, reason: 'spam' } });
   assert.ok(!listCharacters().some((item) => item.id === character.id));
   assert.equal(listContentModerationActions().at(-1)?.action, 'auto_quarantine');
+  assert.ok(getCharacterDetail({ slug: character.slug, userId: 'creator-1' }), 'owner retains moderated detail access');
+  assert.equal(getCharacterDetail({ slug: character.slug, userId: 'other-user' }), null);
+  assert.throws(
+    () => createRoom({ userId: 'creator-1', characterSlug: character.slug }),
+    (error) => error?.code === 'ROOM_TARGET_NOT_STARTABLE',
+  );
 
   updateCharacter({ userId: 'creator-1', slug: character.slug, payload: { visibility: 'public' } });
   assert.ok(!listCharacters().some((item) => item.id === character.id), 'creator cannot republish quarantined content');
@@ -111,11 +125,13 @@ test('daily quota is idempotent, refunds failures, caps at 30, and resets at KST
   const beforeMidnight = new Date('2026-07-18T14:59:59.000Z');
 
   const first = reserveChatQuota({ userId, requestId: 'request-01', limit: 30, now: beforeMidnight });
-  assert.deepEqual(first, { allowed: true, duplicate: false, limit: 30, remaining: 29, resetAt: '2026-07-18T15:00:00.000Z' });
+  assert.deepEqual(first, { allowed: true, duplicate: false, disposition: 'reserved', roomVersion: 0, limit: 30, remaining: 29, resetAt: '2026-07-18T15:00:00.000Z' });
   assert.deepEqual(reserveChatQuota({ userId, requestId: 'request-01', limit: 30, now: beforeMidnight }), {
     allowed: false,
     duplicate: true,
+    disposition: 'in_progress',
     response: null,
+    roomVersion: 0,
     limit: 30,
     remaining: 29,
     resetAt: '2026-07-18T15:00:00.000Z',
@@ -130,6 +146,7 @@ test('daily quota is idempotent, refunds failures, caps at 30, and resets at KST
   assert.deepEqual(reserveChatQuota({ userId, requestId: 'request-31', limit: 30, now: beforeMidnight }), {
     allowed: false,
     duplicate: false,
+    disposition: 'limit_exceeded',
     limit: 30,
     remaining: 0,
     resetAt: '2026-07-18T15:00:00.000Z',
@@ -140,9 +157,93 @@ test('daily quota is idempotent, refunds failures, caps at 30, and resets at KST
   assert.deepEqual(reserveChatQuota({ userId, requestId: 'request-30', limit: 30, now: beforeMidnight }), {
     allowed: true,
     duplicate: false,
+    disposition: 'reserved',
+    roomVersion: 0,
     limit: 30,
     remaining: 0,
     resetAt: '2026-07-18T15:00:00.000Z',
   });
   assert.equal(getChatQuota({ userId, limit: 30, now: new Date('2026-07-18T15:00:00.000Z') }).remaining, 30);
+});
+
+test('private content detail is owner-only and supplied private worlds never downgrade silently', () => {
+  const character = createCharacter({
+    userId: 'owner-1',
+    payload: {
+      name: '비공개 캐릭터',
+      headline: '비공개',
+      summary: '소유자 전용',
+      tags: [],
+      visibility: 'private',
+      sourceType: 'original',
+      profileJson: {},
+    },
+  });
+  const world = createWorld({
+    userId: 'owner-1',
+    payload: {
+      name: '비공개 월드',
+      headline: '비공개',
+      summary: '소유자 전용',
+      tags: [],
+      visibility: 'unlisted',
+      sourceType: 'original',
+      promptProfileJson: {},
+    },
+  });
+
+  assert.ok(getCharacterDetail({ slug: character.slug, userId: 'owner-1' }));
+  assert.equal(getCharacterDetail({ slug: character.slug, userId: 'other-user' }), null);
+  assert.ok(getWorldDetail({ slug: world.slug, userId: 'owner-1' }));
+  assert.equal(getWorldDetail({ slug: world.slug, userId: 'other-user' }), null);
+  assert.ok(createRoom({ userId: 'owner-1', characterSlug: character.slug, worldSlug: world.slug }));
+  assert.equal(createRoom({ userId: 'other-user', characterSlug: character.slug, worldSlug: world.slug }), null);
+  assert.equal(createRoom({ userId: 'owner-1', characterSlug: character.slug, worldSlug: 'missing-world' }), null);
+});
+
+test('hidden targets cannot start rooms and room data stays isolated to its owner', () => {
+  const character = createCharacter({
+    userId: 'owner-1',
+    payload: {
+      name: '숨김 캐릭터',
+      headline: '숨김',
+      summary: '숨김 테스트',
+      tags: [],
+      visibility: 'private',
+      sourceType: 'original',
+      profileJson: {},
+    },
+  });
+  setContentVisibility({ entityType: 'character', id: character.id, status: 'hidden' });
+  assert.throws(
+    () => createRoom({ userId: 'owner-1', characterSlug: character.slug }),
+    (error) => error?.code === 'ROOM_TARGET_NOT_STARTABLE',
+  );
+
+  setContentVisibility({ entityType: 'character', id: character.id, status: 'draft' });
+  const room = createRoom({ userId: 'owner-1', characterSlug: character.slug });
+  assert.ok(getRoom({ roomId: room.id, userId: 'owner-1' }));
+  assert.equal(getRoom({ roomId: room.id, userId: 'other-user' }), null);
+  assert.deepEqual(getRoomHistoryForModel({ roomId: room.id, userId: 'other-user' }), []);
+  assert.equal(getRoomPromptContext({ roomId: room.id, userId: 'other-user' }), null);
+});
+
+test('owned content deletion refuses cross-owner identifiers', async () => {
+  const character = createCharacter({
+    userId: 'owner-1',
+    payload: {
+      name: '삭제 보호 캐릭터',
+      headline: '보호',
+      summary: '교차 소유자 삭제 방지',
+      tags: [],
+      visibility: 'private',
+      sourceType: 'original',
+      profileJson: {},
+    },
+  });
+
+  assert.equal(await deleteOwnedContent({ userId: 'other-user', entityType: 'character', id: character.id }), false);
+  assert.ok(getCharacterDetail({ slug: character.slug, userId: 'owner-1' }));
+  assert.equal(await deleteOwnedContent({ userId: 'owner-1', entityType: 'character', id: character.id }), true);
+  assert.equal(getCharacterDetail({ slug: character.slug, userId: 'owner-1' }), null);
 });

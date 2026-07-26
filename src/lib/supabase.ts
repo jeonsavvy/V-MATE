@@ -2,7 +2,12 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { devError } from "@/lib/logger"
 
 // 브라우저 번들에서는 공개 키만 허용하고, 실제 클라이언트 생성도 필요할 때까지 지연한다.
-const runtimeEnv = (globalThis as { __V_MATE_RUNTIME_ENV__?: Record<string, string | undefined> })
+type ClientRuntimeEnv = {
+  supabaseUrl?: string
+  supabasePublicKey?: string
+}
+
+const runtimeEnv = (globalThis as { __V_MATE_RUNTIME_ENV__?: ClientRuntimeEnv })
   .__V_MATE_RUNTIME_ENV__ ?? {}
 
 const resolveEnvValue = (...candidates: Array<string | undefined>) => {
@@ -16,17 +21,13 @@ const resolveEnvValue = (...candidates: Array<string | undefined>) => {
 }
 
 const supabaseUrl = resolveEnvValue(
-  runtimeEnv.VITE_SUPABASE_URL,
-  runtimeEnv.VITE_PUBLIC_SUPABASE_URL,
+  runtimeEnv.supabaseUrl,
   import.meta.env.VITE_SUPABASE_URL,
   import.meta.env.VITE_PUBLIC_SUPABASE_URL,
 )
 
 const supabaseAnonKey = resolveEnvValue(
-  runtimeEnv.VITE_SUPABASE_ANON_KEY,
-  runtimeEnv.VITE_SUPABASE_PUBLISHABLE_KEY,
-  runtimeEnv.VITE_PUBLIC_SUPABASE_ANON_KEY,
-  runtimeEnv.VITE_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
+  runtimeEnv.supabasePublicKey,
   import.meta.env.VITE_SUPABASE_ANON_KEY,
   import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
   import.meta.env.VITE_PUBLIC_SUPABASE_ANON_KEY,
@@ -99,11 +100,7 @@ const warnSecretKeyMisconfiguration = () => {
   }
 
   hasWarnedSecretKey = true
-  reportSupabaseConfigError(
-    "[V-MATE] ERROR: Service role key detected. Use anon public key instead.",
-    "[V-MATE] Service role keys cannot be used in browser for security reasons.",
-    "[V-MATE] Please set VITE_SUPABASE_ANON_KEY to the anon public key from Supabase dashboard.",
-  )
+  reportSupabaseConfigError("[V-MATE] Public authentication configuration is invalid.")
 }
 
 export const isSupabaseConfigured = () => {
@@ -121,9 +118,9 @@ export const resolveSupabaseClient = async (): Promise<SupabaseClient | null> =>
   if (!supabaseClientPromise) {
     supabaseClientPromise = import("@supabase/supabase-js")
       .then(({ createClient }) => createClient(supabaseUrl, supabaseAnonKey))
-      .catch((error) => {
-        reportSupabaseConfigError("[V-MATE] Failed to initialize Supabase client.")
-        devError("[V-MATE] Failed to initialize Supabase client:", error)
+      .catch(() => {
+        reportSupabaseConfigError("[V-MATE] Authentication is temporarily unavailable.")
+        devError("[V-MATE] Authentication initialization failed.")
         supabaseClientPromise = null
         return null
       })

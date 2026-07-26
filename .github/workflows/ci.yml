@@ -7,6 +7,9 @@ on:
       - master
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   quality:
     runs-on: ubuntu-latest
@@ -25,23 +28,32 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Validate GitHub Actions workflow structure
+        run: node scripts/validate-github-workflows.mjs
+
+      - name: Validate public documentation surface
+        run: node scripts/validate-public-surface.mjs
+
+      - name: Audit production dependencies
+        run: npm audit --audit-level=high
+
       - name: Verify (typecheck, test, build)
         run: npm run verify
 
-  deploy_worker:
-    name: Deploy Worker
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      - name: Enforce server coverage gates
+        run: npm run test:server:coverage
+
+      - name: Validate Worker upload without remote mutation
+        run: npm run cf:dry-run
+
+      - name: Record immutable release asset hashes
+        run: npm run release:manifest
+
+  database_contracts:
+    name: Database contracts (local Docker only)
     needs: quality
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read
-    concurrency:
-      group: production-worker
-      cancel-in-progress: false
-    environment:
-      name: production
-      url: ${{ vars.PRODUCTION_APP_URL }}
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -56,73 +68,5 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Validate deploy configuration
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
-            echo "::error::Missing required GitHub secret: CLOUDFLARE_API_TOKEN"
-            exit 1
-          fi
-          if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
-            echo "::error::Missing required GitHub secret: CLOUDFLARE_ACCOUNT_ID"
-            exit 1
-          fi
-
-      - name: Build and deploy Worker
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npm run cf:deploy
-
-      - name: Skip smoke checks when PRODUCTION_APP_URL is not set
-        if: ${{ vars.PRODUCTION_APP_URL == '' }}
-        run: echo "::warning::Skipping post-deploy smoke checks because PRODUCTION_APP_URL is not configured."
-
-      - name: Smoke check homepage
-        if: ${{ vars.PRODUCTION_APP_URL != '' }}
-        env:
-          PRODUCTION_APP_URL: ${{ vars.PRODUCTION_APP_URL }}
-        run: |
-          base_url="${PRODUCTION_APP_URL%/}"
-          html=$(curl --fail --silent --show-error \
-            --connect-timeout 10 \
-            --max-time 20 \
-            --retry 3 \
-            --retry-delay 2 \
-            --retry-all-errors \
-            --header 'Accept: */*' \
-            "$base_url/")
-
-          if ! printf '%s' "$html" | grep -q 'window.__V_MATE_RUNTIME_ENV__'; then
-            echo '::error::Homepage smoke check failed: expected runtime env script in HTML response'
-            exit 1
-          fi
-
-      - name: Smoke check chat auth guard
-        if: ${{ vars.PRODUCTION_APP_URL != '' }}
-        env:
-          PRODUCTION_APP_URL: ${{ vars.PRODUCTION_APP_URL }}
-        run: |
-          base_url="${PRODUCTION_APP_URL%/}"
-          response_file=$(mktemp)
-          status=$(curl --silent --show-error \
-            --output "$response_file" \
-            --write-out '%{http_code}' \
-            --connect-timeout 10 \
-            --max-time 20 \
-            --retry 0 \
-            -X POST \
-            -H "Origin: $base_url" \
-            -H 'Content-Type: application/json' \
-            --data '{"characterId":"mika","userMessage":"안녕","messageHistory":[]}' \
-            "$base_url/api/chat")
-
-          if [ "$status" != '401' ]; then
-            echo "::error::Chat smoke check failed: expected HTTP 401, got $status"
-            cat "$response_file"
-            exit 1
-          fi
-
-          node -e "const fs=require('node:fs'); const payload=JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); if (payload.error_code !== 'AUTH_REQUIRED') { console.error('::error::Chat smoke check failed: expected error_code AUTH_REQUIRED'); console.error(payload); process.exit(1); }" "$response_file"
+      - name: Run fresh and upgrade database contracts
+        run: npm run test:db

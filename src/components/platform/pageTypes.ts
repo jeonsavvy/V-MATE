@@ -3,6 +3,7 @@ import type { CharacterSummary, EntitySummary, WorldSummary } from '@/lib/platfo
 
 export interface PlatformPageChromeProps {
   user: SupabaseUser | null
+  authStatus: 'checking' | 'authenticated' | 'anonymous' | 'unavailable'
   userAvatarInitial: string
   searchQuery: string
   onSearchChange: (value: string) => void

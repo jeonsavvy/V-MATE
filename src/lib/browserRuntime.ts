@@ -7,8 +7,8 @@ const resolveWindowLocation = (): Location | null => {
 
   try {
     return window.location
-  } catch (error) {
-    devWarn("[V-MATE] window.location is unavailable", error)
+  } catch {
+    devWarn("[V-MATE] window.location is unavailable")
     return null
   }
 }

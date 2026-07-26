@@ -247,7 +247,8 @@ test('room page keeps retry guidance scoped to failed sends only', async () => {
   const [source, composerSource] = await Promise.all([readFile(pagesPath, 'utf8'), readFile(composerPath, 'utf8')]);
 
   assert.ok(composerSource.includes('응답을 받지 못했습니다. 입력한 메시지는 그대로 두었습니다.'));
-  assert.ok(source.includes("message.includes('Gemini returned an empty response')"));
+  assert.equal(source.includes('Gemini returned an empty response'), false);
+  assert.ok(source.includes("safeActionError(error, '메시지를 보내지 못했습니다."));
   assert.ok(composerSource.includes("needsRetry ? '다시 보내기' : '보내기'"));
   assert.ok(composerSource.includes("event.key !== 'Enter'"));
   assert.equal(`${source}\n${composerSource}`.includes('Enter 대신 버튼을 눌러 전송합니다.'), false);
@@ -327,6 +328,15 @@ test('platform shell keeps ops outside the four primary navigation items', async
   assert.ok(source.includes("{ label: '대화', path: '/recent', icon: MessageSquareMore }"));
   assert.ok(source.includes("onNavigate('/ops')"));
   assert.equal(source.includes("label: '운영실', path: '/ops'"), false);
+});
+
+test('image variant failures use a fixed safe message instead of raw browser errors', async () => {
+  const pagesPath = path.join(srcRoot, 'components', 'platform', 'Pages.tsx');
+  const source = await readFile(pagesPath, 'utf8');
+
+  assert.ok(source.includes('const imageProcessingFailureMessage ='));
+  assert.equal((source.match(/toast\.error\(imageProcessingFailureMessage\(\)\)/g) || []).length, 2);
+  assert.equal(source.includes('toast.error(error instanceof Error ? error.message'), false);
 });
 
 test('home uses functional catalog headings with latest and popular filters', async () => {
@@ -457,7 +467,8 @@ test('platform shell uses mobile bottom navigation, compact top tabs, and a conv
   assert.ok(source.includes('lg:pl-[232px]'));
   assert.ok(source.includes('대화 기록'));
   assert.ok(source.includes('주요 메뉴'));
-  assert.ok(source.includes('grid h-[calc(66px+env(safe-area-inset-bottom))] grid-cols-4'));
+  assert.ok(source.includes('grid h-[calc(66px+env(safe-area-inset-bottom))] grid-cols-5'));
+  assert.ok(source.includes('<AccountPanel user={user} authStatus={authStatus}'));
   assert.ok(source.includes('max-w-[1280px]'));
   assert.ok(source.includes('lg:hidden'));
   assert.equal(source.includes('isMobileNavOpen'), false);
@@ -468,7 +479,8 @@ test('platform header gives icon and search controls accessible names', async ()
   const source = await readFile(scaffoldPath, 'utf8');
 
   assert.ok(source.includes('aria-label="캐릭터와 월드 검색"'));
-  assert.ok(source.includes("aria-label={user ? '보관함 열기' : '로그인'}"));
+  assert.ok(source.includes("aria-label={user ? '계정 메뉴 열기' : '로그인'}"));
+  assert.ok(source.includes('aria-label="로그인 상태 확인 중"'));
 });
 
 test('home keeps the exact two-column starter catalog while library grids remain responsive', async () => {

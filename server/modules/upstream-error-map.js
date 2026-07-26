@@ -1,6 +1,6 @@
 export const mapGeminiApiError = (geminiData) => {
-    let errorMessage = 'Failed to get response from Gemini API';
-    let errorCode = 'UPSTREAM_MODEL_ERROR';
+    let errorMessage = '응답을 생성하지 못했습니다. 잠시 후 다시 시도해주세요.';
+    let errorCode = 'RESPONSE_SERVICE_UNAVAILABLE';
 
     if (!geminiData?.error) {
         return { errorMessage, errorCode };
@@ -9,17 +9,15 @@ export const mapGeminiApiError = (geminiData) => {
     const upstreamMessage = String(geminiData.error.message || '');
 
     if (upstreamMessage.includes('API_KEY') || upstreamMessage.includes('API key')) {
-        errorMessage = 'Invalid or expired API key. Please check your GOOGLE_API_KEY in runtime secrets.';
+        errorMessage = '응답 기능을 지금 사용할 수 없습니다. 잠시 후 다시 시도해주세요.';
     } else if (upstreamMessage.includes('quota') || upstreamMessage.includes('Quota')) {
-        errorMessage = 'API quota exceeded. Please check your Google Cloud billing.';
+        errorMessage = '응답 요청이 일시적으로 많습니다. 잠시 후 다시 시도해주세요.';
     } else if (
         upstreamMessage.includes('location is not supported') ||
         upstreamMessage.includes('User location is not supported')
     ) {
-        errorMessage = 'Gemini API is not available in this server region. Deploy backend in a supported region or switch provider.';
-        errorCode = 'UPSTREAM_LOCATION_UNSUPPORTED';
-    } else if (upstreamMessage) {
-        errorMessage = upstreamMessage;
+        errorMessage = '현재 지역에서는 응답 기능을 사용할 수 없습니다.';
+        errorCode = 'RESPONSE_REGION_UNAVAILABLE';
     }
 
     return { errorMessage, errorCode };

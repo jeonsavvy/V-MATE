@@ -58,10 +58,10 @@ export const callGeminiWithTimeout = async ({
 
     try {
         const response = await fetchImpl(
-            `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`,
             {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
                 body: JSON.stringify(payload),
                 signal: controller.signal,
             }
@@ -77,7 +77,7 @@ export const callGeminiWithTimeout = async ({
                 data: null,
                 error: {
                     status: 502,
-                    message: 'Invalid response from Gemini API.',
+                    message: 'The response service returned an invalid response.',
                     code: 'UPSTREAM_INVALID_RESPONSE',
                 },
             };
@@ -110,7 +110,7 @@ export const callGeminiWithTimeout = async ({
                 data: null,
                 error: {
                     status: 504,
-                    message: `Request timeout on model ${modelName} (${timeoutMs}ms).`,
+                    message: 'The response service timed out.',
                     code: 'UPSTREAM_TIMEOUT',
                 },
             };
@@ -122,7 +122,7 @@ export const callGeminiWithTimeout = async ({
             data: null,
             error: {
                 status: 503,
-                message: 'Failed to connect to Gemini API. Please try again later.',
+                message: 'The response service is temporarily unavailable.',
                 code: 'UPSTREAM_CONNECTION_FAILED',
             },
         };
@@ -146,10 +146,10 @@ export const createPromptCacheEntry = async ({
 
     try {
         const response = await fetchImpl(
-            `https://generativelanguage.googleapis.com/v1beta/cachedContents?key=${apiKey}`,
+            'https://generativelanguage.googleapis.com/v1beta/cachedContents',
             {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
                 body: JSON.stringify({
                     model: `models/${modelName}`,
                     displayName: `vmate-${characterId}-${cacheKey.slice(-8)}`,

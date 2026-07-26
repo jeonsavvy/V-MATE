@@ -1,0 +1,175 @@
+name: release-post-lockdown-observation
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Target observed at least 24 hours after lockdown
+        required: true
+        type: choice
+        options: [staging, production]
+      base_url:
+        description: HTTPS origin registered in the selected environment
+        required: true
+        type: string
+      worker_name:
+        description: Worker name registered in the selected environment
+        required: true
+        type: string
+      worker_version_id:
+        description: v2 Worker version that remained serving after lockdown
+        required: true
+        type: string
+      baseline_worker_version_id:
+        description: Stable pre-cutover Worker version for the observability baseline
+        required: true
+        type: string
+      lockdown_evidence_run_id:
+        description: apply-lockdown database release evidence run
+        required: true
+        type: string
+      privilege_evidence_run_id:
+        description: post-lockdown privilege smoke evidence run
+        required: true
+        type: string
+      lockdown_completed_at:
+        description: UTC ISO timestamp recorded by the apply-lockdown evidence
+        required: true
+        type: string
+      wrangler_env:
+        description: Staging environment name; leave empty for production
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: post-lockdown-observation-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment:
+      name: ${{ inputs.target == 'production' && 'production-post-lockdown-observation' || 'staging-post-lockdown-observation' }}
+      url: ${{ inputs.base_url }}
+    env:
+      BASE_URL: ${{ inputs.base_url }}
+      WORKER_NAME: ${{ inputs.worker_name }}
+      WORKER_VERSION_ID: ${{ inputs.worker_version_id }}
+      BASELINE_WORKER_VERSION_ID: ${{ inputs.baseline_worker_version_id }}
+      LOCKDOWN_EVIDENCE_RUN_ID: ${{ inputs.lockdown_evidence_run_id }}
+      PRIVILEGE_EVIDENCE_RUN_ID: ${{ inputs.privilege_evidence_run_id }}
+      LOCKDOWN_COMPLETED_AT: ${{ inputs.lockdown_completed_at }}
+      WRANGLER_ENV: ${{ inputs.wrangler_env }}
+      EXPECTED_BASE_URL: ${{ vars.WORKER_BASE_URL }}
+      EXPECTED_WORKER_NAME: ${{ vars.WORKER_NAME }}
+      EXPECTED_WRANGLER_ENV: ${{ vars.WRANGLER_ENV }}
+      PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_WORKER_BASE_URL }}
+      PRODUCTION_WORKER_NAME: ${{ vars.PRODUCTION_WORKER_NAME }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_OBSERVABILITY_TOKEN: ${{ secrets.CLOUDFLARE_OBSERVABILITY_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate target, versions, and 24-hour delay
+        shell: bash
+        run: |
+          set -euo pipefail
+          canonical_origin() {
+            node -e 'const value = new URL(process.argv[1]); if (value.protocol !== "https:" || value.username || value.password || value.search || value.hash || value.pathname !== "/") process.exit(1); process.stdout.write(value.origin)' "$1"
+          }
+          origin=$(canonical_origin "$BASE_URL") || { echo '::error::base_url must be a canonical HTTPS origin'; exit 1; }
+          expected=$(canonical_origin "$EXPECTED_BASE_URL") || { echo '::error::approved origin is unavailable'; exit 1; }
+          production=$(canonical_origin "$PRODUCTION_BASE_URL") || { echo '::error::production origin guard is unavailable'; exit 1; }
+          [[ "$origin" == "$expected" && "$WORKER_NAME" == "$EXPECTED_WORKER_NAME" ]] || { echo '::error::environment target guard mismatch'; exit 1; }
+          if [[ '${{ inputs.target }}' == 'staging' ]]; then [[ "$origin" != "$production" && "$WORKER_NAME" != "$PRODUCTION_WORKER_NAME" && "$WRANGLER_ENV" == "$EXPECTED_WRANGLER_ENV" ]] || { echo '::error::staging target guard mismatch'; exit 1; }; else [[ "$origin" == "$production" && "$WORKER_NAME" == "$PRODUCTION_WORKER_NAME" && -z "$WRANGLER_ENV" ]] || { echo '::error::production target guard mismatch'; exit 1; }; fi
+          [[ "$WORKER_VERSION_ID" =~ ^[A-Za-z0-9_-]+$ && "$BASELINE_WORKER_VERSION_ID" =~ ^[A-Za-z0-9_-]+$ && "$LOCKDOWN_EVIDENCE_RUN_ID" =~ ^[0-9]+$ && "$PRIVILEGE_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::version or evidence input is invalid'; exit 1; }
+          [[ -n "$CLOUDFLARE_API_TOKEN" && -n "$CLOUDFLARE_OBSERVABILITY_TOKEN" && -n "$CLOUDFLARE_ACCOUNT_ID" ]] || { echo '::error::required observability credential is absent'; exit 1; }
+          node -e 'const elapsed=Date.now()-Date.parse(process.env.LOCKDOWN_COMPLETED_AT); if (!Number.isFinite(elapsed)||elapsed<24*60*60*1000||elapsed>7*24*60*60*1000) process.exit(1)' || { echo '::error::manual observation must occur 24 hours to 7 days after lockdown'; exit 1; }
+
+      - name: Verify lockdown and privilege evidence binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/lockdown evidence/privilege
+          gh run download "$LOCKDOWN_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "database-release-evidence-${{ inputs.target }}-$LOCKDOWN_EVIDENCE_RUN_ID" --dir evidence/lockdown
+          gh run download "$PRIVILEGE_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "post-lockdown-privilege-evidence-${{ inputs.target }}-$PRIVILEGE_EVIDENCE_RUN_ID" --dir evidence/privilege
+          node <<'NODE'
+          const fs = require('node:fs'); const path = require('node:path');
+          const find = (directory, filename) => { const files = []; const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).forEach((entry) => { const item = path.join(dir, entry.name); if (entry.isDirectory()) walk(item); else if (entry.name === filename) files.push(item); }); walk(directory); return files; };
+          const lockdown = find('evidence/lockdown', 'database-release-evidence.json'); const privilege = find('evidence/privilege', 'post-lockdown-privilege-smoke-evidence.json');
+          if (lockdown.length !== 1 || privilege.length !== 1) process.exit(1);
+          const lock = JSON.parse(fs.readFileSync(lockdown[0], 'utf8')); const smoke = JSON.parse(fs.readFileSync(privilege[0], 'utf8'));
+          const valid = lock.schemaVersion === 3
+            && lock.target === '${{ inputs.target }}'
+            && lock.operation === 'apply-lockdown'
+            && lock.commit === process.env.GITHUB_SHA
+            && /^[a-f0-9]{64}$/.test(lock.projectRefHash || '')
+            && lock.appliedAt === process.env.LOCKDOWN_COMPLETED_AT
+            && lock.workerVersionId === process.env.WORKER_VERSION_ID
+            && lock.previousStableWorkerVersionId === process.env.BASELINE_WORKER_VERSION_ID
+            && smoke.schemaVersion === 1
+            && smoke.target === '${{ inputs.target }}'
+            && smoke.operation === 'post-lockdown-privilege-smoke'
+            && smoke.commit === process.env.GITHUB_SHA
+            && smoke.projectRefHash === lock.projectRefHash
+            && smoke.workerVersionId === lock.workerVersionId
+            && smoke.previousStableWorkerVersionId === lock.previousStableWorkerVersionId
+            && smoke.lockdownEvidenceRunId === process.env.LOCKDOWN_EVIDENCE_RUN_ID
+            && smoke.allPassed === true;
+          if (!valid) process.exit(1);
+          fs.appendFileSync(process.env.GITHUB_ENV, `LOCKDOWN_PROJECT_REF_HASH=${lock.projectRefHash}\n`);
+          NODE
+
+      - name: Verify v2 Worker remains the serving version
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--env ""); if [[ -n "$WRANGLER_ENV" ]]; then args=(--env "$WRANGLER_ENV"); fi
+          npx --no-install wrangler deployments status "${args[@]}" --name "$WORKER_NAME" --json > deployment.json
+          node <<'NODE'
+          const source = JSON.parse(require('node:fs').readFileSync('deployment.json', 'utf8')); const entries = []; const visit = (value) => { if (Array.isArray(value)) return value.forEach(visit); if (!value || typeof value !== 'object') return; if (typeof value.version_id === 'string' && Number.isFinite(Number(value.percentage))) entries.push({ id: value.version_id, percentage: Number(value.percentage) }); Object.values(value).forEach(visit); }; visit(source); if (!entries.some((entry) => entry.id === process.env.WORKER_VERSION_ID && entry.percentage === 100)) process.exit(1);
+          NODE
+
+      - name: Run delayed smoke and one-hour observability gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          node scripts/smoke-release.mjs --base-url "$BASE_URL" --worker-name "$WORKER_NAME" --version-id "$WORKER_VERSION_ID" | tee artifacts/post-lockdown-smoke.log
+          window_end=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          window_start=$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)
+          node scripts/check-worker-observability.mjs --account-id "$CLOUDFLARE_ACCOUNT_ID" --worker-name "$WORKER_NAME" --version-id "$WORKER_VERSION_ID" --baseline-version-id "$BASELINE_WORKER_VERSION_ID" --window-start "$window_start" --window-end "$window_end" --output artifacts/post-lockdown-observability.json
+
+      - name: Record delayed observation evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs'); const observation = JSON.parse(fs.readFileSync('artifacts/post-lockdown-observability.json', 'utf8'));
+          const evidence = { schemaVersion: 1, target: '${{ inputs.target }}', operation: 'post-lockdown-observation', commit: process.env.GITHUB_SHA, projectRefHash: process.env.LOCKDOWN_PROJECT_REF_HASH, workerVersionId: process.env.WORKER_VERSION_ID, baselineWorkerVersionId: process.env.BASELINE_WORKER_VERSION_ID, lockdownEvidenceRunId: process.env.LOCKDOWN_EVIDENCE_RUN_ID, privilegeEvidenceRunId: process.env.PRIVILEGE_EVIDENCE_RUN_ID, observedAfterLockdownHours: (Date.now() - Date.parse(process.env.LOCKDOWN_COMPLETED_AT)) / 3600000, observabilityPassed: observation.passed === true, completedAt: new Date().toISOString() };
+          fs.writeFileSync('artifacts/post-lockdown-observation-evidence.json', `${JSON.stringify(evidence, null, 2)}\n`);
+          NODE
+          rm -rf evidence deployment.json
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: post-lockdown-observation-evidence-${{ inputs.target }}-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: error

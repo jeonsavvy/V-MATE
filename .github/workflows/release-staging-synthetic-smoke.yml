@@ -1,0 +1,151 @@
+name: release-staging-synthetic-smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_ref:
+        description: Staging project ref registered in the staging environment
+        required: true
+        type: string
+      base_url:
+        description: Staging HTTPS origin registered in the staging environment
+        required: true
+        type: string
+      worker_name:
+        description: Staging Worker name registered in the staging environment
+        required: true
+        type: string
+      worker_version_id:
+        description: Zero-traffic Worker version to exercise through an override
+        required: true
+        type: string
+      expand_evidence_run_id:
+        description: apply-expand evidence run for this staging commit
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: staging-synthetic-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: staging-synthetic-smoke
+      url: ${{ inputs.base_url }}
+    env:
+      PROJECT_REF: ${{ inputs.project_ref }}
+      BASE_URL: ${{ inputs.base_url }}
+      WORKER_NAME: ${{ inputs.worker_name }}
+      WORKER_VERSION_ID: ${{ inputs.worker_version_id }}
+      EXPAND_EVIDENCE_RUN_ID: ${{ inputs.expand_evidence_run_id }}
+      EXPECTED_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+      PRODUCTION_PROJECT_REF: ${{ vars.PRODUCTION_SUPABASE_PROJECT_REF }}
+      EXPECTED_BASE_URL: ${{ vars.WORKER_BASE_URL }}
+      EXPECTED_WORKER_NAME: ${{ vars.WORKER_NAME }}
+      EXPECTED_WRANGLER_ENV: ${{ vars.WRANGLER_ENV }}
+      PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_WORKER_BASE_URL }}
+      PRODUCTION_WORKER_NAME: ${{ vars.PRODUCTION_WORKER_NAME }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate staging-only target and secret presence
+        shell: bash
+        run: |
+          set -euo pipefail
+          canonical_origin() {
+            node -e 'const value = new URL(process.argv[1]); if (value.protocol !== "https:" || value.username || value.password || value.search || value.hash || value.pathname !== "/") process.exit(1); process.stdout.write(value.origin)' "$1"
+          }
+          [[ "$PROJECT_REF" =~ ^[a-z0-9]{8,32}$ && "$PROJECT_REF" == "$EXPECTED_PROJECT_REF" && "$PROJECT_REF" != "$PRODUCTION_PROJECT_REF" ]] || { echo '::error::staging project guard mismatch'; exit 1; }
+          origin=$(canonical_origin "$BASE_URL") || { echo '::error::base_url must be a canonical HTTPS origin'; exit 1; }
+          expected=$(canonical_origin "$EXPECTED_BASE_URL") || { echo '::error::approved staging origin is unavailable'; exit 1; }
+          production=$(canonical_origin "$PRODUCTION_BASE_URL") || { echo '::error::production origin guard is unavailable'; exit 1; }
+          [[ "$origin" == "$expected" && "$origin" != "$production" ]] || { echo '::error::staging origin guard mismatch'; exit 1; }
+          [[ "$WORKER_NAME" == "$EXPECTED_WORKER_NAME" && "$WORKER_NAME" != "$PRODUCTION_WORKER_NAME" ]] || { echo '::error::staging Worker guard mismatch'; exit 1; }
+          [[ "$WORKER_VERSION_ID" =~ ^[A-Za-z0-9_-]+$ && "$EXPAND_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::version or expand evidence input is invalid'; exit 1; }
+          [[ -n "$CLOUDFLARE_API_TOKEN" && -n "$CLOUDFLARE_ACCOUNT_ID" && -n "$SUPABASE_URL" && -n "$SUPABASE_ANON_KEY" && -n "$SUPABASE_SERVICE_ROLE_KEY" ]] || { echo '::error::required staging secret is not configured'; exit 1; }
+
+      - name: Verify matching expand evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/expand
+          gh run download "$EXPAND_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "database-release-evidence-staging-$EXPAND_EVIDENCE_RUN_ID" --dir evidence/expand
+          node <<'NODE'
+          const crypto = require('node:crypto'); const fs = require('node:fs'); const path = require('node:path');
+          const files = []; const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).forEach((entry) => { const item = path.join(dir, entry.name); if (entry.isDirectory()) walk(item); else if (entry.name === 'database-release-evidence.json') files.push(item); }); walk('evidence/expand');
+          if (files.length !== 1) process.exit(1);
+          const value = JSON.parse(fs.readFileSync(files[0], 'utf8'));
+          const projectRefHash = crypto.createHash('sha256').update(process.env.PROJECT_REF).digest('hex');
+          if (!(value.schemaVersion === 3 && value.target === 'staging' && value.operation === 'apply-expand' && value.commit === process.env.GITHUB_SHA && value.migration === '20260726010000_backend_stabilization_expand.sql' && value.projectRefHash === projectRefHash)) process.exit(1);
+          NODE
+
+      - name: Prove selected Worker remains at zero traffic
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler deployments status --env "$EXPECTED_WRANGLER_ENV" --name "$WORKER_NAME" --json > deployment.json
+          node <<'NODE'
+          const source = JSON.parse(require('node:fs').readFileSync('deployment.json', 'utf8'));
+          const entries = []; const visit = (value) => { if (Array.isArray(value)) return value.forEach(visit); if (!value || typeof value !== 'object') return; if (typeof value.version_id === 'string' && Number.isFinite(Number(value.percentage))) entries.push({ id: value.version_id, percentage: Number(value.percentage) }); Object.values(value).forEach(visit); }; visit(source);
+          if (!entries.some((entry) => entry.id === process.env.WORKER_VERSION_ID && entry.percentage === 0) || !entries.some((entry) => entry.percentage === 100)) process.exit(1);
+          NODE
+
+      - name: Run approved synthetic A/B smoke through the zero-traffic override
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p private-artifacts artifacts
+          node scripts/staging-synthetic-smoke.mjs --base-url "$BASE_URL" --project-ref "$PROJECT_REF" --worker-name "$WORKER_NAME" --version-id "$WORKER_VERSION_ID" --output private-artifacts/result.json --confirm-staging-writes true
+
+      - name: Record sanitized synthetic smoke evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          trap 'rm -rf private-artifacts deployment.json evidence' EXIT
+          node <<'NODE'
+          const crypto = require('node:crypto'); const fs = require('node:fs');
+          const hash = (value) => crypto.createHash('sha256').update(value).digest('hex');
+          const scriptEvidence = fs.existsSync('private-artifacts/result.json') ? fs.readFileSync('private-artifacts/result.json') : null;
+          let result = null;
+          try { result = scriptEvidence ? JSON.parse(scriptEvidence.toString('utf8')) : null; } catch { result = null; }
+          const scenarioValues = result?.scenarios && typeof result.scenarios === 'object' ? Object.values(result.scenarios) : [];
+          const bound = result?.targets?.baseOriginHash === hash(new URL(process.env.BASE_URL).origin)
+            && result?.targets?.projectRefHash === hash(process.env.PROJECT_REF)
+            && result?.targets?.workerNameHash === hash(process.env.WORKER_NAME)
+            && result?.targets?.versionId === process.env.WORKER_VERSION_ID;
+          const allPassed = bound && scenarioValues.length >= 20 && scenarioValues.every((value) => value === true) && result?.allPassed === true;
+          const evidence = { schemaVersion: 1, target: 'staging', operation: 'synthetic-smoke', commit: process.env.GITHUB_SHA, projectRefHash: hash(process.env.PROJECT_REF), workerVersionId: process.env.WORKER_VERSION_ID, allPassed, scenarios: bound ? result.scenarios : {}, scriptEvidenceHash: scriptEvidence ? hash(scriptEvidence) : null, completedAt: new Date().toISOString() };
+          fs.writeFileSync('artifacts/synthetic-smoke-evidence.json', `${JSON.stringify(evidence, null, 2)}\n`);
+          if (!allPassed) process.exitCode = 1;
+          NODE
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: synthetic-smoke-evidence-staging-${{ github.run_id }}
+          path: artifacts/synthetic-smoke-evidence.json
+          if-no-files-found: error

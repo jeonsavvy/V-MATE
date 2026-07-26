@@ -1,7 +1,8 @@
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { RoomPage } from '@/components/platform/Pages'
 import type { PlatformPageChromeProps } from '@/components/platform/pageTypes'
+import { PlatformApiError } from '@/lib/platform/apiClient'
 import type { RoomSummary } from '@/lib/platform/types'
 
 const api = vi.hoisted(() => ({
@@ -10,7 +11,10 @@ const api = vi.hoisted(() => ({
   sendRoomMessage: vi.fn(),
 }))
 
-vi.mock('@/lib/platform/apiClient', () => ({ platformApi: api }))
+vi.mock('@/lib/platform/apiClient', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/platform/apiClient')>()),
+  platformApi: api,
+}))
 
 const baseEntity = {
   headline: '테스트',
@@ -87,6 +91,7 @@ const room: RoomSummary = {
 
 const chrome: PlatformPageChromeProps = {
   user: { id: 'user-1', email: 'user@example.com', user_metadata: { name: '사용자' } } as unknown as PlatformPageChromeProps['user'],
+  authStatus: 'authenticated',
   userAvatarInitial: '사',
   searchQuery: '',
   onSearchChange: vi.fn(),
@@ -102,7 +107,10 @@ const chrome: PlatformPageChromeProps = {
   onStartCombination: vi.fn(async () => undefined),
 }
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+})
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -186,5 +194,80 @@ describe('RoomPage artwork hierarchy', () => {
     const conversationInfo = await screen.findByRole('complementary', { name: '대화 정보' })
     expect(within(conversationInfo).getByRole('img', { name: '캐릭터A' }).getAttribute('src')).toBe('/starter/character-a-happy.webp')
     expect(within(conversationInfo).getByRole('img', { name: '월드A 월드 배경' }).getAttribute('src')).toBe('/starter/world-a-night.webp')
+  })
+
+  it('removes the previous account room while the next account request is pending', async () => {
+    const { rerender } = render(<RoomPage chrome={chrome} roomId={room.id} />)
+    expect(await screen.findByText('안녕하세요.')).toBeTruthy()
+
+    api.fetchRoom.mockReturnValueOnce(new Promise(() => undefined))
+    const nextChrome: PlatformPageChromeProps = {
+      ...chrome,
+      user: { id: 'user-2', email: 'other@example.com', user_metadata: { name: '다른 사용자' } } as unknown as PlatformPageChromeProps['user'],
+    }
+    rerender(<RoomPage chrome={nextChrome} roomId={room.id} />)
+
+    await waitFor(() => expect(screen.queryByText('안녕하세요.')).toBeNull())
+    expect(screen.getByText('대화 불러오는 중…')).toBeTruthy()
+  })
+
+  it('keeps the room visible when the secondary quota request fails', async () => {
+    api.fetchChatQuota.mockRejectedValueOnce(new Error('temporary'))
+    render(<RoomPage chrome={chrome} roomId={room.id} />)
+    expect(await screen.findByRole('complementary', { name: '대화 정보' })).toBeTruthy()
+    expect(await screen.findByText('사용량을 불러오지 못했습니다. 메시지를 보내면 서버에서 한도를 확인합니다.')).toBeTruthy()
+  })
+
+  it('reuses the pending client request id after a retryable server failure', async () => {
+    api.sendRoomMessage
+      .mockRejectedValueOnce(new PlatformApiError({ status: 503, code: 'FEATURE_TEMPORARILY_UNAVAILABLE' }))
+      .mockResolvedValueOnce({ room, quota: { limit: 30, remaining: 27, resetAt: '2026-07-22T00:00:00+09:00' } })
+    render(<RoomPage chrome={chrome} roomId={room.id} />)
+    await screen.findByText('안녕하세요.')
+
+    fireEvent.change(screen.getByRole('textbox', { name: '메시지' }), { target: { value: '같은 입력' } })
+    fireEvent.click(screen.getByRole('button', { name: '보내기' }))
+    await waitFor(() => expect(api.sendRoomMessage).toHaveBeenCalledTimes(1))
+    await screen.findByRole('button', { name: '다시 보내기' })
+
+    fireEvent.click(screen.getByRole('button', { name: '다시 보내기' }))
+    await waitFor(() => expect(api.sendRoomMessage).toHaveBeenCalledTimes(2))
+    expect(api.sendRoomMessage.mock.calls[1][2]).toBe(api.sendRoomMessage.mock.calls[0][2])
+  })
+
+  it('allocates a new id after an explicit request id conflict', async () => {
+    api.sendRoomMessage
+      .mockRejectedValueOnce(new PlatformApiError({ status: 409, code: 'CLIENT_REQUEST_ID_CONFLICT' }))
+      .mockResolvedValueOnce({ room, quota: { limit: 30, remaining: 27, resetAt: '2026-07-22T00:00:00+09:00' } })
+    render(<RoomPage chrome={chrome} roomId={room.id} />)
+    await screen.findByText('안녕하세요.')
+
+    fireEvent.change(screen.getByRole('textbox', { name: '메시지' }), { target: { value: '충돌 입력' } })
+    fireEvent.click(screen.getByRole('button', { name: '보내기' }))
+    await waitFor(() => expect(api.sendRoomMessage).toHaveBeenCalledTimes(1))
+    await screen.findByRole('button', { name: '다시 보내기' })
+
+    fireEvent.click(screen.getByRole('button', { name: '다시 보내기' }))
+    await waitFor(() => expect(api.sendRoomMessage).toHaveBeenCalledTimes(2))
+    expect(api.sendRoomMessage.mock.calls[1][2]).not.toBe(api.sendRoomMessage.mock.calls[0][2])
+  })
+
+  it('allocates a new id when the pending message input changes', async () => {
+    api.sendRoomMessage
+      .mockRejectedValueOnce(new PlatformApiError({ status: 503, code: 'FEATURE_TEMPORARILY_UNAVAILABLE' }))
+      .mockResolvedValueOnce({ room, quota: { limit: 30, remaining: 27, resetAt: '2026-07-22T00:00:00+09:00' } })
+    render(<RoomPage chrome={chrome} roomId={room.id} />)
+    await screen.findByText('안녕하세요.')
+
+    const composer = screen.getByRole('textbox', { name: '메시지' })
+    fireEvent.change(composer, { target: { value: '처음 입력' } })
+    fireEvent.click(screen.getByRole('button', { name: '보내기' }))
+    await waitFor(() => expect(api.sendRoomMessage).toHaveBeenCalledTimes(1))
+    await screen.findByRole('button', { name: '다시 보내기' })
+
+    fireEvent.change(composer, { target: { value: '바꾼 입력' } })
+    fireEvent.click(screen.getByRole('button', { name: '보내기' }))
+    await waitFor(() => expect(api.sendRoomMessage).toHaveBeenCalledTimes(2))
+    expect(api.sendRoomMessage.mock.calls[1][2]).not.toBe(api.sendRoomMessage.mock.calls[0][2])
   })
 })

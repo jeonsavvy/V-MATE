@@ -13,6 +13,7 @@ interface AuthDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onSuccess?: () => void
+  initialMode?: "signin" | "reset"
 }
 
 const resolveErrorMessage = (error: unknown, fallback: string) => {
@@ -29,10 +30,11 @@ const resolveErrorMessage = (error: unknown, fallback: string) => {
   if (normalized.includes("email not confirmed")) return "이메일 인증을 먼저 완료해 주세요."
   if (normalized.includes("user already registered")) return "이미 가입된 이메일입니다."
   if (normalized.includes("password should be at least")) return "비밀번호는 6자 이상이어야 합니다."
-  return message.trim() || fallback
+  // 인증 제공자의 원문은 내부 상태를 포함할 수 있으므로 allowlist 밖에서는 노출하지 않는다.
+  return fallback
 }
 
-export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
+export function AuthDialog({ open, onOpenChange, onSuccess, initialMode = "signin" }: AuthDialogProps) {
   const [isLoading, setIsLoading] = useState(false)
   const [isResetLoading, setIsResetLoading] = useState(false)
   const [isResetFormOpen, setIsResetFormOpen] = useState(false)
@@ -55,8 +57,11 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
   }, [activeTab])
 
   useEffect(() => {
-    if (open) setAuthError("")
-  }, [open])
+    if (!open) return
+    setAuthError("")
+    setActiveTab("signin")
+    setIsResetFormOpen(initialMode === "reset")
+  }, [initialMode, open])
 
   const getSupabaseClient = async () => {
     const module = await import("@/lib/supabase")
@@ -130,7 +135,7 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
         const normalizedMessage = resolveErrorMessage(error, "").toLowerCase()
         if (normalizedMessage.includes("secret") || normalizedMessage.includes("forbidden")) {
           setAuthError("지금은 가입할 수 없습니다. 잠시 후 다시 시도해 주세요.")
-          devError("Supabase auth error:", error)
+          devError("Authentication request was rejected.")
           return
         }
         throw error
@@ -154,7 +159,7 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
         }
       }
     } catch (error: unknown) {
-      devError("Sign up error:", error)
+      devError("Account registration failed.")
       setAuthError(resolveErrorMessage(error, "가입하지 못했습니다. 다시 시도해 주세요."))
     } finally {
       setIsLoading(false)
@@ -182,7 +187,7 @@ export function AuthDialog({ open, onOpenChange, onSuccess }: AuthDialogProps) {
     setIsResetLoading(true)
     setAuthError("")
     try {
-      const redirectTo = buildBrowserRedirectUrl("/")
+      const redirectTo = buildBrowserRedirectUrl("/auth/recovery")
       const { error } = await supabase.auth.resetPasswordForEmail(normalizedResetEmail, {
         redirectTo,
       })

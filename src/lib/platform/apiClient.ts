@@ -15,13 +15,62 @@ import type {
 } from '@/lib/platform/types'
 import { getBrowserOrigin } from '@/lib/browserRuntime'
 
+/** Public API failures never expose upstream/provider messages to the UI. */
+export class PlatformApiError extends Error {
+  code: string
+  status: number
+  retryable: boolean
+  traceId?: string
+  details?: { targetType?: 'character' | 'world'; quota?: ChatQuota }
+
+  constructor(options: { code?: string; status: number; details?: { targetType?: 'character' | 'world'; quota?: ChatQuota }; traceId?: string }) {
+    super('요청을 처리하지 못했습니다.')
+    this.name = 'PlatformApiError'
+    this.code = options.code || 'REQUEST_FAILED'
+    this.status = options.status
+    this.retryable = options.status === 0 || options.status === 408 || options.status === 429 || options.status >= 500
+    this.details = options.details
+    this.traceId = options.traceId
+  }
+}
+
+export interface UserFacingError {
+  title: string
+  message: string
+  recovery: 'retry' | 'login' | 'home' | 'library' | 'new-reset-link' | 'none'
+}
+
+export const toUserFacingError = (error: unknown, fallback = '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.'): UserFacingError => {
+  const typed = error instanceof PlatformApiError ? error : null
+  if (typed?.code.endsWith('_NOT_FOUND')) return { title: '콘텐츠를 찾을 수 없습니다', message: '삭제되었거나 접근할 수 없는 콘텐츠입니다.', recovery: 'home' }
+  switch (typed?.code) {
+    case 'UNAUTHORIZED': case 'AUTH_UNAUTHORIZED': case 'AUTH_REQUIRED': return { title: '로그인이 필요합니다', message: '이 작업을 계속하려면 다시 로그인해 주세요.', recovery: 'login' }
+    case 'CHAT_DAILY_LIMIT_EXCEEDED': return { title: '오늘의 대화 한도에 도달했습니다', message: '한도가 초기화된 뒤 다시 대화를 시작할 수 있습니다.', recovery: 'none' }
+    case 'CHAT_REQUEST_IN_PROGRESS': return { title: '메시지를 처리 중입니다', message: '현재 메시지의 응답을 기다린 뒤 다시 시도해 주세요.', recovery: 'retry' }
+    case 'CLIENT_REQUEST_ID_CONFLICT': return { title: '메시지를 다시 확인해 주세요', message: '새로고침 후 다시 전송해 주세요.', recovery: 'retry' }
+    case 'NOT_FOUND': case 'ROOM_TARGET_NOT_FOUND': case 'ROOM_TARGET_UNAVAILABLE': return { title: '콘텐츠를 찾을 수 없습니다', message: '삭제되었거나 현재 대화를 시작할 수 없는 콘텐츠입니다.', recovery: 'home' }
+    case 'FEATURE_TEMPORARILY_UNAVAILABLE': return { title: '지금은 사용할 수 없습니다', message: '잠시 후 다시 시도해 주세요.', recovery: 'retry' }
+    case 'INVALID_ASSET_REFERENCE': return { title: '이미지를 확인해 주세요', message: '선택한 이미지 참조가 유효하지 않습니다. 이미지를 다시 선택해 주세요.', recovery: 'retry' }
+    case 'CONTENT_DELETE_STATE_UNKNOWN': return { title: '삭제 결과를 확인해 주세요', message: '삭제 결과를 확인하지 못했습니다. 보관함이나 목록을 다시 불러와 현재 상태를 확인해 주세요.', recovery: 'library' }
+    case 'ACCOUNT_DELETE_STORAGE_STATE_UNKNOWN': return { title: '계정 탈퇴를 완료하지 못했습니다', message: '계정은 유지되지만 업로드 이미지 일부의 정리 상태를 확인하지 못했습니다. 현재 화면에서 다시 시도해 주세요.', recovery: 'retry' }
+    case 'ACCOUNT_DELETE_PARTIAL_STORAGE_REMOVED': return { title: '계정 탈퇴를 완료하지 못했습니다', message: '계정은 유지되지만 업로드 이미지는 정리되었습니다. 계정 탈퇴를 다시 시도해 주세요.', recovery: 'retry' }
+    case 'ACCOUNT_DELETE_STATE_UNKNOWN': return { title: '계정 상태를 확인해 주세요', message: '계정 탈퇴 결과를 확인하지 못했습니다. 다시 로그인해 계정 상태를 확인해 주세요.', recovery: 'login' }
+    case 'NETWORK_ERROR': return { title: '연결을 확인해 주세요', message: fallback, recovery: 'retry' }
+    default: return { title: '요청을 완료하지 못했습니다', message: fallback, recovery: 'retry' }
+  }
+}
+
 // 브라우저에서는 same-origin /api를 우선 사용하고, 교차 출처 설정은 명시적으로만 허용한다.
+type ClientRuntimeEnv = {
+  chatApiBaseUrl?: string
+}
+
 const resolveRuntimeEnv = () =>
-  ((globalThis as { __V_MATE_RUNTIME_ENV__?: Record<string, string | undefined> }).__V_MATE_RUNTIME_ENV__ ?? {})
+  ((globalThis as { __V_MATE_RUNTIME_ENV__?: ClientRuntimeEnv }).__V_MATE_RUNTIME_ENV__ ?? {})
 
 const resolveApiBaseUrl = () => {
   const runtimeEnv = resolveRuntimeEnv()
-  const configured = String(runtimeEnv.VITE_CHAT_API_BASE_URL || import.meta.env.VITE_CHAT_API_BASE_URL || '')
+  const configured = String(runtimeEnv.chatApiBaseUrl || import.meta.env.VITE_CHAT_API_BASE_URL || '')
     .trim()
     .replace(/\/+$/, '')
 
@@ -54,49 +103,70 @@ const resolveApiBaseUrl = () => {
 const resolveAccessToken = async () => {
   const supabaseModule = await import('@/lib/supabase')
   if (!supabaseModule.isSupabaseConfigured()) {
-    throw new Error('로그인이 필요합니다.')
+    return null
   }
 
   const supabase = await supabaseModule.resolveSupabaseClient()
   if (!supabase) {
-    throw new Error('인증 클라이언트를 초기화하지 못했습니다.')
+    throw new PlatformApiError({ status: 503, code: 'FEATURE_TEMPORARILY_UNAVAILABLE' })
   }
 
-  const { data, error } = await supabase.auth.getSession()
-  if (error || !data?.session?.access_token) {
-    throw new Error('로그인이 필요합니다.')
+  let sessionResult
+  try {
+    sessionResult = await supabase.auth.getSession()
+  } catch {
+    throw new PlatformApiError({ status: 503, code: 'FEATURE_TEMPORARILY_UNAVAILABLE' })
   }
+  const { data, error } = sessionResult
+  if (error) throw new PlatformApiError({ status: 503, code: 'FEATURE_TEMPORARILY_UNAVAILABLE' })
+  if (!data?.session?.access_token) return null
 
   return data.session.access_token
 }
 
-const request = async <T>(path: string, init?: RequestInit & { auth?: boolean }): Promise<T> => {
+const request = async <T>(path: string, init?: RequestInit & { auth?: boolean; optionalAuth?: boolean }): Promise<T> => {
   const headers = new Headers(init?.headers || {})
   headers.set('Content-Type', 'application/json')
 
-  if (init?.auth) {
+  if (init?.auth || init?.optionalAuth) {
     const token = await resolveAccessToken()
-    headers.set('Authorization', `Bearer ${token}`)
+    if (token) {
+      headers.set('Authorization', `Bearer ${token}`)
+    } else if (init?.auth) {
+      throw new PlatformApiError({ status: 401, code: 'AUTH_REQUIRED' })
+    }
   }
 
   let response: Response
   try {
     response = await fetch(`${resolveApiBaseUrl()}${path}`, { ...init, headers })
-  } catch (error) {
-    throw error
+  } catch {
+    throw new PlatformApiError({ status: 0, code: 'NETWORK_ERROR' })
   }
 
   const contentType = response.headers.get('content-type') || ''
   if (contentType.includes('text/html')) {
-    throw new Error('API 응답이 올바르지 않습니다.')
+    throw new PlatformApiError({ status: response.ok ? 502 : response.status, code: 'INVALID_API_RESPONSE' })
   }
 
   const data = await response.json().catch(() => ({}))
   if (!response.ok) {
-    const error = new Error(typeof data.error === 'string' ? data.error : '요청 처리에 실패했습니다.') as Error & { code?: string; details?: unknown }
-    error.code = typeof data.error_code === 'string' ? data.error_code : typeof data.errorCode === 'string' ? data.errorCode : undefined
-    error.details = data.details
-    throw error
+    const rawDetails = typeof data.details === 'object' && data.details !== null ? data.details as Record<string, unknown> : {}
+    const rawQuota = typeof rawDetails.quota === 'object' && rawDetails.quota !== null ? rawDetails.quota as Record<string, unknown> : null
+    const quota = rawQuota
+      && Number.isFinite(rawQuota.limit)
+      && Number.isFinite(rawQuota.remaining)
+      && typeof rawQuota.resetAt === 'string'
+      ? { limit: Number(rawQuota.limit), remaining: Number(rawQuota.remaining), resetAt: rawQuota.resetAt }
+      : undefined
+    const targetType: 'character' | 'world' | undefined = rawDetails.targetType === 'character' || rawDetails.targetType === 'world' ? rawDetails.targetType : undefined
+    const details: { targetType?: 'character' | 'world'; quota?: ChatQuota } | undefined = targetType || quota ? { targetType, quota } : undefined
+    throw new PlatformApiError({
+      status: response.status,
+      code: typeof data.error_code === 'string' ? data.error_code : typeof data.errorCode === 'string' ? data.errorCode : undefined,
+      details,
+      traceId: typeof data.trace_id === 'string' && data.trace_id.length <= 128 ? data.trace_id : undefined,
+    })
   }
   return data as T
 }
@@ -105,13 +175,13 @@ export const platformApi = {
   fetchHome: (tab: 'characters' | 'worlds' = 'characters', search = '', filter: 'new' | 'popular' | '' = '') => request<HomeFeedPayload>(`/home?tab=${tab}&search=${encodeURIComponent(search)}&filter=${encodeURIComponent(filter)}`),
   fetchCharacters: (search = '', filter: 'new' | 'popular' | '' = '') => request<{ items: CharacterSummary[] }>(`/characters?search=${encodeURIComponent(search)}&filter=${encodeURIComponent(filter)}`),
   fetchWorlds: (search = '', filter: 'new' | 'popular' | '' = '') => request<{ items: WorldSummary[] }>(`/worlds?search=${encodeURIComponent(search)}&filter=${encodeURIComponent(filter)}`),
-  fetchCharacter: (slug: string) => request<{ item: CharacterDetail }>(`/characters/${slug}`),
-  fetchWorld: (slug: string) => request<{ item: WorldDetail }>(`/worlds/${slug}`),
+  fetchCharacter: (slug: string) => request<{ item: CharacterDetail }>(`/characters/${slug}`, { optionalAuth: true }),
+  fetchWorld: (slug: string) => request<{ item: WorldDetail }>(`/worlds/${slug}`, { optionalAuth: true }),
   fetchRecentRooms: () => request<{ items: RoomSummary[] }>('/recent-rooms', { auth: true }),
   fetchLibrary: () => request<LibraryPayload>('/library', { auth: true }),
   fetchOpsDashboard: () => request<OwnerOpsDashboard>('/ops/dashboard', { auth: true }),
   prepareUploads: (payload: { entityType: EntityType; variants: Array<{ kind: string; width: number; height: number }> }) =>
-    request<{ bucket: string; uploads: Array<{ kind: string; width: number; height: number; path: string; token: string; signedUrl: string; publicUrl: string; bucket: string }> }>('/uploads/prepare', {
+    request<{ bucket: string; expiresAt: string; uploads: Array<{ kind: string; width: number; height: number; path: string; token: string; signedUrl: string; publicUrl: string; bucket: string; expiresAt?: string }> }>('/uploads/prepare', {
       method: 'POST',
       auth: true,
       body: JSON.stringify(payload),

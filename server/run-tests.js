@@ -21,7 +21,18 @@ const testFiles = [
   path.join(repositoryRoot, 'worker.test.js'),
 ].sort()
 
-const result = spawnSync(process.execPath, ['--test', ...testFiles], {
+const coverageArguments = String(process.env.TEST_COVERAGE || '').trim().toLowerCase() === 'true'
+  ? [
+      '--experimental-test-coverage',
+      '--test-coverage-lines=75',
+      '--test-coverage-branches=65',
+      '--test-coverage-functions=70',
+      '--test-coverage-include=server/**/*.js',
+      '--test-coverage-include=worker.js',
+    ]
+  : []
+
+const result = spawnSync(process.execPath, ['--test', ...coverageArguments, ...testFiles], {
   cwd: repositoryRoot,
   stdio: 'inherit',
 })

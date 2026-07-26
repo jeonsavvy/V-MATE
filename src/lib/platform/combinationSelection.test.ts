@@ -55,4 +55,13 @@ describe('combination selection session state', () => {
     window.sessionStorage.setItem('v-mate:combination-selection:v1', JSON.stringify({ character: world, world: character }))
     expect(readCombinationSelection()).toEqual({ character: null, world: null })
   })
+
+  it('keeps private selections only for the account that stored them and discards legacy private records', () => {
+    const privateCharacter = { ...character, visibility: 'private' as const }
+    writeCombinationSelection({ character: privateCharacter, world: null }, 'user-a')
+    expect(readCombinationSelection('user-a').character?.id).toBe(privateCharacter.id)
+    expect(readCombinationSelection('user-b')).toEqual({ character: null, world: null })
+    window.sessionStorage.setItem('v-mate:combination-selection:v1', JSON.stringify({ character: privateCharacter, world: null }))
+    expect(readCombinationSelection('user-a')).toEqual({ character: null, world: null })
+  })
 })

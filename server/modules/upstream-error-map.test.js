@@ -9,27 +9,27 @@ test('maps location unsupported message to dedicated error code', () => {
     },
   });
 
-  assert.equal(mapped.errorCode, 'UPSTREAM_LOCATION_UNSUPPORTED');
-  assert.match(mapped.errorMessage, /not available in this server region/i);
+  assert.equal(mapped.errorCode, 'RESPONSE_REGION_UNAVAILABLE');
+  assert.match(mapped.errorMessage, /현재 지역/);
 });
 
 test('maps API key and quota messages with actionable text', () => {
   const apiKeyMapped = mapGeminiApiError({
     error: { message: 'API key not valid. Please pass a valid API_KEY.' },
   });
-  assert.equal(apiKeyMapped.errorCode, 'UPSTREAM_MODEL_ERROR');
-  assert.match(apiKeyMapped.errorMessage, /Invalid or expired API key/i);
+  assert.equal(apiKeyMapped.errorCode, 'RESPONSE_SERVICE_UNAVAILABLE');
+  assert.doesNotMatch(apiKeyMapped.errorMessage, /API|key|secret|provider|model/i);
 
   const quotaMapped = mapGeminiApiError({
     error: { message: 'Quota exceeded for quota metric' },
   });
-  assert.equal(quotaMapped.errorCode, 'UPSTREAM_MODEL_ERROR');
-  assert.match(quotaMapped.errorMessage, /API quota exceeded/i);
+  assert.equal(quotaMapped.errorCode, 'RESPONSE_SERVICE_UNAVAILABLE');
+  assert.doesNotMatch(quotaMapped.errorMessage, /API|quota|billing|provider|model/i);
 });
 
 test('returns default mapping when no upstream error exists', () => {
   const mapped = mapGeminiApiError({});
 
-  assert.equal(mapped.errorCode, 'UPSTREAM_MODEL_ERROR');
-  assert.equal(mapped.errorMessage, 'Failed to get response from Gemini API');
+  assert.equal(mapped.errorCode, 'RESPONSE_SERVICE_UNAVAILABLE');
+  assert.doesNotMatch(mapped.errorMessage, /Gemini|API|provider|model/i);
 });

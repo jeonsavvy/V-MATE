@@ -7,6 +7,7 @@
  */
 import { getSystemPromptForCharacter, isSupportedCharacterId } from './prompts.js';
 import { buildHeaders, checkRateLimit, getClientKey, isOriginAllowed } from './modules/http-policy.js';
+import { createHash } from 'node:crypto';
 import {
     normalizeAssistantPayload,
 } from './modules/response-normalizer.js';
@@ -36,9 +37,11 @@ import {
     getClientRequestDedupeConfig,
     getRateLimitConfig,
     getRequestBodyLimitBytes,
+    getDailyChatLimit,
     shouldRequireJsonContentType,
 } from './modules/runtime-config.js';
 import { logServerError, logServerWarn } from './modules/server-logger.js';
+import { toSafeErrorMeta } from './modules/safe-error-meta.js';
 import {
     buildRequestDedupeFingerprint,
     buildRequestDedupeKey,
@@ -46,6 +49,7 @@ import {
 } from './modules/request-dedupe.js';
 import { resolveAuthenticatedUser } from './modules/auth-guard.js';
 import { GEMINI_CHAT_MODEL_NAME } from './modules/gemini-model.js';
+import * as persistentStore from './platform/supabase-platform-repository.js';
 
 export const handler = async (event, context) => {
     const requestStartedAt = Date.now();
@@ -56,6 +60,7 @@ export const handler = async (event, context) => {
     const headers = {
         ...buildHeaders(originAllowed, origin),
         'X-V-MATE-Trace-Id': requestTraceId,
+        Deprecation: 'true',
     };
     const promptCacheAdapter = resolvePromptCacheAdapter(context);
 
@@ -138,9 +143,23 @@ export const handler = async (event, context) => {
     }
 
     try {
+        const requiresPersistentMutation = persistentStore.isPersistentPlatformAvailable()
+            || persistentStore.isPersistentPlatformRequired();
+        if (requiresPersistentMutation && !persistentStore.isPersistentMutationAvailable()) {
+            return buildApiErrorResult({
+                statusCode: 503,
+                headers: rateLimitedHeaders,
+                startedAtMs: requestStartedAt,
+                error: '응답 기능을 지금 사용할 수 없습니다. 잠시 후 다시 시도해주세요.',
+                errorCode: 'FEATURE_TEMPORARILY_UNAVAILABLE',
+                traceId: requestTraceId,
+                retryable: true,
+            });
+        }
         const authResult = await resolveAuthenticatedUser({
             event,
             requestTraceId,
+            forceAuth: requiresPersistentMutation,
         });
         if (!authResult.ok) {
             return buildApiErrorResult({
@@ -182,11 +201,12 @@ export const handler = async (event, context) => {
 
         if (!apiKey) {
             return buildApiErrorResult({
-                statusCode: 500,
+                statusCode: 503,
                 headers: rateLimitedHeaders,
                 startedAtMs: requestStartedAt,
-                error: 'API key not configured. Please set GOOGLE_API_KEY in runtime secrets.',
-                errorCode: 'SERVER_API_KEY_NOT_CONFIGURED',
+                error: '응답 기능을 지금 사용할 수 없습니다. 잠시 후 다시 시도해주세요.',
+                errorCode: 'FEATURE_TEMPORARILY_UNAVAILABLE',
+                retryable: true,
                 traceId: requestTraceId,
             });
         }
@@ -237,8 +257,6 @@ export const handler = async (event, context) => {
         }
         const logMeta = {
             traceId: requestTraceId,
-            characterId: normalizedCharacterId || null,
-            clientRequestId: clientRequestId || null,
             hasAuthenticatedUser: Boolean(authenticatedUserId),
         };
         const chatRuntimeLimits = getChatRuntimeLimits();
@@ -258,18 +276,17 @@ export const handler = async (event, context) => {
             });
 
             if (!geminiResult.ok) {
-                const upstreamErrorCode = geminiResult.error?.code || 'UPSTREAM_UNKNOWN_ERROR';
-                logServerWarn('[V-MATE] Returning hard error for upstream failure', {
+                logServerWarn('[V-MATE] Response generation failed', {
                     ...logMeta,
-                    upstreamErrorCode,
+                    ...toSafeErrorMeta(geminiResult.error),
                     elapsedMs: Math.max(0, Date.now() - requestStartedAt),
                 });
 
                 return {
                     ok: false,
                     statusCode: geminiResult.error?.status || 503,
-                    error: geminiResult.error?.message || 'Model call failed. Please try again later.',
-                    errorCode: upstreamErrorCode,
+                    error: '응답을 생성하지 못했습니다. 잠시 후 다시 시도해주세요.',
+                    errorCode: geminiResult.error?.status === 429 ? 'RESPONSE_RATE_LIMITED' : 'RESPONSE_SERVICE_UNAVAILABLE',
                     retryable: Boolean(geminiResult.retryable),
                 };
             }
@@ -296,12 +313,11 @@ export const handler = async (event, context) => {
 
             const normalizedPayload = normalizeAssistantPayload(modelText, {
                 ...logMeta,
-                modelName: GEMINI_CHAT_MODEL_NAME,
                 promptSnapshotLength: trimmedSystemPrompt.length,
                 historyMessageCount: Array.isArray(messageHistory) ? messageHistory.length : 0,
                 outputLimit: chatRuntimeLimits.primaryMaxOutputTokens,
-                finishReason: geminiData?.candidates?.[0]?.finishReason || null,
-                promptBlockReason: geminiData?.promptFeedback?.blockReason || null,
+                hasFinishReason: Boolean(geminiData?.candidates?.[0]?.finishReason),
+                hasPromptBlockReason: Boolean(geminiData?.promptFeedback?.blockReason),
             });
             const isFormatFallback =
                 normalizedPayload.response === '잠시 응답 형식이 불안정했어요. 한 번만 다시 말해줘.' &&
@@ -309,12 +325,11 @@ export const handler = async (event, context) => {
             if (isFormatFallback) {
                 logServerWarn('[V-MATE] Returning hard error for format fallback payload', {
                     ...logMeta,
-                    modelName: GEMINI_CHAT_MODEL_NAME,
                     promptSnapshotLength: trimmedSystemPrompt.length,
                     historyMessageCount: Array.isArray(messageHistory) ? messageHistory.length : 0,
                     outputLimit: chatRuntimeLimits.primaryMaxOutputTokens,
-                    finishReason: geminiData?.candidates?.[0]?.finishReason || null,
-                    promptBlockReason: geminiData?.promptFeedback?.blockReason || null,
+                    hasFinishReason: Boolean(geminiData?.candidates?.[0]?.finishReason),
+                    hasPromptBlockReason: Boolean(geminiData?.promptFeedback?.blockReason),
                     modelTextLength: String(modelText || '').length,
                 });
                 if (responseCachedContent) {
@@ -329,8 +344,8 @@ export const handler = async (event, context) => {
                 return {
                     ok: false,
                     statusCode: 502,
-                    error: 'Gemini response format validation failed.',
-                    errorCode: 'UPSTREAM_INVALID_FORMAT',
+                    error: '응답 형식을 확인하지 못했습니다. 다시 시도해주세요.',
+                    errorCode: 'RESPONSE_INVALID_FORMAT',
                 };
             }
             const finalPayload = normalizedPayload;
@@ -358,31 +373,99 @@ export const handler = async (event, context) => {
 
         const dedupeConfig = getClientRequestDedupeConfig();
         const requestScopeKey = authenticatedUserId ? `user:${authenticatedUserId}` : rateKey;
-        const requestFingerprint = buildRequestDedupeFingerprint({
+        const dedupeFingerprint = buildRequestDedupeFingerprint({
             normalizedCharacterId,
             userMessage,
             messageHistory,
             cachedContent,
         });
+        const requestFingerprint = createHash('sha256')
+            .update(JSON.stringify({ route: 'legacy', apiVersion: requestApiVersion, fingerprint: dedupeFingerprint }))
+            .digest('hex');
         const requestDedupeKey = buildRequestDedupeKey({
             rateKey: requestScopeKey,
             clientRequestId,
             requestFingerprint,
         });
-
-        const dedupeResult = await withRequestDedupe({
-            dedupeKey: requestDedupeKey,
-            windowMs: dedupeConfig.windowMs,
-            maxEntries: dedupeConfig.maxEntries,
-            shouldReplayResult: (value) => Boolean(value?.ok),
-            run: executeModelAndNormalize,
-        });
-        if (dedupeResult?.status) {
-            headers['X-V-MATE-Dedupe-Status'] = dedupeResult.status;
-            rateLimitedHeaders = withRateLimitHeaders(headers, rateStatus, rateLimitMaxRequests);
+        const usePersistentQuota = persistentStore.isPersistentPlatformAvailable();
+        const quotaRequestId = `legacy:${clientRequestId || requestTraceId}`;
+        const dailyLimit = getDailyChatLimit();
+        let quota = null;
+        let modelResult = null;
+        if (usePersistentQuota) {
+            quota = await persistentStore.reserveChatQuota({
+                userId: authenticatedUserId,
+                route: 'legacy',
+                roomId: null,
+                requestId: quotaRequestId,
+                requestFingerprint,
+                limit: dailyLimit,
+            });
+            if (quota.disposition === 'conflict') {
+                return buildApiErrorResult({
+                    statusCode: 409,
+                    headers: rateLimitedHeaders,
+                    startedAtMs: requestStartedAt,
+                    error: '같은 요청 ID에 다른 메시지가 사용되었습니다.',
+                    errorCode: 'CLIENT_REQUEST_ID_CONFLICT',
+                    traceId: requestTraceId,
+                });
+            }
+            if (quota.disposition === 'in_progress') {
+                return buildApiErrorResult({
+                    statusCode: 409,
+                    headers: rateLimitedHeaders,
+                    startedAtMs: requestStartedAt,
+                    error: '같은 메시지 요청을 처리하고 있습니다. 잠시 후 다시 시도해주세요.',
+                    errorCode: 'CHAT_REQUEST_IN_PROGRESS',
+                    traceId: requestTraceId,
+                    retryable: true,
+                    details: { quota: { limit: quota.limit, remaining: quota.remaining, resetAt: quota.resetAt } },
+                });
+            }
+            if (quota.disposition === 'replay' && quota.response?.modelResult?.ok) {
+                modelResult = quota.response.modelResult;
+                headers['X-V-MATE-Dedupe-Status'] = 'replay';
+                rateLimitedHeaders = withRateLimitHeaders(headers, rateStatus, rateLimitMaxRequests);
+            } else if (!quota.allowed || quota.disposition === 'limit_exceeded') {
+                return buildApiErrorResult({
+                    statusCode: 429,
+                    headers: rateLimitedHeaders,
+                    startedAtMs: requestStartedAt,
+                    error: '오늘의 무료 메시지를 모두 사용했습니다.',
+                    errorCode: 'CHAT_DAILY_LIMIT_EXCEEDED',
+                    traceId: requestTraceId,
+                    details: { quota: { limit: quota.limit || dailyLimit, remaining: 0, resetAt: quota.resetAt } },
+                });
+            }
         }
-        const modelResult = dedupeResult.value;
+
+        if (!modelResult) {
+            let dedupeResult;
+            try {
+                dedupeResult = await withRequestDedupe({
+                    dedupeKey: requestDedupeKey,
+                    windowMs: dedupeConfig.windowMs,
+                    maxEntries: dedupeConfig.maxEntries,
+                    shouldReplayResult: (value) => Boolean(value?.ok),
+                    run: executeModelAndNormalize,
+                });
+            } catch (error) {
+                if (usePersistentQuota) {
+                    await persistentStore.refundChatQuota({ userId: authenticatedUserId, requestId: quotaRequestId, requestFingerprint, limit: dailyLimit }).catch(() => null);
+                }
+                throw error;
+            }
+            if (dedupeResult?.status) {
+                headers['X-V-MATE-Dedupe-Status'] = dedupeResult.status;
+                rateLimitedHeaders = withRateLimitHeaders(headers, rateStatus, rateLimitMaxRequests);
+            }
+            modelResult = dedupeResult.value;
+        }
         if (!modelResult?.ok) {
+            if (usePersistentQuota) {
+                await persistentStore.refundChatQuota({ userId: authenticatedUserId, requestId: quotaRequestId, requestFingerprint, limit: dailyLimit }).catch(() => null);
+            }
             return buildApiErrorResult({
                 statusCode: modelResult?.statusCode || 500,
                 headers: rateLimitedHeaders,
@@ -392,6 +475,20 @@ export const handler = async (event, context) => {
                 traceId: requestTraceId,
                 retryable: Boolean(modelResult?.retryable),
             });
+        }
+
+        if (usePersistentQuota && quota?.disposition !== 'replay') {
+            try {
+                await persistentStore.completeChatQuota({
+                    userId: authenticatedUserId,
+                    requestId: quotaRequestId,
+                    requestFingerprint,
+                    response: { modelResult },
+                });
+            } catch (error) {
+                await persistentStore.refundChatQuota({ userId: authenticatedUserId, requestId: quotaRequestId, requestFingerprint, limit: dailyLimit }).catch(() => null);
+                throw error;
+            }
         }
 
         return buildJsonResult({
@@ -408,8 +505,7 @@ export const handler = async (event, context) => {
     } catch (error) {
         logServerError('[V-MATE] Unexpected error', {
             traceId: requestTraceId,
-            characterId: null,
-            message: error?.message || String(error),
+            ...toSafeErrorMeta(error),
         });
 
         return buildApiErrorResult({
@@ -419,7 +515,6 @@ export const handler = async (event, context) => {
             error: 'Internal server error. Please try again later.',
             errorCode: 'INTERNAL_SERVER_ERROR',
             traceId: requestTraceId,
-            details: process.env.CLOUDFLARE_DEV ? error.message : undefined,
         });
     }
 };

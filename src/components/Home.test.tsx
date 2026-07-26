@@ -58,6 +58,7 @@ const homePayload = ({ characters = [], worlds = [] }: { characters?: CharacterS
 
 const props = {
   user: null,
+  authStatus: 'anonymous' as const,
   userAvatarInitial: 'V',
   searchQuery: '',
   onSearchChange: vi.fn(),

@@ -238,9 +238,9 @@ export const resolveRuntimeChatHandlerContext = ({ env, traceId = null } = {}) =
                 prefix: toSafePrefix(env.RATE_LIMIT_KV_PREFIX, DEFAULT_RATE_LIMIT_KV_PREFIX),
             });
         } else {
-            logServerWarn('[V-MATE] RATE_LIMIT_STORE=kv enabled but no KV binding was provided', {
+            logServerWarn('[V-MATE] Configured rate-limit store is unavailable', {
                 traceId,
-                bindingKeys: RATE_LIMIT_KV_BINDING_KEYS.join(','),
+                hasRequiredBinding: false,
             });
         }
     }
@@ -253,9 +253,9 @@ export const resolveRuntimeChatHandlerContext = ({ env, traceId = null } = {}) =
                 prefix: toSafePrefix(env.PROMPT_CACHE_KV_PREFIX, DEFAULT_PROMPT_CACHE_KV_PREFIX),
             });
         } else {
-            logServerWarn('[V-MATE] PROMPT_CACHE_STORE=kv enabled but no KV binding was provided', {
+            logServerWarn('[V-MATE] Configured prompt-cache store is unavailable', {
                 traceId,
-                bindingKeys: PROMPT_CACHE_KV_BINDING_KEYS.join(','),
+                hasRequiredBinding: false,
             });
         }
     }

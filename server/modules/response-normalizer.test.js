@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
-import { GEMINI_CHAT_MODEL_NAME } from './gemini-model.js';
 import { extractGeminiResponseText, normalizeAssistantPayload } from './response-normalizer.js';
 
 const ORIGINAL_CONSOLE_WARN = console.warn;
@@ -70,22 +69,26 @@ test('normalizeAssistantPayload keeps debug-safe log context for broken contract
   normalizeAssistantPayload('{"emotion":"happy","response":', {
     traceId: 'trace-1',
     roomId: 'room-1',
-    modelName: GEMINI_CHAT_MODEL_NAME,
+    modelName: 'private-provider-model',
+    clientRequestId: 'private-client-request',
     promptSnapshotLength: 4321,
     historyMessageCount: 7,
     outputLimit: 2048,
     finishReason: 'MAX_TOKENS',
+    hasFinishReason: true,
   });
 
   assert.ok(warnCalls.length > 0);
   const metadata = warnCalls[0][1];
   assert.equal(metadata?.traceId, 'trace-1');
-  assert.equal(metadata?.roomId, 'room-1');
-  assert.equal(metadata?.modelName, GEMINI_CHAT_MODEL_NAME);
+  assert.equal(Object.hasOwn(metadata || {}, 'roomId'), false);
+  assert.equal(Object.hasOwn(metadata || {}, 'modelName'), false);
+  assert.equal(Object.hasOwn(metadata || {}, 'clientRequestId'), false);
   assert.equal(metadata?.promptSnapshotLength, 4321);
   assert.equal(metadata?.historyMessageCount, 7);
   assert.equal(metadata?.outputLimit, 2048);
-  assert.equal(metadata?.finishReason, 'MAX_TOKENS');
+  assert.equal(Object.hasOwn(metadata || {}, 'finishReason'), false);
+  assert.equal(metadata?.hasFinishReason, true);
 });
 
 test('extractGeminiResponseText returns first non-empty text part', () => {

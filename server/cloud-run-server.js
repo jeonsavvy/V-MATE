@@ -6,6 +6,7 @@ import { buildApiErrorResult } from './modules/http-response.js';
 import { mergeChatHandlerContexts, resolveChatHandlerContext } from './modules/chat-handler-context.js';
 import { getRequestBodyLimitBytes } from './modules/runtime-config.js';
 import { resolveRuntimeChatHandlerContext } from './modules/runtime-chat-context.js';
+import { toSafeErrorMeta } from './modules/safe-error-meta.js';
 import { logServerInfo, logServerWarn } from './modules/server-logger.js';
 import { createTraceId } from './modules/trace-id.js';
 import { handlePlatformApi } from './platform/api.js';
@@ -160,9 +161,9 @@ export const createCloudRunServer = ({
                     chatHandlerContext,
                     resolverInput: { req },
                     onError: (error) => {
-                        logServerWarn('[V-MATE] Cloud Run chatHandlerContext resolver failed, using empty context', {
+                        logServerWarn('[V-MATE] Request context resolver failed, using empty context', {
                             traceId: requestTraceId,
-                            message: error?.message || String(error),
+                            ...toSafeErrorMeta(error),
                         });
                     },
                 });
@@ -201,9 +202,6 @@ export const createCloudRunServer = ({
                 traceId: requestTraceId,
                 error: 'Internal server error.',
                 errorCode: 'INTERNAL_SERVER_ERROR',
-                details: process.env.NODE_ENV !== 'production'
-                    ? (error?.message || String(error))
-                    : undefined,
             }));
         }
     });
@@ -212,7 +210,7 @@ const runAsCli = () => {
     const server = createCloudRunServer();
     const port = Number(process.env.PORT || 8080);
     server.listen(port, () => {
-        logServerInfo('[V-MATE] Cloud Run server listening', { port });
+        logServerInfo('[V-MATE] Server listening', { port });
     });
 };
 

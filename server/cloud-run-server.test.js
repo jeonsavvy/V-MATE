@@ -202,6 +202,7 @@ test('public character publishing requires a rights attestation at the api bound
     summary: '권리 확인 없이는 공개할 수 없습니다.',
     visibility: 'public',
     sourceType: 'original',
+    coverImageUrl: 'https://example.com/rights-test.webp',
     tags: [],
   };
 

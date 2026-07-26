@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, MotionConfig, motion } from 'motion/react'
 import type { User } from '@supabase/supabase-js'
 import { Toaster } from '@/components/ui/sonner'
@@ -26,6 +26,7 @@ const RecentRoomsPage = lazy(() => import('@/components/platform/Pages').then((m
 const LibraryPage = lazy(() => import('@/components/platform/Pages').then((module) => ({ default: module.LibraryPage })))
 const OpsPage = lazy(() => import('@/components/platform/Pages').then((module) => ({ default: module.OpsPage })))
 const PrivacyPage = lazy(() => import('@/components/PrivacyPage').then((module) => ({ default: module.PrivacyPage })))
+const PasswordRecoveryPage = lazy(() => import('@/components/PasswordRecoveryPage').then((module) => ({ default: module.PasswordRecoveryPage })))
 
 type RouteState =
   | { view: 'home' }
@@ -42,6 +43,7 @@ type RouteState =
   | { view: 'library' }
   | { view: 'ops' }
   | { view: 'privacy' }
+  | { view: 'recovery' }
 
 const normalizePathname = (pathname: string) => {
   if (!pathname || pathname === '/') return '/'
@@ -66,6 +68,7 @@ const parseRouteFromPathname = (pathname: string): RouteState => {
   if (segments[0] === 'library') return { view: 'library' }
   if (segments[0] === 'ops') return { view: 'ops' }
   if (segments[0] === 'privacy') return { view: 'privacy' }
+  if (segments[0] === 'auth' && segments[1] === 'recovery') return { view: 'recovery' }
   if (segments[0] === 'chat' && segments[1]) return { view: 'startCharacter', slug: segments[1] }
   return { view: 'home' }
 }
@@ -100,6 +103,8 @@ const toPathname = (route: RouteState) => {
       return '/ops'
     case 'privacy':
       return '/privacy'
+    case 'recovery':
+      return '/auth/recovery'
     default:
       return '/'
   }
@@ -129,13 +134,17 @@ const toAvatarInitial = (user: User | null) => {
 function App() {
   const [route, setRoute] = useState<RouteState>(resolveInitialRoute)
   const [user, setUser] = useState<User | null>(null)
+  const [authStatus, setAuthStatus] = useState<'checking' | 'authenticated' | 'anonymous' | 'unavailable'>(() => hasPersistedSupabaseSession() || resolveInitialRoute().view === 'recovery' ? 'checking' : 'anonymous')
   const [searchQuery, setSearchQuery] = useState('')
   const [isAuthDialogOpen, setIsAuthDialogOpen] = useState(false)
-  const [shouldInitializeAuth, setShouldInitializeAuth] = useState<boolean>(hasPersistedSupabaseSession)
-  const initialSelection = useMemo(readCombinationSelection, [])
+  const [authDialogMode, setAuthDialogMode] = useState<'signin' | 'reset'>('signin')
+  const [shouldInitializeAuth, setShouldInitializeAuth] = useState<boolean>(() => hasPersistedSupabaseSession() || resolveInitialRoute().view === 'recovery')
+  const [authRetryNonce, setAuthRetryNonce] = useState(0)
+  const initialSelection = useMemo(() => readCombinationSelection(), [])
   const [selectedCharacter, setSelectedCharacter] = useState<CharacterSummary | null>(initialSelection.character)
   const [selectedWorld, setSelectedWorld] = useState<WorldSummary | null>(initialSelection.world)
   const [isStartingCombination, setIsStartingCombination] = useState(false)
+  const authenticatedUserIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     const handlePopState = () => setRoute(parseRouteFromPathname(window.location.pathname))
@@ -158,23 +167,34 @@ function App() {
     const bindAuthListener = async () => {
       const module = await import('@/lib/supabase')
       if (!module.isSupabaseConfigured()) {
+        if (mounted) setAuthStatus('unavailable')
         return
       }
       const supabase = await module.resolveSupabaseClient()
-      if (!supabase) return
+      if (!supabase) { if (mounted) setAuthStatus('unavailable'); return }
       try {
         const { data: { session } } = await supabase.auth.getSession()
-        if (mounted) setUser(session?.user ?? null)
-      } catch (error) {
-        devError('Failed to get session:', error)
+        if (mounted) { authenticatedUserIdRef.current = session?.user?.id ?? null; setUser(session?.user ?? null); setAuthStatus(session?.user ? 'authenticated' : 'anonymous') }
+      } catch {
+        devError('Failed to resolve authentication state.')
+        if (mounted) setAuthStatus('unavailable')
       }
       try {
         const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-          if (mounted) setUser(session?.user ?? null)
+          if (mounted) {
+            const nextUserId = session?.user?.id ?? null
+            if (authenticatedUserIdRef.current && authenticatedUserIdRef.current !== nextUserId) {
+              clearCombinationSelection()
+              setSelectedCharacter((current) => current?.visibility === 'private' ? null : current)
+              setSelectedWorld((current) => current?.visibility === 'private' ? null : current)
+            }
+            authenticatedUserIdRef.current = nextUserId
+            setUser(session?.user ?? null); setAuthStatus(session?.user ? 'authenticated' : 'anonymous')
+          }
         })
         unsubscribe = () => subscription.unsubscribe()
-      } catch (error) {
-        devError('Failed to set up auth state change listener:', error)
+      } catch {
+        devError('Failed to observe authentication state.')
       }
     }
     void bindAuthListener()
@@ -182,7 +202,7 @@ function App() {
       mounted = false
       unsubscribe?.()
     }
-  }, [shouldInitializeAuth])
+  }, [shouldInitializeAuth, authRetryNonce])
 
   const navigateTo = (nextRoute: RouteState, options?: { replace?: boolean }) => {
     const nextPath = toPathname(nextRoute)
@@ -198,22 +218,42 @@ function App() {
     window.scrollTo({ top: 0, left: 0, behavior: 'auto' })
   }
 
-  const openAuthDialog = () => {
+  const prepareAuthDialog = () => {
     setShouldInitializeAuth(true)
+    if (authStatus === 'unavailable') {
+      setAuthStatus('checking')
+      setAuthRetryNonce((current) => current + 1)
+    }
+  }
+
+  const openAuthDialog = () => {
+    prepareAuthDialog()
+    setAuthDialogMode('signin')
+    setIsAuthDialogOpen(true)
+  }
+
+  const openPasswordResetDialog = () => {
+    prepareAuthDialog()
+    setAuthDialogMode('reset')
     setIsAuthDialogOpen(true)
   }
 
   const handleSignOut = async () => {
     const supabaseModule = await import('@/lib/supabase')
-    if (!supabaseModule.isSupabaseConfigured()) return
+    if (!supabaseModule.isSupabaseConfigured()) throw new Error('AUTH_UNAVAILABLE')
     const supabase = await supabaseModule.resolveSupabaseClient()
-    if (!supabase) return
+    if (!supabase) throw new Error('AUTH_UNAVAILABLE')
     try {
       await supabase.auth.signOut()
       setUser(null)
+      setSelectedCharacter(null)
+      setSelectedWorld(null)
+      clearCombinationSelection()
+      setAuthStatus('anonymous')
       navigateTo({ view: 'home' }, { replace: true })
-    } catch (error) {
-      devError('Sign out error:', error)
+    } catch {
+      devError('Sign out failed.')
+      throw new Error('AUTH_SIGN_OUT_FAILED')
     }
   }
 
@@ -223,17 +263,29 @@ function App() {
     const supabaseModule = await import('@/lib/supabase')
     if (supabaseModule.isSupabaseConfigured()) {
       const supabase = await supabaseModule.resolveSupabaseClient()
-      await supabase?.auth.signOut().catch((error) => {
-        devError('Sign out after account deletion failed:', error)
+      await supabase?.auth.signOut().catch(() => {
+        devError('Post-deletion local sign out failed.')
       })
     }
     setUser(null)
+    setSelectedCharacter(null)
+    setSelectedWorld(null)
+    clearCombinationSelection()
+    setAuthStatus('anonymous')
     navigateTo({ view: 'home' }, { replace: true })
   }
 
   useEffect(() => {
-    writeCombinationSelection({ character: selectedCharacter, world: selectedWorld })
-  }, [selectedCharacter, selectedWorld])
+    writeCombinationSelection({ character: selectedCharacter, world: selectedWorld }, user?.id)
+  }, [selectedCharacter, selectedWorld, user?.id])
+
+  useEffect(() => {
+    const stored = readCombinationSelection(user?.id)
+    if (!selectedCharacter && stored.character) setSelectedCharacter(stored.character)
+    if (!selectedWorld && stored.world) setSelectedWorld(stored.world)
+    if (!stored.character && selectedCharacter?.visibility === 'private') setSelectedCharacter(null)
+    if (!stored.world && selectedWorld?.visibility === 'private') setSelectedWorld(null)
+  }, [user?.id, selectedCharacter?.visibility, selectedWorld?.visibility])
 
   const handleSelectEntity = (item: EntitySummary) => {
     if (item.entityType === 'character') {
@@ -270,7 +322,8 @@ function App() {
       clearCombinationSelection()
       navigateTo({ view: 'room', roomId: room.id })
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : '대화방을 만들지 못했습니다.')
+      const { toUserFacingError } = await import('@/lib/platform/apiClient')
+      toast.error(toUserFacingError(error, '대화방을 만들지 못했습니다.').message)
     } finally {
       setIsStartingCombination(false)
     }
@@ -278,6 +331,7 @@ function App() {
 
   const chrome = useMemo(() => ({
     user,
+    authStatus,
     userAvatarInitial: toAvatarInitial(user),
     searchQuery,
     onSearchChange: setSearchQuery,
@@ -291,7 +345,7 @@ function App() {
     onSelectEntity: handleSelectEntity,
     onClearSelectedEntity: handleClearSelectedEntity,
     onStartCombination: handleStartCombination,
-  }), [user, searchQuery, selectedCharacter, selectedWorld, isStartingCombination])
+  }), [user, authStatus, searchQuery, selectedCharacter, selectedWorld, isStartingCombination])
 
   const routeKey = route.view === 'room' ? `room-${route.roomId}` : route.view === 'character' ? `character-${route.slug}` : route.view === 'world' ? `world-${route.slug}` : route.view === 'startCharacter' ? `start-character-${route.slug}` : route.view === 'startWorld' ? `start-world-${route.slug}` : route.view
 
@@ -315,13 +369,14 @@ function App() {
               {route.view === 'library' && <LibraryPage chrome={chrome} />}
               {route.view === 'ops' && <OpsPage chrome={chrome} />}
               {route.view === 'privacy' && <PrivacyPage chrome={chrome} />}
+              {route.view === 'recovery' && <PasswordRecoveryPage onComplete={() => navigateTo({ view: 'home' }, { replace: true })} onOpenAuth={openPasswordResetDialog} />}
             </motion.div>
           </AnimatePresence>
         </Suspense>
 
         {isAuthDialogOpen && (
           <Suspense fallback={null}>
-            <AuthDialog open={isAuthDialogOpen} onOpenChange={setIsAuthDialogOpen} onSuccess={() => setIsAuthDialogOpen(false)} />
+            <AuthDialog open={isAuthDialogOpen} onOpenChange={setIsAuthDialogOpen} onSuccess={() => setIsAuthDialogOpen(false)} initialMode={authDialogMode} />
           </Suspense>
         )}
         <Toaster />

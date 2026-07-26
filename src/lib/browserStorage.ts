@@ -9,8 +9,8 @@ const resolveLocalStorage = (): Storage | null => {
 
   try {
     return window.localStorage
-  } catch (error) {
-    devWarn(`[V-MATE] ${STORAGE_KIND} is unavailable`, error)
+  } catch {
+    devWarn(`[V-MATE] ${STORAGE_KIND} is unavailable`)
     return null
   }
 }
@@ -23,8 +23,8 @@ export const getStoredItem = (key: string): string | null => {
 
   try {
     return storage.getItem(key)
-  } catch (error) {
-    devWarn(`[V-MATE] Failed to read ${STORAGE_KIND} key: ${key}`, error)
+  } catch {
+    devWarn(`[V-MATE] Failed to read ${STORAGE_KIND}`)
     return null
   }
 }
@@ -37,8 +37,8 @@ export const setStoredItem = (key: string, value: string) => {
 
   try {
     storage.setItem(key, value)
-  } catch (error) {
-    devWarn(`[V-MATE] Failed to write ${STORAGE_KIND} key: ${key}`, error)
+  } catch {
+    devWarn(`[V-MATE] Failed to write ${STORAGE_KIND}`)
   }
 }
 
@@ -50,8 +50,8 @@ export const removeStoredItem = (key: string) => {
 
   try {
     storage.removeItem(key)
-  } catch (error) {
-    devWarn(`[V-MATE] Failed to remove ${STORAGE_KIND} key: ${key}`, error)
+  } catch {
+    devWarn(`[V-MATE] Failed to remove ${STORAGE_KIND} item`)
   }
 }
 
@@ -63,8 +63,8 @@ export const getStoredKeys = (): string[] => {
 
   try {
     return Object.keys(storage)
-  } catch (error) {
-    devWarn(`[V-MATE] Failed to enumerate ${STORAGE_KIND} keys`, error)
+  } catch {
+    devWarn(`[V-MATE] Failed to enumerate ${STORAGE_KIND} keys`)
     return []
   }
 }

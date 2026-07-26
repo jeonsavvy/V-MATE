@@ -31,11 +31,15 @@ const TRACKED_ENV_KEYS = [
   'CLIENT_REQUEST_DEDUPE_WINDOW_MS',
   'CLIENT_REQUEST_DEDUPE_MAX_ENTRIES',
   'REQUIRE_AUTH_FOR_CHAT',
+  'APP_ENV',
+  'NODE_ENV',
+  'REQUIRE_CONFIGURED_SUPABASE_URL',
   'AUTH_PROVIDER_TIMEOUT_MS',
   'AUTH_PROVIDER_RETRY_COUNT',
   'SUPABASE_URL',
   'SUPABASE_ANON_KEY',
   'SUPABASE_PUBLISHABLE_KEY',
+  'SUPABASE_SERVICE_ROLE_KEY',
   'VITE_SUPABASE_URL',
   'VITE_SUPABASE_ANON_KEY',
   'VITE_SUPABASE_PUBLISHABLE_KEY',
@@ -75,6 +79,9 @@ afterEach(() => {
 });
 
 const applyBaseEnv = (overrides = {}) => {
+  for (const key of TRACKED_ENV_KEYS.filter((key) => key.includes('SUPABASE'))) {
+    delete process.env[key];
+  }
   const baseEnv = {
     GOOGLE_API_KEY: 'unit-test-api-key',
     ALLOWED_ORIGINS: 'http://localhost:5173',
@@ -491,6 +498,7 @@ test('returns 401 when auth provider rejects access token', async () => {
     REQUIRE_AUTH_FOR_CHAT: 'true',
     SUPABASE_URL: 'https://demo.supabase.co',
     SUPABASE_ANON_KEY: 'anon-public-key',
+    SUPABASE_SERVICE_ROLE_KEY: 'service-role-test-key',
   });
   globalThis.fetch = async (url) => {
     assert.match(String(url), /auth\/v1\/user/);
@@ -549,16 +557,36 @@ test('returns 503 when auth is required but auth provider config is missing', as
 
   const payload = parseBody(result);
   assert.equal(result.statusCode, 503);
-  assert.equal(payload.error_code, 'AUTH_PROVIDER_NOT_CONFIGURED');
+  assert.equal(payload.error_code, 'AUTH_TEMPORARILY_UNAVAILABLE');
+  assert.doesNotMatch(payload.error, /provider|api|key|url|config/i);
+});
+
+test('production legacy chat fails closed before auth or model calls when persistence is missing', async () => {
+  applyBaseEnv({ APP_ENV: 'production' });
+  globalThis.fetch = async () => {
+    throw new Error('fetch should not be called when persistent mutation support is missing');
+  };
+
+  const result = await handler(makeEvent({
+    body: {
+      characterId: 'character-a',
+      userMessage: '안녕',
+      messageHistory: [],
+    },
+  }));
+  assert.equal(result.statusCode, 503);
+  assert.equal(parseBody(result).error_code, 'FEATURE_TEMPORARILY_UNAVAILABLE');
 });
 
 test('returns ChatResponseV2 shape when request succeeds', async () => {
   applyBaseEnv();
 
   let fetchCalls = 0;
-  globalThis.fetch = async (url) => {
+  globalThis.fetch = async (url, options) => {
     fetchCalls += 1;
-    assert.match(String(url), /models\/gemini-3\.5-flash:generateContent\?key=/);
+    assert.match(String(url), /models\/gemini-3\.5-flash:generateContent$/);
+    assert.equal(String(url).includes('key='), false);
+    assert.equal(options?.headers?.['x-goog-api-key'], 'unit-test-api-key');
 
     return new Response(
       JSON.stringify({
@@ -618,10 +646,12 @@ test('returns ChatResponseV2 when auth requirement is enabled and token is valid
     REQUIRE_AUTH_FOR_CHAT: 'true',
     SUPABASE_URL: 'https://demo.supabase.co',
     SUPABASE_ANON_KEY: 'anon-public-key',
+    SUPABASE_SERVICE_ROLE_KEY: 'service-role-test-key',
   });
 
   let authCalls = 0;
   let geminiCalls = 0;
+  let quotaCalls = 0;
   globalThis.fetch = async (url) => {
     if (String(url).includes('/auth/v1/user')) {
       authCalls += 1;
@@ -634,6 +664,26 @@ test('returns ChatResponseV2 when auth requirement is enabled and token is valid
           headers: { 'content-type': 'application/json' },
         }
       );
+    }
+
+    if (String(url).includes('/rest/v1/rpc/reserve_chat_message_v2')) {
+      quotaCalls += 1;
+      return new Response(JSON.stringify([{
+        disposition: 'reserved',
+        allowed: true,
+        duplicate: false,
+        message_limit: 30,
+        remaining: 29,
+        reset_at: '2026-07-27T15:00:00.000Z',
+        response_json: null,
+        room_version: 0,
+        lease_expires_at: '2026-07-26T12:02:00.000Z',
+      }]), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+
+    if (String(url).includes('/rest/v1/rpc/complete_legacy_chat_message_v2')) {
+      quotaCalls += 1;
+      return new Response('true', { status: 200, headers: { 'content-type': 'application/json' } });
     }
 
     geminiCalls += 1;
@@ -678,6 +728,7 @@ test('returns ChatResponseV2 when auth requirement is enabled and token is valid
   assert.equal(payload?.message?.response, '인증된 응답');
   assert.equal(authCalls, 1);
   assert.equal(geminiCalls, 1);
+  assert.equal(quotaCalls, 2);
 });
 
 test('reuses deduped successful response for same clientRequestId and payload', async () => {
@@ -944,7 +995,7 @@ test('returns retryable upstream connection error when fetch fails', async () =>
 
   const payload = parseBody(result);
   assert.equal(result.statusCode, 503);
-  assert.equal(payload.error_code, 'UPSTREAM_CONNECTION_FAILED');
+  assert.equal(payload.error_code, 'RESPONSE_SERVICE_UNAVAILABLE');
   assert.equal(payload.retryable, true);
 });
 
@@ -976,7 +1027,7 @@ test('returns retryable upstream timeout when fetch is aborted by timeout budget
 
   const payload = parseBody(result);
   assert.equal(result.statusCode, 504);
-  assert.equal(payload.error_code, 'UPSTREAM_TIMEOUT');
+  assert.equal(payload.error_code, 'RESPONSE_SERVICE_UNAVAILABLE');
   assert.equal(payload.retryable, true);
 });
 
@@ -1253,7 +1304,7 @@ test('removes prompt cache entry through adapter on format fallback error', asyn
 
   const payload = parseBody(result);
   assert.equal(result.statusCode, 502);
-  assert.equal(payload.error_code, 'UPSTREAM_INVALID_FORMAT');
+  assert.equal(payload.error_code, 'RESPONSE_INVALID_FORMAT');
   assert.equal(calls.remove.length, 1);
   assert.match(String(calls.remove[0] || ''), /^mika:/);
 });

@@ -1,4 +1,5 @@
 import { removePromptCache, setPromptCacheEntry } from './prompt-cache.js';
+import { toSafeErrorMeta } from './safe-error-meta.js';
 import { logServerWarn } from './server-logger.js';
 
 const toSafeRateLimitNumber = (value, fallback, { min = 0 } = {}) => {
@@ -81,7 +82,7 @@ export const resolveRateLimitState = async ({
     } catch (error) {
         logServerWarn('[V-MATE] Custom rate-limit hook failed, using default limiter', {
             traceId,
-            message: error?.message || String(error),
+            ...toSafeErrorMeta(error),
         });
         const defaultStatus = await ensureDefaultStatus();
         return {
@@ -106,7 +107,6 @@ export const setPromptCacheWithAdapter = async ({
     promptCacheKey,
     entry,
     traceId,
-    characterId,
 }) => {
     if (!promptCacheKey || !entry?.name) {
         return;
@@ -123,8 +123,7 @@ export const setPromptCacheWithAdapter = async ({
     } catch (error) {
         logServerWarn('[V-MATE] Prompt cache adapter set failed, kept in-memory cache only', {
             traceId,
-            characterId: characterId || null,
-            message: error?.message || String(error),
+            ...toSafeErrorMeta(error),
         });
     }
 };
@@ -133,7 +132,6 @@ export const removePromptCacheWithAdapter = async ({
     promptCacheAdapter,
     promptCacheKey,
     traceId,
-    characterId,
 }) => {
     if (!promptCacheKey) {
         return;
@@ -150,8 +148,7 @@ export const removePromptCacheWithAdapter = async ({
     } catch (error) {
         logServerWarn('[V-MATE] Prompt cache adapter remove failed', {
             traceId,
-            characterId: characterId || null,
-            message: error?.message || String(error),
+            ...toSafeErrorMeta(error),
         });
     }
 };

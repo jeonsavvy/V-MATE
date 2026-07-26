@@ -319,9 +319,14 @@ export const getHomePayload = ({ tab = 'characters', search = '', filter = '' } 
   };
 };
 
-export const getCharacterDetail = (slug) => {
+export const getCharacterDetail = (input) => {
+  const slug = typeof input === 'string' ? input : input?.slug;
+  const userId = typeof input === 'string' ? '' : String(input?.userId || '');
   const item = findCharacter(slug);
-  if (!item) return null;
+  const moderationStatus = item ? moderationByEntity.get(`character:${item.id}`)?.status || item.moderationStatus || 'clear' : 'clear';
+  if (!item || (item.ownerUserId !== userId && (
+    item.visibility !== 'public' || item.displayStatus !== 'visible' || ['quarantined', 'blocked'].includes(moderationStatus)
+  ))) return null;
 
   return {
     ...summarizeCharacter(item),
@@ -333,9 +338,14 @@ export const getCharacterDetail = (slug) => {
   };
 };
 
-export const getWorldDetail = (slug) => {
+export const getWorldDetail = (input) => {
+  const slug = typeof input === 'string' ? input : input?.slug;
+  const userId = typeof input === 'string' ? '' : String(input?.userId || '');
   const item = findWorld(slug);
-  if (!item) return null;
+  const moderationStatus = item ? moderationByEntity.get(`world:${item.id}`)?.status || item.moderationStatus || 'clear' : 'clear';
+  if (!item || (item.ownerUserId !== userId && (
+    item.visibility !== 'public' || item.displayStatus !== 'visible' || ['quarantined', 'blocked'].includes(moderationStatus)
+  ))) return null;
 
   return {
     ...summarizeWorld(item),
@@ -565,6 +575,18 @@ export const createRoom = ({ userId, characterRef, characterSlug, worldRef, worl
   const character = findCharacter(characterRef || characterSlug);
   const world = worldRef || worldSlug ? findWorld(worldRef || worldSlug) : null;
   if (!character) return null;
+  if ((worldRef || worldSlug) && !world) return null;
+  const characterModeration = moderationByEntity.get(`character:${character.id}`)?.status || 'clear';
+  const worldModeration = world ? moderationByEntity.get(`world:${world.id}`)?.status || 'clear' : 'clear';
+  const canAccessCharacter = character.ownerUserId === userId || (character.visibility === 'public' && character.displayStatus === 'visible');
+  const canAccessWorld = !world || world.ownerUserId === userId || (world.visibility === 'public' && world.displayStatus === 'visible');
+  if (!canAccessCharacter || !canAccessWorld) return null;
+  if (character.displayStatus === 'hidden' || ['quarantined', 'blocked'].includes(characterModeration)
+    || (world && (world.displayStatus === 'hidden' || ['quarantined', 'blocked'].includes(worldModeration)))) {
+    const error = new Error('ROOM_TARGET_NOT_STARTABLE');
+    error.code = 'ROOM_TARGET_NOT_STARTABLE';
+    throw error;
+  }
   const bridgeProfile = generateBridgeProfile({ character, world });
   const state = createInitialRoomState({ bridgeProfile, world });
   const room = {
@@ -583,6 +605,7 @@ export const createRoom = ({ userId, characterRef, characterSlug, worldRef, worl
     createdAt: nowIso(),
     updatedAt: nowIso(),
     lastMessageAt: nowIso(),
+    version: 0,
   };
   rooms.set(room.id, room);
 
@@ -597,13 +620,17 @@ export const createRoom = ({ userId, characterRef, characterSlug, worldRef, worl
 
 export const getRoom = (input) => {
   const roomId = typeof input === 'string' ? input : input?.roomId
-  return clone(rooms.get(roomId) || null);
+  const userId = typeof input === 'string' ? '' : String(input?.userId || '');
+  const room = rooms.get(roomId);
+  if (!room || (userId && room.userId !== userId)) return null;
+  return clone(room);
 };
 
 export const getRoomHistoryForModel = (input) => {
   const roomId = typeof input === 'string' ? input : input?.roomId
+  const userId = typeof input === 'string' ? '' : String(input?.userId || '');
   const room = rooms.get(roomId);
-  if (!room) return [];
+  if (!room || (userId && room.userId !== userId)) return [];
   const history = room.messages.map((message) => ({
     role: message.role,
     content: typeof message.content === 'string' ? message.content : message.content.response,
@@ -613,8 +640,9 @@ export const getRoomHistoryForModel = (input) => {
 
 export const getRoomPromptContext = (input) => {
   const roomId = typeof input === 'string' ? input : input?.roomId
+  const userId = typeof input === 'string' ? '' : String(input?.userId || '');
   const room = rooms.get(roomId);
-  if (!room) return null;
+  if (!room || (userId && room.userId !== userId)) return null;
   const character = findCharacter(room.character.slug);
   const world = room.world ? findWorld(room.world.slug) : null;
   return {
@@ -629,9 +657,9 @@ export const getRoomPromptContext = (input) => {
   };
 };
 
-export const appendRoomMessages = ({ roomId, userMessage, assistantMessage }) => {
+export const appendRoomMessages = ({ roomId, userId = '', userMessage, assistantMessage }) => {
   const room = rooms.get(roomId);
-  if (!room) return null;
+  if (!room || (userId && room.userId !== userId)) return null;
   room.messages.push({ id: `user-${randomUUID()}`, role: 'user', createdAt: nowIso(), content: userMessage });
   room.messages.push({ id: `assistant-${randomUUID()}`, role: 'assistant', createdAt: nowIso(), content: assistantMessage });
   room.state = updateRoomStateFromMessages({ state: room.state, assistantMessage, userMessage });
@@ -652,6 +680,7 @@ export const appendRoomMessages = ({ roomId, userMessage, assistantMessage }) =>
   }
   room.updatedAt = nowIso();
   room.lastMessageAt = nowIso();
+  room.version = Number(room.version || 0) + 1;
   return clone(room);
 };
 
@@ -692,7 +721,15 @@ export const deleteContent = async ({ entityType, id }) => {
   return false;
 };
 
-export const deleteOwnedContent = async ({ entityType, id }) => deleteContent({ entityType, id });
+export const deleteOwnedContent = async ({ userId, entityType, id }) => {
+  const collection = entityType === 'character' ? createdCharacters : createdWorlds;
+  const entry = Array.from(collection.entries()).find(([, item]) => (
+    item.ownerUserId === userId && (item.id === id || item.slug === id)
+  ));
+  if (!entry) return false;
+  collection.delete(entry[0]);
+  return true;
+};
 
 export const isOwnerUser = async () => true;
 
@@ -834,17 +871,19 @@ export const getChatQuota = ({ userId, limit = 30, now = new Date() }) => {
   return { limit, remaining: Math.max(0, limit - used), resetAt: getKstResetAt(dateKey) };
 };
 
-export const reserveChatQuota = ({ userId, requestId, limit = 30, now = new Date() }) => {
+export const reserveChatQuota = ({ userId, requestId, requestFingerprint = '', roomId = null, limit = 30, now = new Date() }) => {
   const eventKey = getChatQuotaEventKey(userId, requestId);
   const existing = chatQuotaEvents.get(eventKey);
-  if (existing && existing.status !== 'refunded') return { allowed: false, duplicate: true, response: existing.response ? clone(existing.response) : null, ...getChatQuota({ userId, limit, now }) };
+  if (existing && existing.requestFingerprint !== requestFingerprint) return { allowed: false, duplicate: false, disposition: 'conflict', ...getChatQuota({ userId, limit, now }) };
+  if (existing && existing.status !== 'refunded') return { allowed: false, duplicate: true, disposition: existing.status === 'completed' ? 'replay' : 'in_progress', response: existing.response ? clone(existing.response) : null, roomVersion: existing.roomVersion || 0, ...getChatQuota({ userId, limit, now }) };
   const dateKey = getKstDateKey(now);
   const key = `${userId}:${dateKey}`;
   const used = Number(chatQuotaByUserDate.get(key) || 0);
-  if (used >= limit) return { allowed: false, duplicate: false, ...getChatQuota({ userId, limit, now }) };
+  if (used >= limit) return { allowed: false, duplicate: false, disposition: 'limit_exceeded', ...getChatQuota({ userId, limit, now }) };
   chatQuotaByUserDate.set(key, used + 1);
-  chatQuotaEvents.set(eventKey, { userId, dateKey, status: 'reserved', response: null });
-  return { allowed: true, duplicate: false, ...getChatQuota({ userId, limit, now }) };
+  const roomVersion = Number(rooms.get(roomId)?.version || 0);
+  chatQuotaEvents.set(eventKey, { userId, dateKey, status: 'reserved', response: null, requestFingerprint, roomId, roomVersion });
+  return { allowed: true, duplicate: false, disposition: 'reserved', roomVersion, ...getChatQuota({ userId, limit, now }) };
 };
 
 export const completeChatQuota = ({ userId, requestId, response }) => {
@@ -870,11 +909,12 @@ export const refundChatQuota = ({ userId, requestId, limit = 30 }) => {
 
 export const prepareAssetUploads = async ({ userId, entityType, variants }) => ({
   bucket: 'vmate-assets',
+  expiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
   uploads: variants.map((variant) => ({
     kind: variant.kind,
     width: variant.width,
     height: variant.height,
-    path: `${userId || 'demo-user'}/${entityType}/${Date.now()}-${variant.kind}.webp`,
+    path: `${userId || 'demo-user'}/${entityType}/${Date.now()}-demotest/${variant.slot || 'main'}/${variant.variant || variant.kind}.webp`,
     token: `demo-${variant.kind}`,
     signedUrl: '',
     publicUrl: '',

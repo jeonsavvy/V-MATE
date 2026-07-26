@@ -23,6 +23,7 @@ import {
     getGeminiThinkingLevel,
     shouldUseGeminiContextCache,
 } from './runtime-config.js';
+import { toSafeErrorMeta } from './safe-error-meta.js';
 import { logServerWarn } from './server-logger.js';
 
 const NETWORK_RETRYABLE_ERROR_CODES = new Set([
@@ -75,7 +76,7 @@ const getPromptCacheFromAdapter = async ({ promptCacheAdapter, cacheKey, logMeta
     } catch (error) {
         logServerWarn('[V-MATE] Prompt cache adapter get failed, fallback to in-memory cache', {
             ...logMeta,
-            message: error?.message || String(error),
+            ...toSafeErrorMeta(error),
         });
         return null;
     }
@@ -97,7 +98,7 @@ const setPromptCacheWithAdapter = async ({ promptCacheAdapter, cacheKey, entry, 
     } catch (error) {
         logServerWarn('[V-MATE] Prompt cache adapter set failed, kept in-memory cache only', {
             ...logMeta,
-            message: error?.message || String(error),
+            ...toSafeErrorMeta(error),
         });
     }
 };
@@ -118,7 +119,7 @@ const removePromptCacheWithAdapter = async ({ promptCacheAdapter, cacheKey, logM
     } catch (error) {
         logServerWarn('[V-MATE] Prompt cache adapter remove failed', {
             ...logMeta,
-            message: error?.message || String(error),
+            ...toSafeErrorMeta(error),
         });
     }
 };
@@ -187,7 +188,6 @@ export const executeGeminiChatRequest = async ({
     } = getGeminiRetryConfig();
     const logMeta = {
         traceId: requestTraceId,
-        characterId: normalizedCharacterId || null,
     };
     const clampedSystemPrompt = trimmedSystemPrompt ? clampSystemPrompt(trimmedSystemPrompt) : '';
 
@@ -315,9 +315,7 @@ export const executeGeminiChatRequest = async ({
         ) {
             logServerWarn('[V-MATE] Cached content lookup failed, retrying without cache', {
                 ...logMeta,
-                errorCode: primaryResult.error?.code || null,
-                errorStatus: primaryResult.error?.status || null,
-                errorMessage: primaryResult.error?.message || null,
+                ...toSafeErrorMeta(primaryResult.error),
                 hadCachedContent: Boolean(cachedContentName),
             });
             await removePromptCacheWithAdapter({
@@ -356,11 +354,9 @@ export const executeGeminiChatRequest = async ({
             lastModelError = null;
         } else {
             lastModelError = primaryResult.error;
-            logServerWarn('[V-MATE] Primary Gemini call failed', {
+            logServerWarn('[V-MATE] Primary response attempt failed', {
                 ...logMeta,
-                errorCode: lastModelError?.code || null,
-                errorStatus: lastModelError?.status || null,
-                errorMessage: lastModelError?.message || null,
+                ...toSafeErrorMeta(lastModelError),
                 hadCachedContent: Boolean(cachedContentName),
                 networkRecoveryRetryEnabled,
             });
@@ -409,17 +405,15 @@ export const executeGeminiChatRequest = async ({
                         geminiResponse = recoveryResult.response;
                         geminiData = recoveryResult.data;
                         lastModelError = null;
-                        logServerWarn('[V-MATE] Gemini recovery attempt succeeded', {
+                        logServerWarn('[V-MATE] Response recovery attempt succeeded', {
                             ...logMeta,
                             recoveryTimeoutMs,
                         });
                     } else {
                         lastModelError = recoveryResult.error;
-                        logServerWarn('[V-MATE] Gemini recovery attempt failed', {
+                        logServerWarn('[V-MATE] Response recovery attempt failed', {
                             ...logMeta,
-                            errorCode: lastModelError?.code || null,
-                            errorStatus: lastModelError?.status || null,
-                            errorMessage: lastModelError?.message || null,
+                            ...toSafeErrorMeta(lastModelError),
                             recoveryTimeoutMs,
                         });
                     }
@@ -431,7 +425,7 @@ export const executeGeminiChatRequest = async ({
             ) {
                 logServerWarn('[V-MATE] Network recovery retry skipped by config', {
                     ...logMeta,
-                    errorCode: lastModelError?.code || null,
+                    ...toSafeErrorMeta(lastModelError),
                 });
             }
         }
@@ -456,10 +450,10 @@ export const executeGeminiChatRequest = async ({
 
     let modelText = extractGeminiResponseText(geminiData);
     if (!modelText) {
-        logServerWarn('[V-MATE] Empty Gemini response text', {
+        logServerWarn('[V-MATE] Empty response text', {
             ...logMeta,
-            finishReason: geminiData?.candidates?.[0]?.finishReason || null,
-            promptBlockReason: geminiData?.promptFeedback?.blockReason || null,
+            hasFinishReason: Boolean(geminiData?.candidates?.[0]?.finishReason),
+            hasPromptBlockReason: Boolean(geminiData?.promptFeedback?.blockReason),
             emptyResponseRetryEnabled,
         });
 
@@ -516,8 +510,8 @@ export const executeGeminiChatRequest = async ({
                 } else {
                     logServerWarn('[V-MATE] Empty recovery response text after retry', {
                         ...logMeta,
-                        finishReason: emptyRecoveryResult.data?.candidates?.[0]?.finishReason || null,
-                        promptBlockReason: emptyRecoveryResult.data?.promptFeedback?.blockReason || null,
+                        hasFinishReason: Boolean(emptyRecoveryResult.data?.candidates?.[0]?.finishReason),
+                        hasPromptBlockReason: Boolean(emptyRecoveryResult.data?.promptFeedback?.blockReason),
                     });
                 }
             }

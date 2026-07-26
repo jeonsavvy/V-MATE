@@ -2,6 +2,32 @@ import { logServerWarn } from './server-logger.js';
 
 const ALLOWED_EMOTIONS = new Set(['normal', 'happy', 'confused', 'angry']);
 const CONTRACT_KEYS = ['emotion', 'inner_heart', 'response', 'narration', 'character_image_slot', 'world_image_slot'];
+const SAFE_NORMALIZATION_NUMBER_KEYS = [
+    'promptSnapshotLength',
+    'historyMessageCount',
+    'outputLimit',
+];
+const SAFE_NORMALIZATION_BOOLEAN_KEYS = [
+    'hasAuthenticatedUser',
+    'hasFinishReason',
+    'hasPromptBlockReason',
+];
+
+const buildSafeNormalizationLogContext = (value) => {
+    if (!value || typeof value !== 'object') return {};
+    const safe = {};
+    if (typeof value.traceId === 'string' && /^[a-z0-9-]{1,80}$/i.test(value.traceId)) {
+        safe.traceId = value.traceId;
+    }
+    for (const key of SAFE_NORMALIZATION_NUMBER_KEYS) {
+        const parsed = Number(value[key]);
+        if (Number.isFinite(parsed) && parsed >= 0) safe[key] = Math.floor(parsed);
+    }
+    for (const key of SAFE_NORMALIZATION_BOOLEAN_KEYS) {
+        if (typeof value[key] === 'boolean') safe[key] = value[key];
+    }
+    return safe;
+};
 
 export const JSON_RESPONSE_SCHEMA = {
     type: 'OBJECT',
@@ -196,7 +222,7 @@ export const normalizeAssistantPayload = (rawText, logContext = null) => {
         response: '잠시 응답 형식이 불안정했어요. 한 번만 다시 말해줘.',
         narration: '',
     };
-    const safeLogContext = logContext && typeof logContext === 'object' ? logContext : {};
+    const safeLogContext = buildSafeNormalizationLogContext(logContext);
 
     if (!rawText || typeof rawText !== 'string') {
         return safeFallback;
@@ -309,7 +335,7 @@ export const normalizeAssistantPayload = (rawText, logContext = null) => {
     if (!ALLOWED_EMOTIONS.has(emotion)) {
         logServerWarn('[V-MATE] Invalid emotion value normalized to default', {
             ...safeLogContext,
-            emotion,
+            hadInvalidEmotion: true,
         });
     }
 

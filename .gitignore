@@ -39,6 +39,8 @@ dist-ssr
 *.sln
 *.sw?
 build
+artifacts
+coverage
 .next
 __pycache__
 Thumbs.db
@@ -48,3 +50,5 @@ venv
 # Local deployment folders
 .wrangler
 cloudflare-env.d.ts
+supabase/.branches
+supabase/.temp

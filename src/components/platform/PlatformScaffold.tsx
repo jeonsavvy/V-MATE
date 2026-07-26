@@ -20,16 +20,18 @@ import { Avatar } from '@/components/ui/avatar'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import { maskEmailAddress } from '@/lib/privacy'
+import { toUserFacingError } from '@/lib/platform/apiClient'
 import type { CharacterImageSlot, CharacterSummary, EntitySummary, WorldSummary } from '@/lib/platform/types'
 
 interface PlatformShellProps {
   user: SupabaseUser | null
+  authStatus: 'checking' | 'authenticated' | 'anonymous' | 'unavailable'
   userAvatarInitial: string
   searchValue?: string
   onSearchChange?: (value: string) => void
   onNavigate: (path: string) => void
   onAuthRequest: () => void
-  onSignOut: () => void
+  onSignOut: () => void | Promise<void>
   onDeleteAccount: () => Promise<void>
   selectedCharacter?: CharacterSummary | null
   selectedWorld?: WorldSummary | null
@@ -72,44 +74,58 @@ function NavigationLink({ path, onNavigate, className, children, ariaLabel }: {
   return <a href={path} onClick={handleClick} className={className} aria-label={ariaLabel}>{children}</a>
 }
 
-function AccountPanel({
-  user,
-  userAvatarInitial,
-  onNavigate,
-  onAuthRequest,
-  onSignOut,
-  onDeleteAccount,
-}: Pick<PlatformShellProps, 'user' | 'userAvatarInitial' | 'onNavigate' | 'onAuthRequest' | 'onSignOut' | 'onDeleteAccount'>) {
-  const [isOpen, setIsOpen] = useState(false)
-  const [isDeleteOpen, setIsDeleteOpen] = useState(false)
+function AccountPanel({ user, authStatus, userAvatarInitial, onAuthRequest, onOpenAccount, compact = false }: Pick<PlatformShellProps, 'user' | 'authStatus' | 'userAvatarInitial' | 'onAuthRequest'> & { onOpenAccount: (trigger: HTMLButtonElement) => void; compact?: boolean }) {
+  if (authStatus === 'checking') {
+    return <div role="status" aria-label="로그인 상태 확인 중" className="flex min-h-11 w-full items-center justify-center rounded-lg text-[#777]"><Loader2 aria-hidden="true" className="size-4 animate-spin" /></div>
+  }
+  if (authStatus === 'unavailable') {
+    return <div role="alert" className="space-y-2 rounded-lg border border-[#f0c9c6] p-3 text-sm text-[#8a2d28]"><p>로그인 상태를 확인하지 못했습니다. 현재 로그인 상태는 확인되지 않았습니다.</p><Button onClick={onAuthRequest} variant="outline" className="min-h-11 w-full">인증 다시 확인</Button></div>
+  }
+  if (!user) {
+    return <Button onClick={onAuthRequest} variant="outline" className="h-11 w-full rounded-md border-[#dcdcdc] bg-white text-[#171717] shadow-none hover:border-[#ff5148] hover:bg-white hover:text-[#ff5148]">로그인</Button>
+  }
+  return <button type="button" onClick={(event) => onOpenAccount(event.currentTarget)} aria-label={compact ? '모바일 계정 메뉴 열기' : undefined} aria-haspopup="dialog" className="flex w-full items-center justify-center gap-2.5 rounded-lg p-2 text-left transition hover:bg-[#f3f3f3]">
+    <Avatar fallback={userAvatarInitial} className="size-9 rounded-full bg-[#eeeeee] text-[#3c3432]" />
+    {compact ? null : <><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-[#171717]">{user.user_metadata?.name || '사용자'}</p><p className="truncate text-[11px] text-[#7a7a7a]">{maskEmailAddress(user.email) || '이메일 비공개'}</p></div><ChevronRight className="size-4 text-[#909090]" /></>}
+  </button>
+}
+
+function AccountDialog({ user, onNavigate, onSignOut, onDeleteAccount, open, onOpenChange }: Pick<PlatformShellProps, 'user' | 'onNavigate' | 'onSignOut' | 'onDeleteAccount'> & { open: boolean; onOpenChange: (open: boolean) => void }) {
+  const [view, setView] = useState<'overview' | 'delete'>('overview')
   const [confirmation, setConfirmation] = useState('')
   const [deleteError, setDeleteError] = useState('')
   const [isDeleting, setIsDeleting] = useState(false)
-  const menuRef = useRef<HTMLDivElement>(null)
-  const triggerRef = useRef<HTMLButtonElement>(null)
+  const [isSigningOut, setIsSigningOut] = useState(false)
+  const [accountError, setAccountError] = useState('')
 
   useEffect(() => {
-    if (!isOpen || !user) return
+    setView('overview')
+    setConfirmation('')
+    setDeleteError('')
+    setAccountError('')
+    setIsDeleting(false)
+    setIsSigningOut(false)
+  }, [user?.id])
 
-    const handlePointerDown = (event: PointerEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) setIsOpen(false)
-    }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      setIsOpen(false)
-      triggerRef.current?.focus()
-    }
+  if (!user) return null
 
-    document.addEventListener('pointerdown', handlePointerDown)
-    document.addEventListener('keydown', handleKeyDown)
-    return () => {
-      document.removeEventListener('pointerdown', handlePointerDown)
-      document.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [isOpen, user])
+  const changeOpen = (nextOpen: boolean) => {
+    if (isDeleting || isSigningOut) return
+    if (!nextOpen) setView('overview')
+    onOpenChange(nextOpen)
+  }
 
-  if (!user) {
-    return <Button onClick={onAuthRequest} variant="outline" className="h-10 w-full rounded-md border-[#dcdcdc] bg-white text-[#171717] shadow-none hover:border-[#ff5148] hover:bg-white hover:text-[#ff5148]">로그인</Button>
+  const submitSignOut = async () => {
+    if (isSigningOut || isDeleting) return
+    setIsSigningOut(true)
+    setAccountError('')
+    try {
+      await onSignOut()
+      onOpenChange(false)
+    } catch (error) {
+      setAccountError(toUserFacingError(error, '로그아웃하지 못했습니다. 현재 계정 상태는 유지됩니다. 잠시 후 다시 시도해 주세요.').message)
+      setIsSigningOut(false)
+    }
   }
 
   const submitDelete = async () => {
@@ -118,44 +134,29 @@ function AccountPanel({
     setDeleteError('')
     try {
       await onDeleteAccount()
-      setIsDeleteOpen(false)
+      setView('overview')
+      onOpenChange(false)
     } catch (error) {
-      setDeleteError(error instanceof Error ? error.message : '계정 탈퇴 처리에 실패했습니다.')
+      setDeleteError(toUserFacingError(error, '계정 탈퇴를 완료하지 못했습니다. 현재 계정과 콘텐츠 상태를 확인한 뒤 다시 시도해 주세요.').message)
       setIsDeleting(false)
     }
   }
 
   return (
-    <>
-      <div ref={menuRef} className="relative">
-        <button ref={triggerRef} type="button" onClick={() => setIsOpen((value) => !value)} aria-haspopup="menu" aria-expanded={isOpen} className="flex w-full items-center gap-2.5 rounded-lg p-2 text-left transition hover:bg-[#f3f3f3]">
-          <Avatar fallback={userAvatarInitial} className="size-9 rounded-full bg-[#eeeeee] text-[#3c3432]" />
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-semibold text-[#171717]">{user.user_metadata?.name || '사용자'}</p>
-            <p className="truncate text-[11px] text-[#7a7a7a]">{maskEmailAddress(user.email) || '이메일 비공개'}</p>
-          </div>
-          <ChevronRight className={cn('size-4 text-[#909090] transition', isOpen && 'rotate-90')} />
-        </button>
-        {isOpen ? (
-          <div role="menu" className="absolute bottom-[calc(100%+0.5rem)] left-0 z-50 w-full overflow-hidden rounded-lg border border-[#e7e7e7] bg-white p-1 shadow-[0_18px_55px_-28px_rgba(55,31,38,0.35)]">
-            <button type="button" role="menuitem" onClick={() => { setIsOpen(false); onNavigate('/ops') }} className="flex min-h-10 w-full items-center gap-2 rounded-md px-3 py-2 text-left text-xs font-medium text-[#4f4f4f] hover:bg-[#f5f5f5]"><Shield className="size-3.5" />운영실</button>
-            <button type="button" role="menuitem" onClick={() => { setIsOpen(false); onSignOut() }} className="min-h-10 w-full rounded-md px-3 py-2 text-left text-xs font-medium text-[#4f4f4f] hover:bg-[#f5f5f5]">로그아웃</button>
-            <button type="button" role="menuitem" onClick={() => { setIsOpen(false); setIsDeleteOpen(true); setConfirmation(''); setDeleteError('') }} className="min-h-10 w-full rounded-md px-3 py-2 text-left text-xs font-medium text-[#a42646] hover:bg-[#fff0f3]">계정 탈퇴</button>
-          </div>
-        ) : null}
-      </div>
-      <Dialog open={isDeleteOpen} onOpenChange={setIsDeleteOpen}>
-        <DialogContent className="rounded-xl border-[#e7e7e7] bg-white sm:max-w-md">
+    <Dialog open={open} onOpenChange={changeOpen}>
+      <DialogContent className="rounded-xl border-[#e7e7e7] bg-white sm:max-w-md">
+        {view === 'overview' ? <>
+          <DialogHeader><DialogTitle>계정</DialogTitle><DialogDescription>계정과 콘텐츠를 관리합니다.</DialogDescription></DialogHeader>
+          {accountError ? <p role="alert" className="text-sm text-destructive">{accountError}</p> : null}
+          <div className="grid gap-2"><Button className="min-h-11" variant="outline" disabled={isSigningOut} onClick={() => { onOpenChange(false); onNavigate('/library') }}>보관함</Button><Button className="min-h-11" variant="outline" disabled={isSigningOut} onClick={() => { onOpenChange(false); onNavigate('/ops') }}><Shield className="size-4" />운영실</Button><Button className="min-h-11" variant="outline" disabled={isSigningOut} onClick={() => void submitSignOut()}>{isSigningOut ? <Loader2 className="size-4 animate-spin" /> : null}{isSigningOut ? '로그아웃 중…' : '로그아웃'}</Button><Button className="min-h-11" variant="destructive" disabled={isSigningOut} onClick={() => { setConfirmation(''); setDeleteError(''); setAccountError(''); setView('delete') }}>계정 탈퇴</Button></div>
+        </> : <>
           <DialogHeader><DialogTitle>계정 탈퇴</DialogTitle><DialogDescription>계정과 생성 콘텐츠, 대화 기록, 업로드 이미지를 삭제합니다. 계속하려면 `탈퇴`를 입력하세요.</DialogDescription></DialogHeader>
-          <Input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="탈퇴" aria-label="계정 탈퇴 확인 문구" />
+          <Input className="h-11" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="탈퇴" aria-label="계정 탈퇴 확인 문구" />
           {deleteError ? <p role="alert" className="text-sm text-destructive">{deleteError}</p> : null}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsDeleteOpen(false)} disabled={isDeleting}>취소</Button>
-            <Button variant="destructive" onClick={submitDelete} disabled={confirmation !== '탈퇴' || isDeleting}>{isDeleting ? '처리 중…' : '영구 탈퇴'}</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+          <DialogFooter><Button className="min-h-11" variant="outline" onClick={() => setView('overview')} disabled={isDeleting}>취소</Button><Button className="min-h-11" variant="destructive" onClick={submitDelete} disabled={confirmation !== '탈퇴' || isDeleting}>{isDeleting ? '처리 중…' : '영구 탈퇴'}</Button></DialogFooter>
+        </>}
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -215,6 +216,7 @@ function CombinationDock({ character, world, isStarting, onClear, onStart, onNav
 
 export function PlatformShell({
   user,
+  authStatus,
   userAvatarInitial,
   searchValue = '',
   onSearchChange,
@@ -230,6 +232,16 @@ export function PlatformShell({
   showCombinationDock = true,
   children,
 }: PlatformShellProps) {
+  const [isAccountOpen, setIsAccountOpen] = useState(false)
+  const accountTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const openAccount = (trigger: HTMLButtonElement) => {
+    accountTriggerRef.current = trigger
+    setIsAccountOpen(true)
+  }
+  const changeAccountOpen = (nextOpen: boolean) => {
+    setIsAccountOpen(nextOpen)
+    if (!nextOpen) queueMicrotask(() => accountTriggerRef.current?.focus())
+  }
   return (
     <div className="min-h-dvh bg-white text-[#171717]">
       <a href="#platform-main" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[70] focus:rounded-md focus:bg-[#d43a34] focus:px-4 focus:py-2 focus:text-white">본문으로 건너뛰기</a>
@@ -248,7 +260,11 @@ export function PlatformShell({
             <Search aria-hidden="true" className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-[#888]" />
             <Input id="platform-search" name="search" type="search" autoComplete="off" aria-label="캐릭터와 월드 검색" value={searchValue} onChange={(event) => onSearchChange?.(event.target.value)} placeholder="캐릭터, 월드 검색…" className="h-11 rounded-md border-[#dedede] bg-white pl-10 text-sm shadow-none placeholder:text-[#aaa]" />
           </label>
-          <button type="button" aria-label={user ? '보관함 열기' : '로그인'} onClick={user ? () => onNavigate('/library') : onAuthRequest} className="flex size-11 shrink-0 items-center justify-center rounded-full border border-[#dedede] bg-white text-[#555] transition hover:border-[#bdbdbd] hover:text-[#171717]"><UserRound className="size-5" /></button>
+          {authStatus === 'checking'
+            ? <div role="status" aria-label="로그인 상태 확인 중" className="flex size-11 shrink-0 items-center justify-center rounded-full border border-[#dedede] bg-white text-[#777]"><Loader2 aria-hidden="true" className="size-4 animate-spin" /></div>
+            : authStatus === 'unavailable'
+              ? <button type="button" aria-label="인증 다시 확인" onClick={onAuthRequest} className="flex size-11 shrink-0 items-center justify-center rounded-full border border-[#f0c9c6] bg-white text-[#8a2d28] transition hover:border-[#dca9a5] hover:text-[#6f221d]"><UserRound className="size-5" /></button>
+              : <button type="button" aria-label={user ? '계정 메뉴 열기' : '로그인'} aria-haspopup={user ? 'dialog' : undefined} onClick={user ? (event) => openAccount(event.currentTarget) : onAuthRequest} className="flex size-11 shrink-0 items-center justify-center rounded-full border border-[#dedede] bg-white text-[#555] transition hover:border-[#bdbdbd] hover:text-[#171717]"><UserRound className="size-5" /></button>}
         </div>
       </header>
 
@@ -263,7 +279,7 @@ export function PlatformShell({
         <div className="mx-4 border-t border-[#e5e5e5] px-2 py-3">
           <NavigationLink path="/" onNavigate={onNavigate} className="flex min-h-10 items-center gap-2.5 rounded-md px-2 text-sm font-semibold text-[#555] hover:bg-white hover:text-[#171717]"><PlusCircle className="size-4" />새 대화</NavigationLink>
         </div>
-        <div className="mt-auto border-t border-[#e5e5e5] p-3"><AccountPanel user={user} userAvatarInitial={userAvatarInitial} onNavigate={onNavigate} onAuthRequest={onAuthRequest} onSignOut={onSignOut} onDeleteAccount={onDeleteAccount} /></div>
+        <div className="mt-auto border-t border-[#e5e5e5] p-3"><AccountPanel user={user} authStatus={authStatus} userAvatarInitial={userAvatarInitial} onAuthRequest={onAuthRequest} onOpenAccount={openAccount} /></div>
       </aside>
 
       <div className="min-h-dvh pt-16 lg:pl-[232px]">
@@ -276,11 +292,13 @@ export function PlatformShell({
         </footer>
       </div>
 
-      <nav className="fixed inset-x-0 bottom-0 z-50 grid h-[calc(66px+env(safe-area-inset-bottom))] grid-cols-4 border-t border-[#dedede] bg-white pb-[env(safe-area-inset-bottom)] lg:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-50 grid h-[calc(66px+env(safe-area-inset-bottom))] grid-cols-5 border-t border-[#dedede] bg-white pb-[env(safe-area-inset-bottom)] lg:hidden">
         {navItems.map(({ label, path, icon: Icon }) => (
           <NavigationLink key={path} path={path} onNavigate={onNavigate} className={cn('flex min-h-11 flex-col items-center justify-center gap-1 text-[10px] font-semibold', isNavActive(path) ? 'text-[#ff5148]' : 'text-[#6b6b6b]')}><Icon className="size-[19px]" />{label}</NavigationLink>
         ))}
+        <div className="flex items-center justify-center px-1"><div className="w-full [&_button]:p-1"><AccountPanel user={user} authStatus={authStatus} userAvatarInitial={userAvatarInitial} onAuthRequest={onAuthRequest} onOpenAccount={openAccount} compact /></div></div>
       </nav>
+      <AccountDialog user={user} onNavigate={onNavigate} onSignOut={onSignOut} onDeleteAccount={onDeleteAccount} open={isAccountOpen} onOpenChange={changeAccountOpen} />
       {showCombinationDock ? <CombinationDock character={selectedCharacter} world={selectedWorld} isStarting={isStartingCombination} onClear={onClearSelectedEntity} onStart={onStartCombination} onNavigate={onNavigate} /> : null}
     </div>
   )

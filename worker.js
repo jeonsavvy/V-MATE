@@ -6,6 +6,11 @@ import { getRequestBodyLimitBytes } from "./server/modules/runtime-config.js";
 import { resolveRuntimeChatHandlerContext } from "./server/modules/runtime-chat-context.js";
 import { createTraceId } from "./server/modules/trace-id.js";
 import { handlePlatformApi } from "./server/platform/api.js";
+import {
+  reconcileAccountStorageCleanupFences,
+  reconcileExpiredChatReservations,
+  reconcileStorageDeletionOutbox,
+} from "./server/platform/supabase-platform-repository.js";
 
 // Worker는 정적 셸 응답에 runtime env를 주입하고, chat API와 platform API를 분기한다.
 const CHAT_API_PATH = "/api/chat";
@@ -18,15 +23,16 @@ const SUPABASE_KEEPALIVE_MAX_ATTEMPTS = 3;
 const SUPABASE_KEEPALIVE_ROTATING_OFFSET_SPREAD = 3;
 const SUPABASE_KEEPALIVE_ROTATING_OFFSET_MIN = 1;
 const SUPABASE_KEEPALIVE_ROTATION_WINDOW_MS = 15 * 60 * 1000;
-const CLIENT_RUNTIME_ENV_KEYS = [
-  "VITE_SUPABASE_URL",
-  "VITE_SUPABASE_ANON_KEY",
-  "VITE_SUPABASE_PUBLISHABLE_KEY",
-  "VITE_PUBLIC_SUPABASE_URL",
-  "VITE_PUBLIC_SUPABASE_ANON_KEY",
-  "VITE_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
-  "VITE_CHAT_API_BASE_URL",
-];
+const CLIENT_RUNTIME_ENV_FIELDS = {
+  supabaseUrl: ["VITE_SUPABASE_URL", "VITE_PUBLIC_SUPABASE_URL"],
+  supabasePublicKey: [
+    "VITE_SUPABASE_ANON_KEY",
+    "VITE_SUPABASE_PUBLISHABLE_KEY",
+    "VITE_PUBLIC_SUPABASE_ANON_KEY",
+    "VITE_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
+  ],
+  chatApiBaseUrl: ["VITE_CHAT_API_BASE_URL"],
+};
 
 const SECURITY_RESPONSE_HEADERS = {
   "X-Content-Type-Options": "nosniff",
@@ -177,7 +183,7 @@ const runSupabaseKeepalive = async ({
   });
 
   if (!enabled) {
-    console.warn("[V-MATE] Supabase keepalive skipped: public Supabase config is missing.");
+    console.warn("[V-MATE] Database keepalive skipped: public configuration is missing.");
     return { ok: false, skipped: true };
   }
 
@@ -200,16 +206,15 @@ const runSupabaseKeepalive = async ({
         });
 
         if (!response.ok) {
-          const body = await response.text().catch(() => "");
           throw new Error(
-            `[V-MATE] Supabase keepalive failed (${response.status})${body ? `: ${body.slice(0, 200)}` : ""}`
+            `[V-MATE] Supabase keepalive failed (${response.status})`
           );
         }
 
         return response;
       }));
 
-      console.info("[V-MATE] Supabase keepalive succeeded.", {
+      console.info("[V-MATE] Database keepalive succeeded.", {
         attempt,
         requestCount: responses.length,
         statuses: responses.map((response) => response.status),
@@ -229,10 +234,41 @@ const runSupabaseKeepalive = async ({
     }
   }
 
-  console.error("[V-MATE] Supabase keepalive failed after retries.", {
-    message: lastError?.message || String(lastError),
-  });
+  console.error("[V-MATE] Database keepalive failed after retries.");
   throw lastError;
+};
+
+const runScheduledMaintenance = async ({
+  env,
+  scheduledTime,
+  keepaliveFetchImpl,
+  reconcileAccountStorageCleanupFencesImpl,
+  reconcileExpiredChatReservationsImpl,
+  reconcileStorageDeletionOutboxImpl,
+}) => {
+  const results = await Promise.allSettled([
+    runSupabaseKeepalive({
+      env,
+      scheduledTime,
+      fetchImpl: keepaliveFetchImpl,
+    }),
+    reconcileExpiredChatReservationsImpl({ limit: 100 }),
+    reconcileStorageDeletionOutboxImpl({ limit: 20 }),
+    reconcileAccountStorageCleanupFencesImpl({ limit: 20 }),
+  ]);
+
+  const failedTaskCount = results.filter((result) => result.status === "rejected").length;
+  if (failedTaskCount > 0) {
+    console.error("[V-MATE] Scheduled maintenance failed.", { failedTaskCount });
+    throw new Error("Scheduled maintenance failed.");
+  }
+
+  return {
+    keepalive: results[0].value,
+    chatReservationReconciliation: results[1].value,
+    storageDeletionReconciliation: results[2].value,
+    accountStorageCleanupReconciliation: results[3].value,
+  };
 };
 
 // Worker 레벨에서 body 크기를 먼저 제한해 upstream 호출 전에 실패를 확정한다.
@@ -383,7 +419,7 @@ const handleChatApi = async (request, env, chatHandlerImpl, chatHandlerContext) 
         traceId: requestTraceId,
         error: "Internal server error.",
         errorCode: "INTERNAL_SERVER_ERROR",
-        details: process.env.CLOUDFLARE_DEV ? error?.message || String(error) : undefined,
+        details: undefined,
       }),
       headers
     );
@@ -448,7 +484,7 @@ const handlePlatformApiRequest = async (request, env) => {
         traceId: requestTraceId,
         error: "Internal server error.",
         errorCode: "INTERNAL_SERVER_ERROR",
-        details: process.env.CLOUDFLARE_DEV ? error?.message || String(error) : undefined,
+        details: undefined,
       }),
       headers
     );
@@ -461,14 +497,14 @@ const isHtmlRequest = (request) => {
   return accept.includes("text/html");
 };
 
-// 클라이언트가 알아야 하는 공개 환경 변수만 HTML에 주입한다.
+// 기존 공개 binding을 읽되, 브라우저에는 안정된 공개 필드명만 전달한다.
 const buildClientRuntimeEnv = (env) => {
   const runtimeEnv = {};
 
-  for (const key of CLIENT_RUNTIME_ENV_KEYS) {
-    const value = readWorkerEnvString(env, key);
-    if (typeof value === "string" && value.trim()) {
-      runtimeEnv[key] = value;
+  for (const [field, keys] of Object.entries(CLIENT_RUNTIME_ENV_FIELDS)) {
+    const value = firstNonEmpty(keys.map((key) => readWorkerEnvString(env, key)));
+    if (value) {
+      runtimeEnv[field] = value;
     }
   }
 
@@ -524,6 +560,9 @@ export const createWorker = ({
   chatHandlerImpl = chatHandler,
   chatHandlerContext = {},
   keepaliveFetchImpl = fetch,
+  reconcileAccountStorageCleanupFencesImpl = reconcileAccountStorageCleanupFences,
+  reconcileExpiredChatReservationsImpl = reconcileExpiredChatReservations,
+  reconcileStorageDeletionOutboxImpl = reconcileStorageDeletionOutbox,
 } = {}) => ({
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -541,10 +580,13 @@ export const createWorker = ({
 
   async scheduled(_controller, env, ctx) {
     syncWorkerEnvToProcessEnv(env);
-    const task = runSupabaseKeepalive({
+    const task = runScheduledMaintenance({
       env,
       scheduledTime: _controller?.scheduledTime,
-      fetchImpl: keepaliveFetchImpl,
+      keepaliveFetchImpl,
+      reconcileAccountStorageCleanupFencesImpl,
+      reconcileExpiredChatReservationsImpl,
+      reconcileStorageDeletionOutboxImpl,
     });
 
     if (ctx && typeof ctx.waitUntil === "function") {

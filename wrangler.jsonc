@@ -20,6 +20,7 @@
       "/chat/*",
       "/create/*",
       "/edit/*",
+      "/auth/*",
       "/recent",
       "/recent/*",
       "/library",
@@ -38,6 +39,8 @@
     "region": "gcp:asia-east1"
   },
   "vars": {
+    "APP_ENV": "production",
+    "REQUIRE_CONFIGURED_SUPABASE_URL": "true",
     "GEMINI_HISTORY_MESSAGES": "10",
     "GEMINI_MAX_PART_CHARS": "700",
     "GEMINI_MAX_SYSTEM_PROMPT_CHARS": "5000",
@@ -66,7 +69,47 @@
     "RATE_LIMIT_WINDOW_MS": "60000",
     "RATE_LIMIT_MAX_REQUESTS": "30"
   },
+  "env": {
+    "staging": {
+      "name": "v-mate-staging",
+      "vars": {
+        "APP_ENV": "staging",
+        "REQUIRE_CONFIGURED_SUPABASE_URL": "true",
+        "GEMINI_HISTORY_MESSAGES": "10",
+        "GEMINI_MAX_PART_CHARS": "700",
+        "GEMINI_MAX_SYSTEM_PROMPT_CHARS": "5000",
+        "GEMINI_MAX_OUTPUT_TOKENS": "2048",
+        "GEMINI_EMPTY_RESPONSE_RETRY_ENABLED": "true",
+        "GEMINI_MODEL_TIMEOUT_MS": "15000",
+        "FUNCTION_TOTAL_TIMEOUT_MS": "20000",
+        "FUNCTION_TIMEOUT_GUARD_MS": "1500",
+        "GEMINI_CONTEXT_CACHE_ENABLED": "true",
+        "GEMINI_CONTEXT_CACHE_TTL_SECONDS": "21600",
+        "GEMINI_CONTEXT_CACHE_CREATE_TIMEOUT_MS": "1800",
+        "GEMINI_CONTEXT_CACHE_WARMUP_MIN_CHARS": "1200",
+        "GEMINI_CONTEXT_CACHE_AUTO_CREATE": "true",
+        "ALLOWED_ORIGINS": "http://localhost:5173,http://127.0.0.1:5173",
+        "ALLOW_ALL_ORIGINS": "false",
+        "ALLOW_NON_BROWSER_ORIGIN": "false",
+        "REQUEST_BODY_MAX_BYTES": "32768",
+        "TRUST_X_FORWARDED_FOR": "false",
+        "RATE_LIMIT_STORE": "memory",
+        "PROMPT_CACHE_STORE": "memory",
+        "REQUIRE_AUTH_FOR_CHAT": "true",
+        "AUTH_PROVIDER_TIMEOUT_MS": "3500",
+        "AUTH_PROVIDER_RETRY_COUNT": "1",
+        "CLIENT_REQUEST_DEDUPE_WINDOW_MS": "15000",
+        "CLIENT_REQUEST_DEDUPE_MAX_ENTRIES": "2000",
+        "RATE_LIMIT_WINDOW_MS": "60000",
+        "RATE_LIMIT_MAX_REQUESTS": "30"
+      }
+    }
+  },
   "observability": {
-    "enabled": true
+    "enabled": true,
+    "logs": {
+      "invocation_logs": true,
+      "head_sampling_rate": 1
+    }
   }
 }

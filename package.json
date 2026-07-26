@@ -12,13 +12,23 @@
     "typecheck": "tsc --noEmit",
     "test": "npm run test:server && npm run test:ui",
     "test:server": "node server/run-tests.js",
+    "test:server:coverage": "node scripts/run-server-coverage.mjs",
+    "test:contracts:coverage": "node --test --experimental-test-coverage --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100 --test-coverage-include=server/platform/asset-contracts.js --test-coverage-include=server/platform/quota-contract.js server/platform/asset-contracts.test.js server/platform/input-contracts.test.js server/platform/quota-contract.test.js",
     "test:ui": "vitest run",
-    "verify": "npm run typecheck && npm test && npm run build",
+    "test:db:fresh": "node scripts/run-db-tests.mjs --fresh",
+    "test:db:upgrade": "node scripts/run-db-tests.mjs --upgrade",
+    "test:db": "node scripts/run-db-tests.mjs --all",
+    "validate:surfaces": "node scripts/validate-github-workflows.mjs && node scripts/validate-public-surface.mjs",
+    "verify": "npm run validate:surfaces && npm run typecheck && npm test && npm run test:contracts:coverage && npm run build",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "cf:dev": "npm run build && npx --yes wrangler@4.67.0 dev",
-    "cf:deploy": "npm run build && npx --yes wrangler@4.67.0 deploy",
-    "cf:typegen": "npx --yes wrangler@4.67.0 types --env-interface CloudflareEnv cloudflare-env.d.ts"
+    "release:manifest": "node scripts/create-dist-manifest.mjs",
+    "smoke:release": "node scripts/smoke-release.mjs",
+    "smoke:staging": "node scripts/staging-synthetic-smoke.mjs",
+    "cf:dev": "npm run build && wrangler dev",
+    "cf:deploy": "npm run build && wrangler deploy",
+    "cf:dry-run": "npm run build && wrangler versions upload --dry-run --env=",
+    "cf:typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.0.5",
@@ -43,10 +53,13 @@
     "@vitejs/plugin-react": "^5.0.0",
     "autoprefixer": "^10.4.16",
     "jsdom": "^29.1.1",
-    "postcss": "^8.4.32",
+    "postcss": "8.5.23",
+    "supabase": "2.109.1",
     "tailwindcss": "^3.4.0",
     "typescript": "^5.3.3",
     "vite": "^7.3.1",
-    "vitest": "^3.2.7"
+    "vitest": "^3.2.7",
+    "wrangler": "4.114.0",
+    "yaml": "2.9.0"
   }
 }

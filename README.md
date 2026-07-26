@@ -1,6 +1,6 @@
 # V-MATE
 
-V-MATE는 캐릭터와 월드를 조합해 서사형 대화를 운영하는 캐릭터챗 플랫폼입니다.
+V-MATE는 캐릭터와 월드를 조합해 서사형 대화를 이어가는 캐릭터챗 서비스입니다.
 
 ## 제품 구조
 
@@ -78,7 +78,7 @@ V-MATE는 긴 대화를 위해 시작 설정, 누적 요약, 최근 대화, 현�
 - `RIGHTS_ATTESTATION_REQUIRED`
 - `REPORT_ALREADY_OPEN`
 
-### B2C 플랫폼 API
+### 콘텐츠 API
 - `GET /api/me/chat-quota`: 한국 시간 기준 일일 사용량과 다음 초기화 시각
 - `POST /api/reports`: 콘텐츠 신고(사용자·콘텐츠별 미처리 1건)
 - `GET /api/ops/reports?status=open`: owner 신고 큐
@@ -222,7 +222,7 @@ supabase/schema.sql
 - `vmate-assets` Storage bucket
 - 운영 기본 설정(`home.hero`)
 
-기존 프로젝트에는 먼저 `supabase/migrations/20260718_b2c_platform.sql`을 staging에서 검토·적용합니다. 이 마이그레이션은 기존 `profiles.is_owner`와 비공개 처리 전 `owner_user_ids`를 `owner_users`로 이관한 뒤, 프로필 쓰기 권한을 허용 열로 제한합니다.
+기존 프로젝트에는 migration version 순서대로 적용합니다. 2026-07-21 migration 파일은 운영 migration history의 version과 이름을 그대로 유지합니다. 백엔드 안정화 단계는 `20260726010000_backend_stabilization_expand.sql`을 먼저 적용하고 v2 Worker 검증을 마친 뒤 `20260726020000_backend_stabilization_lockdown.sql`을 별도 승인으로 적용합니다. lockdown 이후에는 브라우저 직접 쓰기 권한을 되살리는 down migration 대신 v2-compatible Worker 복원 또는 forward migration을 사용합니다.
 
 ## 운영실 권한 설정
 
@@ -236,45 +236,30 @@ values ('YOUR_AUTH_USER_ID')
 on conflict (user_id) do nothing;
 ```
 
-starter 콘텐츠는 `supabase/operations/publish_starter_content.sql`을 별도 승인된 SQL Editor 세션에서 실행합니다. 스크립트는 권리가 확인된 공식 테스트 픽스처인 캐릭터 `캐릭터A`, `캐릭터B`와 월드 `월드A`, `월드B`를 upsert합니다. 기존 `CharacterA`, `World1`, `안개 낀 항구 도시`와 이전 스타터는 삭제하지 않고 숨깁니다.
+starter 콘텐츠는 권리가 확인된 운영 절차로 관리합니다.
 
 ## 배포
 
-### Cloudflare Worker 배포
-- GitHub Actions에서 **main branch push** 이후 품질 검증이 끝나면 Worker를 배포합니다.
-- GitHub Secrets는 아래 값이 필요합니다.
-  - `CLOUDFLARE_API_TOKEN`
-  - `CLOUDFLARE_ACCOUNT_ID`
-- 런타임 환경 변수는 Cloudflare dashboard vars 또는 secrets에서 관리합니다.
-  - `VITE_SUPABASE_URL`
-  - `VITE_SUPABASE_ANON_KEY` 또는 `VITE_SUPABASE_PUBLISHABLE_KEY`
-  - `VITE_CHAT_API_BASE_URL`
-  - `SUPABASE_SERVICE_ROLE_KEY`
+- `main` push와 pull request는 읽기 전용 검증만 수행합니다.
+- Worker와 데이터베이스 변경은 승인된 GitHub Environment의 수동 `workflow_dispatch`에서만 실행합니다.
+- 데이터베이스는 확장 단계와 권한 회수 단계를 분리합니다. Worker는 확장 단계 검증 후 0% version override에서 smoke하고, 검증된 version만 원자 전환합니다.
+- 수동 rollback은 검증된 release evidence에 결속됩니다. lockdown 후에는 호환되는 v2 Worker만 복원하며, 직접 client write 권한이나 Storage 소유권 검증을 되살리지 않습니다.
 
-`SUPABASE_SERVICE_ROLE_KEY`는 secret **이름**을 정확히 이렇게 등록해야 합니다. 값 자체를 secret 이름으로 등록하면 계정 탈퇴 기능이 활성화되지 않고, 해당 값은 노출된 것으로 간주해 Supabase에서 회전해야 합니다.
-
-### 배포 체크 포인트
-- 적용 순서는 **staging migration dry-run → DB migration 승인/적용 → starter 등록 승인/적용 → Worker 배포 승인**입니다.
-- `PRODUCTION_APP_URL`은 선택값입니다. 설정하면 post-deploy smoke check가 실행됩니다.
-- `PRODUCTION_APP_URL`이 없으면 Worker 배포는 진행하고 smoke check만 건너뜁니다.
-- smoke check는 `PRODUCTION_APP_URL` 기준으로 홈 응답과 chat auth guard를 확인합니다.
-- 저장소의 `wrangler.jsonc` 기본값은 로컬 개발 기준입니다.
-- 운영 Origin 허용은 Cloudflare dashboard vars의 `ALLOWED_ORIGINS`에서 관리합니다.
-
-### 롤백
-```bash
-wrangler rollback
-```
-
-Worker 문제는 이전 버전으로 롤백하되 `owner_users`, 프로필 열 권한, 신고 격리, 채팅 사용량 정책은 철회하지 않습니다. starter 등록은 콘텐츠를 삭제하지 말고 `display_status = 'hidden'`으로 되돌립니다.
+승인 환경은 Cloudflare 배포 자격 증명(`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_OBSERVABILITY_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`)과 Supabase 관리 자격 증명(`SUPABASE_ACCESS_TOKEN`)을 보관합니다. 런타임 공개 구성은 `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` 또는 `VITE_SUPABASE_PUBLISHABLE_KEY`, `VITE_CHAT_API_BASE_URL`을 사용합니다. `wrangler versions deploy`는 승인된 release workflow 안에서만 사용합니다.
 
 ## 검증
 
 ### 자동 검증
 ```bash
+npm run validate:surfaces
 npm run typecheck
 npm test
 npm run build
+npm run test:server:coverage
+npm run test:contracts:coverage
+npm run test:db
+npm audit --audit-level=high
+npm run cf:dry-run
 npm run verify
 ```
 

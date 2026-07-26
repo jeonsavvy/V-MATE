@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, BookMarked, Eye, EyeOff, Flag, Image, ImagePlus, Loader2, MessageCircle, PlusCircle, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import type { CharacterDetail, CharacterSummary, ChatQuota, ContentReport, LibraryPayload, OwnerOpsDashboard, RoomSummary, WorldDetail, WorldSummary } from '@/lib/platform/types'
-import { platformApi } from '@/lib/platform/apiClient'
+import { PlatformApiError, platformApi, toUserFacingError } from '@/lib/platform/apiClient'
 import { CHARACTER_VARIANTS, createImageVariants, type ResizedImageAsset, WORLD_VARIANTS } from '@/lib/platform/imagePipeline'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -13,9 +13,13 @@ import { ChatComposer } from '@/components/platform/ChatComposer'
 import type { PlatformPageChromeProps } from '@/components/platform/pageTypes'
 
 // 상세, 시작, 대화, 제작, 운영 화면을 한 파일에 두고 공통 흐름을 재사용한다.
+const safeActionError = (error: unknown, fallback: string) => toUserFacingError(error, fallback).message
+const imageProcessingFailureMessage = () => '이미지를 처리하지 못했습니다. 기존 이미지는 유지됩니다. 파일을 다시 선택한 뒤 다시 시도해 주세요.'
+
 const PageFrame = ({ chrome, children, showCombinationDock = true }: { chrome: PlatformPageChromeProps; children: ReactNode; showCombinationDock?: boolean }) => (
   <PlatformShell
     user={chrome.user}
+    authStatus={chrome.authStatus}
     userAvatarInitial={chrome.userAvatarInitial}
     searchValue={chrome.searchQuery}
     onSearchChange={chrome.onSearchChange}
@@ -36,7 +40,7 @@ const PageFrame = ({ chrome, children, showCombinationDock = true }: { chrome: P
 
 const ProtectedGate = ({ chrome, title, description }: { chrome: PlatformPageChromeProps; title: string; description: string }) => (
   <PageFrame chrome={chrome} showCombinationDock={false}>
-    <EmptyState title={title} description={description} action={<Button onClick={chrome.onAuthRequest}>로그인</Button>} />
+    {chrome.authStatus === 'checking' ? <LoadingState label="로그인 상태 확인 중…" /> : chrome.authStatus === 'unavailable' ? <EmptyState title="로그인 상태를 확인하지 못했습니다" description="현재 로그인 상태는 확인되지 않았습니다. 인증을 다시 확인한 뒤 계속해 주세요." action={<Button onClick={chrome.onAuthRequest}>인증 다시 확인</Button>} /> : <EmptyState title={title} description={description} action={<Button onClick={chrome.onAuthRequest}>로그인</Button>} />}
   </PageFrame>
 )
 
@@ -117,7 +121,7 @@ const ReportDialog = ({ open, onOpenChange, entityType, entityId, entityName }: 
     setIsSubmitting(true)
     void platformApi.createReport({ entityType, entityId, reason, details })
       .then(() => { toast.success('신고를 접수했습니다.'); onOpenChange(false); setDetails('') })
-      .catch((error) => toast.error(error instanceof Error ? error.message : '신고를 접수하지 못했습니다.'))
+      .catch((error) => toast.error(safeActionError(error, '신고를 접수하지 못했습니다. 입력한 내용은 유지됩니다. 다시 시도해 주세요.')))
       .finally(() => setIsSubmitting(false))
   }
   return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="rounded-xl border-[#e7e7e7] bg-white sm:max-w-md"><DialogHeader><DialogTitle>{entityName} 신고</DialogTitle><DialogDescription>신고 사유를 선택해 주세요. 같은 콘텐츠는 한 번만 신고할 수 있습니다.</DialogDescription></DialogHeader><label className="space-y-2 text-sm font-semibold text-[#555]" htmlFor="report-reason"><span>신고 사유</span><select id="report-reason" name="report-reason" value={reason} onChange={(event) => setReason(event.target.value)} className="h-11 w-full rounded-lg border border-[#d8d8d8] bg-white px-3 text-sm font-normal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2"><option value="sexual_content">노골적인 성적 콘텐츠</option><option value="minor_safety">미성년자 안전</option><option value="hate_or_harassment">혐오·괴롭힘</option><option value="copyright">저작권·권리 침해</option><option value="spam">스팸·기만</option><option value="other">기타</option></select></label><label className="space-y-2 text-sm font-semibold text-[#555]" htmlFor="report-details"><span>상세 내용 <span className="font-normal text-[#888]">(선택)</span></span><textarea id="report-details" name="report-details" value={details} onChange={(event) => setDetails(event.target.value)} placeholder="검토에 필요한 내용을 적어 주세요." className="min-h-28 w-full rounded-lg border border-[#d8d8d8] bg-white px-4 py-3 text-sm font-normal text-[#171717] placeholder:text-[#aaaaaa] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2" maxLength={1000} /></label><DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>취소</Button><Button onClick={submit} disabled={isSubmitting} className="bg-[#d43a34] text-white hover:bg-[#c9342f]">{isSubmitting ? <Loader2 className="size-4 animate-spin" /> : <Flag className="size-4" />}{isSubmitting ? '접수 중…' : '신고 접수'}</Button></DialogFooter></DialogContent></Dialog>
@@ -129,6 +133,7 @@ export function CharacterDetailPage({ chrome, slug }: { chrome: PlatformPageChro
   const [loadError, setLoadError] = useState('')
   const [reloadVersion, setReloadVersion] = useState(0)
   const [availableWorlds, setAvailableWorlds] = useState<WorldSummary[]>([])
+  const [secondaryError, setSecondaryError] = useState('')
   const [pickerOpen, setPickerOpen] = useState(false)
   const [isStartingRoom, setIsStartingRoom] = useState(false)
   const isStartingRoomRef = useRef(false)
@@ -137,16 +142,17 @@ export function CharacterDetailPage({ chrome, slug }: { chrome: PlatformPageChro
 
   useEffect(() => {
     let mounted = true
+    setItem(null)
     setLoadError('')
-    void Promise.all([platformApi.fetchCharacter(slug), platformApi.fetchWorlds('', 'popular')])
-      .then(([character, worlds]) => {
-        if (!mounted) return
-        setItem(character.item)
-        setAvailableWorlds(worlds.items)
-      })
+    setSecondaryError('')
+    void platformApi.fetchCharacter(slug)
+      .then((character) => { if (mounted) setItem(character.item) })
       .catch(() => { if (mounted) setLoadError('네트워크 연결을 확인한 뒤 다시 시도해 주세요.') })
+    void platformApi.fetchWorlds('', 'popular')
+      .then((worlds) => { if (mounted) setAvailableWorlds(worlds.items) })
+      .catch(() => { if (mounted) setSecondaryError('월드 목록을 불러오지 못했습니다. 캐릭터 단독 대화는 시작할 수 있습니다.') })
     return () => { mounted = false }
-  }, [slug, reloadVersion])
+  }, [slug, reloadVersion, chrome.user?.id, chrome.authStatus])
 
   useEffect(() => {
     if (!chrome.user || !item) {
@@ -173,7 +179,7 @@ export function CharacterDetailPage({ chrome, slug }: { chrome: PlatformPageChro
     setIsStartingRoom(true)
     void platformApi.createRoom({ characterSlug: item.slug, worldSlug: worldSlug || null, userAlias })
       .then(({ room }) => chrome.onNavigate(`/rooms/${room.id}`))
-      .catch((error) => toast.error(error instanceof Error ? error.message : '새 대화 시작에 실패했습니다.'))
+      .catch((error) => toast.error(safeActionError(error, '새 대화를 시작하지 못했습니다. 현재 선택은 유지됩니다. 다시 시도해 주세요.')))
       .finally(() => { isStartingRoomRef.current = false; setIsStartingRoom(false) })
   }
 
@@ -197,7 +203,7 @@ export function CharacterDetailPage({ chrome, slug }: { chrome: PlatformPageChro
         setIsBookmarked(active)
         toast.success(active ? '즐겨찾기에 저장했습니다.' : '즐겨찾기를 해제했습니다.')
       })
-      .catch((error) => toast.error(error instanceof Error ? error.message : '즐겨찾기 처리에 실패했습니다.'))
+      .catch((error) => toast.error(safeActionError(error, '즐겨찾기를 변경하지 못했습니다. 현재 상태는 유지됩니다. 다시 시도해 주세요.')))
   }
 
   const worldPickerItems = availableWorlds.map((world) => ({
@@ -220,7 +226,7 @@ export function CharacterDetailPage({ chrome, slug }: { chrome: PlatformPageChro
         open={pickerOpen}
         onOpenChange={setPickerOpen}
         title="월드 선택"
-        description="이 캐릭터와 대화할 월드를 선택합니다."
+        description={secondaryError || "이 캐릭터와 대화할 월드를 선택합니다."}
         emptyOption={{ title: '월드 없이 시작', body: '캐릭터 단독 대화를 시작합니다.' }}
         items={worldPickerItems}
         onSelect={(worldSlug) => { setPickerOpen(false); handleStart(worldSlug) }}
@@ -272,6 +278,7 @@ export function WorldDetailPage({ chrome, slug }: { chrome: PlatformPageChromePr
   const [loadError, setLoadError] = useState('')
   const [reloadVersion, setReloadVersion] = useState(0)
   const [availableCharacters, setAvailableCharacters] = useState<CharacterSummary[]>([])
+  const [secondaryError, setSecondaryError] = useState('')
   const [pickerOpen, setPickerOpen] = useState(false)
   const [isStartingRoom, setIsStartingRoom] = useState(false)
   const isStartingRoomRef = useRef(false)
@@ -280,16 +287,17 @@ export function WorldDetailPage({ chrome, slug }: { chrome: PlatformPageChromePr
 
   useEffect(() => {
     let mounted = true
+    setItem(null)
     setLoadError('')
-    void Promise.all([platformApi.fetchWorld(slug), platformApi.fetchCharacters('', 'popular')])
-      .then(([world, characters]) => {
-        if (!mounted) return
-        setItem(world.item)
-        setAvailableCharacters(characters.items)
-      })
+    setSecondaryError('')
+    void platformApi.fetchWorld(slug)
+      .then((world) => { if (mounted) setItem(world.item) })
       .catch(() => { if (mounted) setLoadError('네트워크 연결을 확인한 뒤 다시 시도해 주세요.') })
+    void platformApi.fetchCharacters('', 'popular')
+      .then((characters) => { if (mounted) setAvailableCharacters(characters.items) })
+      .catch(() => { if (mounted) setSecondaryError('캐릭터 목록을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.') })
     return () => { mounted = false }
-  }, [slug, reloadVersion])
+  }, [slug, reloadVersion, chrome.user?.id, chrome.authStatus])
 
   useEffect(() => {
     if (!chrome.user || !item) {
@@ -316,7 +324,7 @@ export function WorldDetailPage({ chrome, slug }: { chrome: PlatformPageChromePr
     setIsStartingRoom(true)
     void platformApi.createRoom({ characterSlug: character.slug, worldSlug: item.slug, userAlias })
       .then(({ room }) => chrome.onNavigate(`/rooms/${room.id}`))
-      .catch((error) => toast.error(error instanceof Error ? error.message : '새 대화 시작에 실패했습니다.'))
+      .catch((error) => toast.error(safeActionError(error, '새 대화를 시작하지 못했습니다. 현재 선택은 유지됩니다. 다시 시도해 주세요.')))
       .finally(() => { isStartingRoomRef.current = false; setIsStartingRoom(false) })
   }
 
@@ -340,7 +348,7 @@ export function WorldDetailPage({ chrome, slug }: { chrome: PlatformPageChromePr
         setIsBookmarked(active)
         toast.success(active ? '즐겨찾기에 저장했습니다.' : '즐겨찾기를 해제했습니다.')
       })
-      .catch((error) => toast.error(error instanceof Error ? error.message : '즐겨찾기 처리에 실패했습니다.'))
+      .catch((error) => toast.error(safeActionError(error, '즐겨찾기를 변경하지 못했습니다. 현재 상태는 유지됩니다. 다시 시도해 주세요.')))
   }
 
   if (!item) {
@@ -354,7 +362,7 @@ export function WorldDetailPage({ chrome, slug }: { chrome: PlatformPageChromePr
         open={pickerOpen}
         onOpenChange={setPickerOpen}
         title="캐릭터 선택"
-        description="이 월드에서 대화할 캐릭터를 선택합니다."
+        description={secondaryError || "이 월드에서 대화할 캐릭터를 선택합니다."}
         items={availableCharacters.map((character) => ({
           id: character.id,
           title: character.name,
@@ -444,18 +452,38 @@ export function RoomPage({ chrome, roomId }: { chrome: PlatformPageChromeProps; 
   const [isLoading, setIsLoading] = useState(false)
   const [needsRetry, setNeedsRetry] = useState(false)
   const [quota, setQuota] = useState<ChatQuota | null>(null)
+  const [quotaError, setQuotaError] = useState('')
   const [pendingRequestId, setPendingRequestId] = useState<string | null>(null)
   const isSendingRef = useRef(false)
+  const roomScopeEpochRef = useRef(0)
+
+  useEffect(() => {
+    roomScopeEpochRef.current += 1
+    isSendingRef.current = false
+    setRoom(null)
+    setInput('')
+    setQuota(null)
+    setPendingRequestId(null)
+    setNeedsRetry(false)
+    setIsLoading(false)
+    setLoadError('')
+    setQuotaError('')
+  }, [chrome.user?.id, roomId])
 
   useEffect(() => {
     if (!chrome.user) return
     let mounted = true
+    const scopeEpoch = roomScopeEpochRef.current
     setLoadError('')
-    void Promise.all([platformApi.fetchRoom(roomId), platformApi.fetchChatQuota()])
-      .then(([{ room }, quotaPayload]) => { if (mounted) { setRoom(room); setQuota(quotaPayload.quota) } })
-      .catch(() => { if (mounted) setLoadError('네트워크 연결을 확인한 뒤 다시 시도해 주세요.') })
+    setQuotaError('')
+    void platformApi.fetchRoom(roomId)
+      .then(({ room }) => { if (mounted && scopeEpoch === roomScopeEpochRef.current) setRoom(room) })
+      .catch(() => { if (mounted && scopeEpoch === roomScopeEpochRef.current) setLoadError('네트워크 연결을 확인한 뒤 다시 시도해 주세요.') })
+    void platformApi.fetchChatQuota()
+      .then(({ quota }) => { if (mounted && scopeEpoch === roomScopeEpochRef.current) setQuota(quota) })
+      .catch(() => { if (mounted && scopeEpoch === roomScopeEpochRef.current) setQuotaError('사용량을 불러오지 못했습니다. 메시지를 보내면 서버에서 한도를 확인합니다.') })
     return () => { mounted = false }
-  }, [chrome.user, roomId, reloadVersion])
+  }, [chrome.user?.id, roomId, reloadVersion])
 
   const activeCharacterImage = useMemo(() => {
     if (!room) return ''
@@ -498,12 +526,14 @@ export function RoomPage({ chrome, roomId }: { chrome: PlatformPageChromeProps; 
     if (!room || !messageToSend || isSendingRef.current || quota?.remaining === 0) return
 
     const requestId = pendingRequestId || crypto.randomUUID()
+    const scopeEpoch = roomScopeEpochRef.current
     isSendingRef.current = true
     setPendingRequestId(requestId)
     setNeedsRetry(false)
     setIsLoading(true)
     void platformApi.sendRoomMessage(room.id, messageToSend, requestId)
       .then((payload) => {
+        if (scopeEpoch !== roomScopeEpochRef.current) return
         setRoom(payload.room)
         setQuota(payload.quota)
         setInput('')
@@ -511,30 +541,30 @@ export function RoomPage({ chrome, roomId }: { chrome: PlatformPageChromeProps; 
         setNeedsRetry(false)
       })
       .catch((error) => {
-        const typedError = error as Error & { code?: string; details?: { quota?: ChatQuota } }
-        const message = error instanceof Error ? error.message : '메시지 전송에 실패했습니다.'
-        // 서버 오류 응답은 사용량이 환불되므로 재시도 시 새 예약 ID를 사용한다.
-        // 네트워크 단절처럼 응답 자체가 없으면 같은 ID를 유지해 중복 차감을 막는다.
-        if (typedError.code && typedError.code !== 'CHAT_REQUEST_IN_PROGRESS') setPendingRequestId(null)
-        if (typedError.code === 'CHAT_REQUEST_IN_PROGRESS') {
+        if (scopeEpoch !== roomScopeEpochRef.current) return
+        const typedError = error instanceof PlatformApiError ? error : null
+        // 응답이 불확실한 실패 뒤에는 같은 ID로 재시도해 이미 반영된 turn을
+        // replay한다. 현재 입력에 이 ID를 쓸 수 없다는 명시적 충돌만 폐기한다.
+        if (typedError?.code === 'CLIENT_REQUEST_ID_CONFLICT') setPendingRequestId(null)
+        if (typedError?.code === 'CHAT_REQUEST_IN_PROGRESS') {
           if (typedError.details?.quota) setQuota(typedError.details.quota)
           setNeedsRetry(true)
           toast.error('메시지를 처리 중입니다. 잠시 후 다시 보내 주세요.')
           return
         }
-        if (typedError.code === 'CHAT_DAILY_LIMIT_EXCEEDED') {
+        if (typedError?.code === 'CHAT_DAILY_LIMIT_EXCEEDED') {
           if (typedError.details?.quota) setQuota(typedError.details.quota)
           toast.error('오늘 보낼 수 있는 메시지를 모두 사용했습니다.')
           return
         }
-        if (message.includes('Gemini returned an empty response')) {
-          setNeedsRetry(true)
-          toast.error('응답을 받지 못했습니다. 다시 보내 주세요.')
-          return
-        }
-        toast.error(message)
+        setNeedsRetry(true)
+        toast.error(safeActionError(error, '메시지를 보내지 못했습니다. 입력한 내용은 유지됩니다. 다시 시도해 주세요.'))
       })
-      .finally(() => { isSendingRef.current = false; setIsLoading(false) })
+      .finally(() => {
+        if (scopeEpoch !== roomScopeEpochRef.current) return
+        isSendingRef.current = false
+        setIsLoading(false)
+      })
   }
 
   if (!chrome.user) {
@@ -585,12 +615,15 @@ export function RoomPage({ chrome, roomId }: { chrome: PlatformPageChromeProps; 
               </section>
 
               <div className="sticky bottom-[calc(66px+env(safe-area-inset-bottom))] z-20 bg-white pb-2 lg:bottom-0">
+                {quotaError ? <p role="status" className="mb-2 text-xs text-[#777]">{quotaError} <button type="button" className="underline" onClick={() => { setQuotaError(''); void platformApi.fetchChatQuota().then(({ quota }) => setQuota(quota)).catch(() => setQuotaError('사용량을 다시 불러오지 못했습니다.')) }}>다시 시도</button></p> : null}
                 <ChatComposer
                   value={input}
                   onChange={(value) => {
+                    if (value !== input) {
+                      setPendingRequestId(null)
+                      if (needsRetry) setNeedsRetry(false)
+                    }
                     setInput(value)
-                    setPendingRequestId(null)
-                    if (needsRetry) setNeedsRetry(false)
                   }}
                   onSubmit={sendMessage}
                   isSending={isLoading}
@@ -681,6 +714,7 @@ interface ImageSlotDraft {
 }
 
 const createSlotId = () => `slot-${Math.random().toString(36).slice(2, 10)}`
+const isCanonicalSlotId = (value: string) => /^[A-Za-z0-9_-]{1,32}$/.test(value)
 
 const toEntitySlotVariants = (slotId: string, variants: typeof CHARACTER_VARIANTS | typeof WORLD_VARIANTS) =>
   variants.map((variant) => ({
@@ -712,7 +746,7 @@ const createDraftFromExistingSlot = (slot: {
   cardUrl?: string
   thumbUrl?: string
 }): ImageSlotDraft => ({
-  id: slot.id || createSlotId(),
+  id: isCanonicalSlotId(slot.id) ? slot.id : createSlotId(),
   slot: slot.slot || 'main',
   usage: slot.usage || slot.slot || '',
   trigger: slot.trigger || '',
@@ -760,7 +794,7 @@ const uploadPreparedAssets = async ({
     const blob = await fetch(asset.dataUrl).then((response) => response.blob())
     const { error } = await supabase.storage
       .from(target.bucket)
-      .uploadToSignedUrl(target.path, target.token, blob, { contentType: 'image/webp', upsert: true })
+      .uploadToSignedUrl(target.path, target.token, blob, { contentType: 'image/webp', upsert: false })
     if (error) throw error
     uploadedAssets.push({
       kind: asset.kind,
@@ -862,9 +896,9 @@ const SituationImageSlotsEditor = ({
       <div className="flex items-center justify-between gap-3">
         <div>
           <p className="text-sm font-semibold text-[#171717]">상황별 이미지 추가</p>
-          <p className="mt-1 text-sm leading-6 text-[#737373]">장면이 바뀔 때 어떤 이미지로 전환할지 슬롯별로 지정합니다.</p>
+          <p className="mt-1 text-sm leading-6 text-[#737373]">장면이 바뀔 때 어떤 이미지로 전환할지 슬롯별로 지정합니다. 콘텐츠당 최대 6개입니다.</p>
         </div>
-        <Button variant="outline" onClick={onAdd}>
+        <Button variant="outline" onClick={onAdd} disabled={slots.length >= 6} title={slots.length >= 6 ? '이미지 슬롯은 최대 6개입니다.' : undefined}>
           <ImagePlus className="h-4 w-4" />상황별 이미지 추가
         </Button>
       </div>
@@ -952,6 +986,7 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
   const [characterIntro, setCharacterIntro] = useState('')
   const [processingSlotId, setProcessingSlotId] = useState<string | null>(null)
   const [isHydrating, setIsHydrating] = useState(Boolean(slug))
+  const [hydrationError, setHydrationError] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const isSavingRef = useRef(false)
   const [canManage, setCanManage] = useState<boolean | null>(slug ? null : true)
@@ -977,7 +1012,7 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
         })
         toast.success('이미지 파생본을 생성했습니다.')
       })
-      .catch((error) => toast.error(error instanceof Error ? error.message : '이미지 처리에 실패했습니다.'))
+      .catch(() => toast.error(imageProcessingFailureMessage()))
       .finally(() => setProcessingSlotId(null))
   }
 
@@ -988,6 +1023,7 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
     if (!slug) return
     let mounted = true
     setIsHydrating(true)
+    setHydrationError('')
     void platformApi.fetchCharacter(slug)
       .then(({ item }) => {
         if (!mounted) return
@@ -1007,7 +1043,7 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
         setCharacterIntro(String(item.promptProfileJson?.characterIntro || ''))
         setImageSlots(item.imageSlots?.length ? item.imageSlots.map((slot) => createDraftFromExistingSlot(slot)) : [createImageSlotDraft('main', '대표 이미지', '기본 대표 비주얼', '100')])
       })
-      .catch((error) => toast.error(error instanceof Error ? error.message : '캐릭터 정보를 불러오지 못했습니다.'))
+      .catch((error) => { if (mounted) setHydrationError(safeActionError(error, '캐릭터 정보를 불러오지 못했습니다. 저장된 데이터는 변경되지 않았습니다. 다시 시도해 주세요.')) })
       .finally(() => { if (mounted) setIsHydrating(false) })
     return () => { mounted = false }
   }, [slug, chrome.user?.id])
@@ -1026,6 +1062,10 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
         />
       </PageFrame>
     )
+  }
+
+  if (slug && hydrationError) {
+    return <PageFrame chrome={chrome}><EmptyState title="캐릭터 정보를 불러오지 못했습니다" description={hydrationError} action={<Button onClick={() => chrome.onNavigate(`/characters/${slug}`)}>상세로 돌아가기</Button>} /></PageFrame>
   }
 
   const derivedSummary = deriveSummaryFromPrompt(headline, characterPrompt)
@@ -1047,7 +1087,7 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
               toast.success('캐릭터를 삭제했습니다.')
               chrome.onNavigate('/library')
             })
-            .catch((error) => toast.error(error instanceof Error ? error.message : '캐릭터 삭제에 실패했습니다.'))
+            .catch((error) => toast.error(safeActionError(error, '캐릭터 삭제 결과를 확인하지 못했습니다. 보관함을 다시 불러와 현재 상태를 확인해 주세요.')))
             .finally(() => {
               setIsDeleting(false)
               setPendingDelete(false)
@@ -1134,7 +1174,7 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
             processingSlotId={processingSlotId}
             inputPrefix="character"
             onUpload={handleSlotUpload}
-            onAdd={() => setImageSlots((prev) => [...prev, createImageSlotDraft(`scene-${prev.length}`, `scene-${prev.length}`, '', String(Math.max(10, 100 - prev.length * 10)))])}
+            onAdd={() => setImageSlots((prev) => prev.length >= 6 ? prev : [...prev, createImageSlotDraft(`scene-${prev.length}`, `scene-${prev.length}`, '', String(Math.max(10, 100 - prev.length * 10)))])}
             onUpdate={updateSlot}
             onRemove={(slotId) => setImageSlots((prev) => prev.filter((slot) => slot.id !== slotId))}
           />
@@ -1157,16 +1197,10 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
                 : []
               const imageSlotRecords = imageSlots.map((slot) => buildSlotRecord({ slot, uploadedAssets }))
               const mainRecord = imageSlotRecords[0]
-              const mainAssets = uploadedAssets
-                .filter((asset) => asset.kind.startsWith(`${mainSlot.id}:`))
-                .map((asset) => ({
-                  kind: asset.kind.split(':')[1] || 'detail',
-                  url: asset.url,
-                  width: asset.width,
-                  height: asset.height,
-                }))
               const detailUrl = mainRecord?.detailUrl || ''
               const cardUrl = mainRecord?.cardUrl || detailUrl
+              const hasNewMainAssets = uploadedAssets.some((asset) => asset.kind.startsWith(`${mainSlot.id}:`))
+              const includeImageChanges = !slug || uploadedAssets.length > 0
               const payload = {
                 name,
                 headline,
@@ -1177,9 +1211,8 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
                 sourceUrl: sourceType === 'derivative' ? sourceUrl.trim() : '',
                 rightsConfirmed,
                 creatorName,
-                coverImageUrl: detailUrl,
-                avatarImageUrl: cardUrl,
-                assets: mainAssets,
+                ...(!slug || hasNewMainAssets ? { coverImageUrl: detailUrl, avatarImageUrl: cardUrl } : {}),
+                ...(includeImageChanges ? { assets: uploadedAssets } : {}),
                 profileJson: {
                   prompt: characterPrompt,
                   creatorName,
@@ -1193,7 +1226,7 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
                   persona: characterPrompt.trim() ? [characterPrompt.trim()] : [],
                   speechStyle: headline.trim() ? [headline.trim()] : [],
                   relationshipBaseline: '처음 관계는 캐릭터 프롬프트 지시를 따른다.',
-                  imageSlots: imageSlotRecords,
+                  ...(includeImageChanges ? { imageSlots: imageSlotRecords } : {}),
                   creatorName,
                 },
               }
@@ -1202,7 +1235,7 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
                 : await platformApi.createCharacter(payload)
               toast.success(slug ? '캐릭터를 수정했습니다.' : '캐릭터를 만들었습니다.')
               chrome.onNavigate(`/characters/${item.slug}`)
-            })().catch((error) => toast.error(error instanceof Error ? error.message : '캐릭터 생성에 실패했습니다.')).finally(() => { isSavingRef.current = false; setIsSaving(false) })
+            })().catch((error) => toast.error(safeActionError(error, `캐릭터를 ${slug ? '수정' : '저장'}하지 못했습니다. 입력한 내용은 유지됩니다. 다시 시도해 주세요.`))).finally(() => { isSavingRef.current = false; setIsSaving(false) })
           }}>{isSaving || isHydrating || processingSlotId ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlusCircle className="h-4 w-4" />}{isHydrating ? '불러오는 중…' : processingSlotId ? '이미지 처리 중…' : isSaving ? '저장 중…' : slug ? '캐릭터 수정' : '캐릭터 저장'}</Button>
         </div>
       </div>
@@ -1222,6 +1255,7 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
   const [worldIntro, setWorldIntro] = useState('')
   const [processingSlotId, setProcessingSlotId] = useState<string | null>(null)
   const [isHydrating, setIsHydrating] = useState(Boolean(slug))
+  const [hydrationError, setHydrationError] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const isSavingRef = useRef(false)
   const [canManage, setCanManage] = useState<boolean | null>(slug ? null : true)
@@ -1247,7 +1281,7 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
         })
         toast.success('월드 이미지 파생본을 생성했습니다.')
       })
-      .catch((error) => toast.error(error instanceof Error ? error.message : '이미지 처리에 실패했습니다.'))
+      .catch(() => toast.error(imageProcessingFailureMessage()))
       .finally(() => setProcessingSlotId(null))
   }
 
@@ -1259,6 +1293,7 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
     if (!slug) return
     let mounted = true
     setIsHydrating(true)
+    setHydrationError('')
     void platformApi.fetchWorld(slug)
       .then(({ item }) => {
         if (!mounted) return
@@ -1278,7 +1313,7 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
         setWorldIntro(String(item.promptProfileJson?.worldIntro || ''))
         setImageSlots(item.imageSlots?.length ? item.imageSlots.map((slot) => createDraftFromExistingSlot(slot)) : [createImageSlotDraft('main', '대표 이미지', '기본 월드 비주얼', '100')])
       })
-      .catch((error) => toast.error(error instanceof Error ? error.message : '월드 정보를 불러오지 못했습니다.'))
+      .catch((error) => { if (mounted) setHydrationError(safeActionError(error, '월드 정보를 불러오지 못했습니다. 저장된 데이터는 변경되지 않았습니다. 다시 시도해 주세요.')) })
       .finally(() => { if (mounted) setIsHydrating(false) })
     return () => { mounted = false }
   }, [slug, chrome.user?.id])
@@ -1299,6 +1334,10 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
     )
   }
 
+  if (slug && hydrationError) {
+    return <PageFrame chrome={chrome}><EmptyState title="월드 정보를 불러오지 못했습니다" description={hydrationError} action={<Button onClick={() => chrome.onNavigate(`/worlds/${slug}`)}>상세로 돌아가기</Button>} /></PageFrame>
+  }
+
   return (
     <PageFrame chrome={chrome} showCombinationDock={false}>
       <OwnedContentDeleteDialog
@@ -1316,7 +1355,7 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
               toast.success('월드를 삭제했습니다.')
               chrome.onNavigate('/library')
             })
-            .catch((error) => toast.error(error instanceof Error ? error.message : '월드 삭제에 실패했습니다.'))
+            .catch((error) => toast.error(safeActionError(error, '월드 삭제 결과를 확인하지 못했습니다. 보관함을 다시 불러와 현재 상태를 확인해 주세요.')))
             .finally(() => {
               setIsDeleting(false)
               setPendingDelete(false)
@@ -1403,7 +1442,7 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
             processingSlotId={processingSlotId}
             inputPrefix="world"
             onUpload={handleSlotUpload}
-            onAdd={() => setImageSlots((prev) => [...prev, createImageSlotDraft(`scene-${prev.length}`, `scene-${prev.length}`, '', String(Math.max(10, 100 - prev.length * 10)))])}
+            onAdd={() => setImageSlots((prev) => prev.length >= 6 ? prev : [...prev, createImageSlotDraft(`scene-${prev.length}`, `scene-${prev.length}`, '', String(Math.max(10, 100 - prev.length * 10)))])}
             onUpdate={updateSlot}
             onRemove={(slotId) => setImageSlots((prev) => prev.filter((slot) => slot.id !== slotId))}
           />
@@ -1427,6 +1466,8 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
               const imageSlotRecords = imageSlots.map((slot) => buildSlotRecord({ slot, uploadedAssets }))
               const mainRecord = imageSlotRecords[0]
               const heroUrl = mainRecord?.detailUrl || uploadedAssets.find((asset) => asset.kind === `${mainSlot.id}:hero`)?.url || ''
+              const hasNewMainAssets = uploadedAssets.some((asset) => asset.kind.startsWith(`${mainSlot.id}:`))
+              const includeImageChanges = !slug || uploadedAssets.length > 0
               const payload = {
                 name,
                 headline,
@@ -1437,9 +1478,9 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
                 sourceUrl: sourceType === 'derivative' ? sourceUrl.trim() : '',
                 rightsConfirmed,
                 creatorName,
-                coverImageUrl: heroUrl,
+                ...(!slug || hasNewMainAssets ? { coverImageUrl: heroUrl } : {}),
                 worldRulesMarkdown: worldPrompt,
-                assets: uploadedAssets,
+                ...(includeImageChanges ? { assets: uploadedAssets } : {}),
                 promptProfileJson: {
                   masterPrompt: worldPrompt.trim(),
                   worldIntro: worldIntro.trim(),
@@ -1447,7 +1488,7 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
                   tone: headline.trim() || derivedSummary,
                   starterLocations: [],
                   worldTerms: splitCommaValues(tags),
-                  imageSlots: imageSlotRecords,
+                  ...(includeImageChanges ? { imageSlots: imageSlotRecords } : {}),
                   creatorName,
                 },
               }
@@ -1456,7 +1497,7 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
                 : await platformApi.createWorld(payload)
               toast.success(slug ? '월드를 수정했습니다.' : '월드를 만들었습니다.')
               chrome.onNavigate(`/worlds/${item.slug}`)
-            })().catch((error) => toast.error(error instanceof Error ? error.message : '월드 생성에 실패했습니다.')).finally(() => { isSavingRef.current = false; setIsSaving(false) })
+            })().catch((error) => toast.error(safeActionError(error, `월드를 ${slug ? '수정' : '저장'}하지 못했습니다. 입력한 내용은 유지됩니다. 다시 시도해 주세요.`))).finally(() => { isSavingRef.current = false; setIsSaving(false) })
           }}>{isSaving || isHydrating || processingSlotId ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlusCircle className="h-4 w-4" />}{isHydrating ? '불러오는 중…' : processingSlotId ? '이미지 처리 중…' : isSaving ? '저장 중…' : slug ? '월드 수정' : '월드 저장'}</Button>
         </div>
       </div>
@@ -1591,8 +1632,7 @@ export function OpsPage({ chrome }: { chrome: PlatformPageChromeProps }) {
         setIsForbidden(false)
       })
       .catch((error) => {
-        const message = error instanceof Error ? error.message : '운영실 데이터를 불러오지 못했습니다.'
-        if (message.includes('Owner access required')) {
+        if (error instanceof PlatformApiError && error.status === 403) {
           setIsForbidden(true)
           return
         }
@@ -1603,7 +1643,7 @@ export function OpsPage({ chrome }: { chrome: PlatformPageChromeProps }) {
   const reviewReport = (reportId: string, action: 'dismiss' | 'restore' | 'quarantine' | 'remove') => {
     void platformApi.applyReportAction(reportId, action)
       .then(loadDashboard)
-      .catch((error) => toast.error(error instanceof Error ? error.message : '신고 처리에 실패했습니다.'))
+      .catch((error) => toast.error(safeActionError(error, '신고 상태를 변경하지 못했습니다. 현재 상태는 유지됩니다. 다시 시도해 주세요.')))
   }
 
   useEffect(() => {
@@ -1644,7 +1684,7 @@ export function OpsPage({ chrome }: { chrome: PlatformPageChromeProps }) {
                   setPendingDelete(null)
                   loadDashboard()
                 })
-                .catch((error) => toast.error(error instanceof Error ? error.message : '삭제에 실패했습니다.'))
+                .catch((error) => toast.error(safeActionError(error, '콘텐츠 삭제 결과를 확인하지 못했습니다. 목록을 다시 불러와 현재 상태를 확인해 주세요.')))
             }}>
               <Trash2 className="h-4 w-4" />삭제
             </Button>
@@ -1682,7 +1722,7 @@ export function OpsPage({ chrome }: { chrome: PlatformPageChromeProps }) {
                                       toast.success(`${verb} 처리했습니다.`)
                                       loadDashboard()
                                     })
-                                    .catch((error) => toast.error(error instanceof Error ? error.message : `${verb} 처리에 실패했습니다.`))
+                                    .catch((error) => toast.error(safeActionError(error, `${verb} 처리하지 못했습니다. 현재 상태는 유지됩니다. 다시 시도해 주세요.`)))
                                 }}>
                                   {section.visible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}{section.visible ? '숨김' : '복구'}
                                 </Button>
@@ -1720,7 +1760,7 @@ export function OpsPage({ chrome }: { chrome: PlatformPageChromeProps }) {
                                       toast.success(`${verb} 처리했습니다.`)
                                       loadDashboard()
                                     })
-                                    .catch((error) => toast.error(error instanceof Error ? error.message : `${verb} 처리에 실패했습니다.`))
+                                    .catch((error) => toast.error(safeActionError(error, `${verb} 처리하지 못했습니다. 현재 상태는 유지됩니다. 다시 시도해 주세요.`)))
                                 }}>
                                   {section.visible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}{section.visible ? '숨김' : '복구'}
                                 </Button>

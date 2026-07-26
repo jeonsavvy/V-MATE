@@ -14,6 +14,7 @@ type HomeProps = PlatformPageChromeProps & {
 export function Home(props: HomeProps) {
   const {
     user,
+    authStatus,
     userAvatarInitial,
     searchQuery,
     onSearchChange,
@@ -81,6 +82,7 @@ export function Home(props: HomeProps) {
   return (
     <PlatformShell
       user={user}
+      authStatus={authStatus}
       userAvatarInitial={userAvatarInitial}
       searchValue={searchQuery}
       onSearchChange={onSearchChange}

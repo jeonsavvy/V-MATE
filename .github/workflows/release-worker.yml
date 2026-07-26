@@ -1,0 +1,529 @@
+name: release-worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Deployment target; production uses operation-specific approval environments
+        required: true
+        type: choice
+        options: [staging, production]
+      operation:
+        description: Upload without traffic (shadow), verify, cut over, or roll back
+        required: true
+        type: choice
+        options: [shadow, smoke, cutover, rollback]
+      base_url:
+        description: HTTPS origin registered in the selected GitHub environment
+        required: true
+        type: string
+      worker_name:
+        description: Worker name registered in the selected GitHub environment
+        required: true
+        type: string
+      version_id:
+        description: Required for smoke, cutover, and rollback; leave empty for shadow
+        required: false
+        type: string
+      wrangler_env:
+        description: Named Wrangler environment; staging must match the approved environment variable
+        required: false
+        type: string
+      expand_evidence_run_id:
+        description: Required for shadow, smoke, and cutover; apply-expand database evidence for this target and commit
+        required: false
+        type: string
+      rollback_mode:
+        description: Required for manual rollback; choose evidence-bound pre-lockdown or post-lockdown recovery
+        required: false
+        type: choice
+        options: [pre-lockdown, post-lockdown]
+      rollback_evidence_run_id:
+        description: Required for manual rollback; successful v2 cutover release evidence run
+        required: false
+        type: string
+      lockdown_evidence_run_id:
+        description: Required for post-lockdown rollback; apply-lockdown database evidence run
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: worker-release-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: ${{ inputs.operation }} ${{ inputs.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment:
+      name: ${{ inputs.target == 'production' && format('production-{0}', inputs.operation) || 'staging' }}
+      url: ${{ inputs.base_url }}
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_OBSERVABILITY_TOKEN: ${{ secrets.CLOUDFLARE_OBSERVABILITY_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      BASE_URL: ${{ inputs.base_url }}
+      WORKER_NAME: ${{ inputs.worker_name }}
+      INPUT_VERSION_ID: ${{ inputs.version_id }}
+      WRANGLER_ENV: ${{ inputs.wrangler_env }}
+      EXPECTED_BASE_URL: ${{ vars.WORKER_BASE_URL }}
+      EXPECTED_WORKER_NAME: ${{ vars.WORKER_NAME }}
+      EXPECTED_WRANGLER_ENV: ${{ vars.WRANGLER_ENV }}
+      PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_WORKER_BASE_URL }}
+      PRODUCTION_WORKER_NAME: ${{ vars.PRODUCTION_WORKER_NAME }}
+      EXPAND_EVIDENCE_RUN_ID: ${{ inputs.expand_evidence_run_id }}
+      EXPECTED_SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+      ROLLBACK_MODE: ${{ inputs.rollback_mode }}
+      ROLLBACK_EVIDENCE_RUN_ID: ${{ inputs.rollback_evidence_run_id }}
+      LOCKDOWN_EVIDENCE_RUN_ID: ${{ inputs.lockdown_evidence_run_id }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: ".nvmrc"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate approved target and credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          canonical_origin() {
+            node -e 'const value = new URL(process.argv[1]); if (value.protocol !== "https:" || value.username || value.password || value.search || value.hash || value.pathname !== "/") process.exit(1); process.stdout.write(value.origin)' "$1"
+          }
+          input_origin=$(canonical_origin "$BASE_URL") || { echo '::error::base_url must be an HTTPS origin'; exit 1; }
+          expected_origin=$(canonical_origin "$EXPECTED_BASE_URL") || { echo '::error::approved WORKER_BASE_URL is missing or invalid'; exit 1; }
+          [[ "$input_origin" == "$expected_origin" ]] || { echo '::error::base_url does not match the selected approval environment'; exit 1; }
+          echo "APPROVED_ORIGIN=$input_origin" >> "$GITHUB_ENV"
+          [[ -n "$EXPECTED_WORKER_NAME" && "$WORKER_NAME" == "$EXPECTED_WORKER_NAME" ]] || { echo '::error::worker_name does not match the selected approval environment'; exit 1; }
+          [[ "$WORKER_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || { echo '::error::worker_name has invalid characters'; exit 1; }
+          if [[ '${{ inputs.target }}' == 'staging' ]]; then
+            [[ -n "$EXPECTED_WRANGLER_ENV" && "$WRANGLER_ENV" == "$EXPECTED_WRANGLER_ENV" ]] || { echo '::error::staging wrangler_env does not match the approved environment'; exit 1; }
+            production_origin=$(canonical_origin "$PRODUCTION_BASE_URL") || { echo '::error::production target guard is not configured'; exit 1; }
+            [[ "$input_origin" != "$production_origin" && -n "$PRODUCTION_WORKER_NAME" && "$WORKER_NAME" != "$PRODUCTION_WORKER_NAME" ]] || { echo '::error::staging cannot target the production Worker or origin'; exit 1; }
+          else
+            [[ -z "$WRANGLER_ENV" ]] || { echo '::error::production must use the top-level Wrangler target'; exit 1; }
+            production_origin=$(canonical_origin "$PRODUCTION_BASE_URL") || { echo '::error::production target guard is not configured'; exit 1; }
+            [[ "$input_origin" == "$production_origin" && "$WORKER_NAME" == "$PRODUCTION_WORKER_NAME" ]] || { echo '::error::production target guard mismatch'; exit 1; }
+          fi
+          if [[ '${{ inputs.operation }}' != 'shadow' ]]; then
+            [[ "$INPUT_VERSION_ID" =~ ^[A-Za-z0-9_-]+$ ]] || { echo '::error::version_id is required and must be canonical'; exit 1; }
+          fi
+          if [[ '${{ inputs.operation }}' != 'rollback' ]]; then
+            [[ "$EXPAND_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::expand_evidence_run_id is required for shadow, smoke, and cutover'; exit 1; }
+          fi
+          [[ "$EXPECTED_SUPABASE_PROJECT_REF" =~ ^[a-z0-9]{8,32}$ ]] || { echo '::error::approved Supabase project ref is missing or invalid'; exit 1; }
+          if [[ '${{ inputs.operation }}' == 'rollback' ]]; then
+            [[ -n "$SUPABASE_ACCESS_TOKEN" ]] || { echo '::error::Rollback database-state read credential is not configured'; exit 1; }
+            [[ "$ROLLBACK_MODE" == 'pre-lockdown' || "$ROLLBACK_MODE" == 'post-lockdown' ]] || { echo '::error::rollback_mode must be pre-lockdown or post-lockdown'; exit 1; }
+            [[ "$ROLLBACK_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::rollback_evidence_run_id is required for manual rollback'; exit 1; }
+            if [[ "$ROLLBACK_MODE" == 'pre-lockdown' ]]; then
+              [[ -z "$LOCKDOWN_EVIDENCE_RUN_ID" ]] || { echo '::error::pre-lockdown rollback must not supply lockdown evidence'; exit 1; }
+            else
+              [[ "$LOCKDOWN_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::post-lockdown rollback requires lockdown_evidence_run_id'; exit 1; }
+            fi
+          fi
+          [[ -n "$CLOUDFLARE_API_TOKEN" ]] || { echo '::error::Cloudflare credential is not configured for this environment'; exit 1; }
+          [[ -n "$CLOUDFLARE_ACCOUNT_ID" ]] || { echo '::error::Cloudflare account binding is not configured for this environment'; exit 1; }
+          if [[ '${{ inputs.operation }}' == 'cutover' ]]; then
+            [[ -n "$CLOUDFLARE_OBSERVABILITY_TOKEN" ]] || { echo '::error::Scoped Worker observability credential is not configured for this environment'; exit 1; }
+          fi
+
+      - name: Verify matching expand migration evidence before serving the new Worker
+        if: ${{ inputs.operation != 'rollback' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/expand-evidence
+          gh run download "$EXPAND_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "database-release-evidence-${{ inputs.target }}-$EXPAND_EVIDENCE_RUN_ID" --dir artifacts/expand-evidence
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const files = [];
+          const walk = (directory) => fs.readdirSync(directory, { withFileTypes: true }).forEach((entry) => {
+            const item = path.join(directory, entry.name);
+            if (entry.isDirectory()) walk(item); else if (entry.name === 'database-release-evidence.json') files.push(item);
+          });
+          walk('artifacts/expand-evidence');
+          if (files.length !== 1) process.exit(1);
+          const evidence = JSON.parse(fs.readFileSync(files[0], 'utf8'));
+          const projectRef = process.env.EXPECTED_SUPABASE_PROJECT_REF;
+          if (!/^[a-z0-9]{8,32}$/.test(projectRef || '')) process.exit(1);
+          const refHash = crypto.createHash('sha256').update(projectRef).digest('hex');
+          const valid = evidence.schemaVersion === 3
+            && evidence.target === '${{ inputs.target }}'
+            && evidence.operation === 'apply-expand'
+            && evidence.commit === process.env.GITHUB_SHA
+            && evidence.migration === '20260726010000_backend_stabilization_expand.sql'
+            && evidence.projectRefHash === refHash
+            && Number.isFinite(Date.parse(evidence.appliedAt || ''));
+          if (!valid) process.exit(1);
+          fs.appendFileSync(process.env.GITHUB_ENV, `EXPAND_PROJECT_REF_HASH=${refHash}\nEXPAND_APPLIED_AT=${evidence.appliedAt}\n`);
+          NODE
+
+      - name: Verify evidence-bound manual rollback target
+        if: ${{ inputs.operation == 'rollback' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/rollback-evidence
+          gh run download "$ROLLBACK_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "release-evidence-${{ inputs.target }}-$ROLLBACK_EVIDENCE_RUN_ID" --dir artifacts/rollback-evidence/release
+          if [[ "$ROLLBACK_MODE" == 'post-lockdown' ]]; then
+            gh run download "$LOCKDOWN_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "database-release-evidence-${{ inputs.target }}-$LOCKDOWN_EVIDENCE_RUN_ID" --dir artifacts/rollback-evidence/lockdown
+          fi
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const findOne = (directory, filename) => {
+            const files = [];
+            const walk = (item) => fs.readdirSync(item, { withFileTypes: true }).forEach((entry) => {
+              const next = path.join(item, entry.name);
+              if (entry.isDirectory()) walk(next); else if (entry.name === filename) files.push(next);
+            });
+            walk(directory);
+            if (files.length !== 1) process.exit(1);
+            return JSON.parse(fs.readFileSync(files[0], 'utf8'));
+          };
+          const release = findOne('artifacts/rollback-evidence/release', 'release-evidence.json');
+          const refHash = crypto.createHash('sha256').update(process.env.EXPECTED_SUPABASE_PROJECT_REF).digest('hex');
+          const expectedOrigin = new URL(process.env.BASE_URL).origin;
+          const successfulCutover = release.schemaVersion === 2
+            && release.target === '${{ inputs.target }}'
+            && release.operation === 'cutover'
+            && release.commit === process.env.GITHUB_SHA
+            && release.projectRefHash === refHash
+            && release.workerName === process.env.WORKER_NAME
+            && release.baseUrl === expectedOrigin
+            && release.smokePassed === true
+            && release.monitorChecks >= 13
+            && release.monitorMinutes >= 60
+            && release.observabilityPassed === true;
+          if (!successfulCutover) process.exit(1);
+          if (process.env.ROLLBACK_MODE === 'pre-lockdown') {
+            if (release.previousStableVersionId !== process.env.INPUT_VERSION_ID) process.exit(1);
+          } else {
+            const lockdown = findOne('artifacts/rollback-evidence/lockdown', 'database-release-evidence.json');
+            const validLockdown = lockdown.schemaVersion === 3
+              && lockdown.target === '${{ inputs.target }}'
+              && lockdown.operation === 'apply-lockdown'
+              && lockdown.commit === process.env.GITHUB_SHA
+              && lockdown.projectRefHash === refHash
+              && lockdown.workerVersionId === release.versionId
+              && lockdown.workerEvidenceRunId === process.env.ROLLBACK_EVIDENCE_RUN_ID
+              && lockdown.previousStableWorkerVersionId === release.previousStableVersionId
+              && Number.isFinite(Date.parse(lockdown.appliedAt || ''));
+            if (!validLockdown || release.v2Compatible !== true || release.versionId !== process.env.INPUT_VERSION_ID) process.exit(1);
+          }
+          fs.appendFileSync(process.env.GITHUB_ENV, `ROLLBACK_SOURCE_VERSION_ID=${release.versionId}\nROLLBACK_SOURCE_EVIDENCE_RUN_ID=${process.env.ROLLBACK_EVIDENCE_RUN_ID}\n`);
+          NODE
+
+      - name: Prove live database rollback phase
+        if: ${{ inputs.operation == 'rollback' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          workdir=$(mktemp -d "$RUNNER_TEMP/vmate-rollback-state-XXXXXX")
+          trap 'rm -rf -- "$workdir"' EXIT
+          mkdir -p "$workdir/supabase"
+          cp supabase/config.toml "$workdir/supabase/config.toml"
+          npx --no-install supabase link --workdir "$workdir" --project-ref "$EXPECTED_SUPABASE_PROJECT_REF" > /dev/null
+          printf "begin;\nselect set_config('vmate.rollback_mode', '%s', true);\n" "$ROLLBACK_MODE" > "$workdir/rollback-state.sql"
+          cat >> "$workdir/rollback-state.sql" <<'SQL'
+          do $$
+          declare
+            legacy_client_rpc_grant_count integer;
+            authenticated_direct_write_grant_count integer;
+            api_direct_write_grant_count integer;
+            storage_write_policy_count integer;
+            service_v2_contract boolean;
+          begin
+            select count(*) into legacy_client_rpc_grant_count
+            from (values
+              (has_function_privilege('authenticated', 'public.reserve_daily_chat_message(text,integer)', 'EXECUTE')),
+              (has_function_privilege('authenticated', 'public.complete_daily_chat_message(text,jsonb)', 'EXECUTE')),
+              (has_function_privilege('authenticated', 'public.refund_daily_chat_message(text,integer)', 'EXECUTE'))
+            ) as grants(allowed)
+            where allowed;
+            select
+              count(*) filter (where role_name = 'authenticated'),
+              count(*)
+            into authenticated_direct_write_grant_count, api_direct_write_grant_count
+            from unnest(array['anon', 'authenticated']) as roles(role_name)
+            cross join unnest(array[
+              'public.characters', 'public.worlds', 'public.character_assets', 'public.world_assets',
+              'public.rooms', 'public.room_messages', 'public.room_state_summaries'
+            ]) as tables(table_name)
+            cross join unnest(array['INSERT', 'UPDATE', 'DELETE']) as privileges(privilege_name)
+            where has_table_privilege(role_name, table_name, privilege_name);
+            select count(*) into storage_write_policy_count
+            from pg_policies
+            where schemaname = 'storage' and tablename = 'objects'
+              and policyname in (
+                'Authenticated users can upload vmate assets to their own folder',
+                'Authenticated users can update vmate assets in their own folder',
+                'Authenticated users can delete vmate assets in their own folder'
+              );
+            service_v2_contract :=
+              has_function_privilege('service_role', 'public.reserve_chat_message_v2(uuid,text,uuid,text,text,integer,integer)', 'EXECUTE')
+              and has_function_privilege('service_role', 'public.commit_room_turn_v2(uuid,uuid,text,text,bigint,jsonb,jsonb,jsonb,jsonb,jsonb)', 'EXECUTE');
+            if current_setting('vmate.rollback_mode', true) = 'pre-lockdown' then
+              if legacy_client_rpc_grant_count <> 3 or authenticated_direct_write_grant_count = 0 or storage_write_policy_count <> 3 or not service_v2_contract then
+                raise exception 'rollback phase does not match the approved pre-lockdown contract';
+              end if;
+            elsif current_setting('vmate.rollback_mode', true) = 'post-lockdown' then
+              if legacy_client_rpc_grant_count <> 0 or api_direct_write_grant_count <> 0 or storage_write_policy_count <> 0 or not service_v2_contract then
+                raise exception 'rollback phase does not match the approved post-lockdown contract';
+              end if;
+            else
+              raise exception 'unsupported rollback mode';
+            end if;
+          end $$;
+          rollback;
+          SQL
+          npx --no-install supabase db query \
+            --workdir "$workdir" \
+            --linked \
+            --file "$workdir/rollback-state.sql" > /dev/null
+
+      - name: Verify source and local contracts
+        run: npm run verify && npm run test:db
+
+      - name: Build release assets and record hashes
+        run: npm run build && npm run release:manifest
+
+      - name: Capture deployment before operation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          args=(--env "")
+          if [[ -n "$WRANGLER_ENV" ]]; then args=(--env "$WRANGLER_ENV"); fi
+          npx --no-install wrangler deployments status "${args[@]}" --name "$WORKER_NAME" --json > artifacts/deployment-before.json
+          previous_stable_version_id=$(node <<'NODE'
+          const source = JSON.parse(require('node:fs').readFileSync('artifacts/deployment-before.json', 'utf8'));
+          const candidates = [];
+          const visit = (value) => {
+            if (Array.isArray(value)) return value.forEach(visit);
+            if (!value || typeof value !== 'object') return;
+            if (typeof value.version_id === 'string' && Number(value.percentage) === 100) candidates.push(value.version_id);
+            Object.values(value).forEach(visit);
+          };
+          visit(source);
+          const unique = [...new Set(candidates)];
+          if (unique.length !== 1) process.exit(1);
+          process.stdout.write(unique[0]);
+          NODE
+          )
+          [[ "$previous_stable_version_id" =~ ^[A-Za-z0-9_-]+$ ]] || { echo '::error::Could not determine the exact current stable Worker version'; exit 1; }
+          echo "PREVIOUS_STABLE_VERSION_ID=$previous_stable_version_id" >> "$GITHUB_ENV"
+
+      - name: Upload and register a zero-traffic Worker version
+        id: shadow
+        if: ${{ inputs.operation == 'shadow' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--env "")
+          if [[ -n "$WRANGLER_ENV" ]]; then args=(--env "$WRANGLER_ENV"); fi
+          stable_version_id="$PREVIOUS_STABLE_VERSION_ID"
+          [[ -n "$stable_version_id" ]] || { echo '::error::Could not determine the current stable Worker version'; exit 1; }
+          export WRANGLER_OUTPUT_FILE_PATH="$PWD/artifacts/wrangler-output.jsonl"
+          version_tag="github-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          npx --no-install wrangler versions upload "${args[@]}" --name "$WORKER_NAME" --tag "$version_tag" --message "$GITHUB_SHA" --var "ALLOWED_ORIGINS:$APPROVED_ORIGIN"
+          version_id=$(node - "$version_tag" <<'NODE'
+          const fs = require('node:fs');
+          const expectedTag = process.argv[2];
+          const entries = fs.readFileSync('artifacts/wrangler-output.jsonl', 'utf8').trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+          const matches = entries.filter((entry) => entry.type === 'version-upload' && entry.version_id && (!entry.version_tag || entry.version_tag === expectedTag));
+          if (matches.length !== 1) process.exit(1);
+          process.stdout.write(matches[0].version_id);
+          NODE
+          )
+          [[ -n "$version_id" ]] || { echo '::error::Could not determine the exact uploaded Worker version'; exit 1; }
+          npx --no-install wrangler versions deploy "${args[@]}" --name "$WORKER_NAME" "$stable_version_id@100%" "$version_id@0%" --dry-run --yes
+          npx --no-install wrangler versions deploy "${args[@]}" --name "$WORKER_NAME" "$stable_version_id@100%" "$version_id@0%" --yes
+          echo "version_id=$version_id" >> "$GITHUB_OUTPUT"
+          echo "stable_version_id=$stable_version_id" >> "$GITHUB_OUTPUT"
+
+      - name: Preflight evidence-bound rollback version with zero-traffic override
+        if: ${{ inputs.operation == 'rollback' && inputs.rollback_mode == 'post-lockdown' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/smoke-release.mjs \
+            --base-url "$BASE_URL" \
+            --worker-name "$WORKER_NAME" \
+            --version-id "$INPUT_VERSION_ID" \
+            --dist-manifest artifacts/dist-manifest.json | tee artifacts/rollback-preflight-smoke.log
+
+      - name: Cut over atomically to selected version
+        if: ${{ inputs.operation == 'cutover' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--env ""); if [[ -n "$WRANGLER_ENV" ]]; then args=(--env "$WRANGLER_ENV"); fi
+          echo "CUTOVER_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          npx --no-install wrangler versions deploy "${args[@]}" --name "$WORKER_NAME" "$INPUT_VERSION_ID@100%" --dry-run --yes
+          npx --no-install wrangler versions deploy "${args[@]}" --name "$WORKER_NAME" "$INPUT_VERSION_ID@100%" --yes
+
+      - name: Roll back atomically to selected compatible version
+        if: ${{ inputs.operation == 'rollback' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--env ""); if [[ -n "$WRANGLER_ENV" ]]; then args=(--env "$WRANGLER_ENV"); fi
+          npx --no-install wrangler versions deploy "${args[@]}" --name "$WORKER_NAME" "$INPUT_VERSION_ID@100%" --dry-run --yes
+          npx --no-install wrangler versions deploy "${args[@]}" --name "$WORKER_NAME" "$INPUT_VERSION_ID@100%" --yes
+
+      - name: Capture and verify deployment after operation
+        shell: bash
+        env:
+          SHADOW_VERSION_ID: ${{ steps.shadow.outputs.version_id }}
+          STABLE_VERSION_ID: ${{ steps.shadow.outputs.stable_version_id }}
+        run: |
+          set -euo pipefail
+          args=(--env ""); if [[ -n "$WRANGLER_ENV" ]]; then args=(--env "$WRANGLER_ENV"); fi
+          npx --no-install wrangler deployments status "${args[@]}" --name "$WORKER_NAME" --json > artifacts/deployment-after.json
+          node <<'NODE'
+          const source = JSON.parse(require('node:fs').readFileSync('artifacts/deployment-after.json', 'utf8'));
+          const entries = [];
+          const visit = (value) => {
+            if (Array.isArray(value)) return value.forEach(visit);
+            if (!value || typeof value !== 'object') return;
+            if (typeof value.version_id === 'string' && Number.isFinite(Number(value.percentage))) entries.push({ id: value.version_id, percentage: Number(value.percentage) });
+            Object.values(value).forEach(visit);
+          };
+          visit(source);
+          const operation = '${{ inputs.operation }}';
+          if (operation === 'shadow') {
+            const stable = entries.some((entry) => entry.id === process.env.STABLE_VERSION_ID && entry.percentage === 100);
+            const shadow = entries.some((entry) => entry.id === process.env.SHADOW_VERSION_ID && entry.percentage === 0);
+            if (!stable || !shadow) process.exit(1);
+          }
+          if (operation === 'cutover' || operation === 'rollback') {
+            if (!entries.some((entry) => entry.id === process.env.INPUT_VERSION_ID && entry.percentage === 100)) process.exit(1);
+          }
+          NODE
+
+      - name: Smoke selected Worker version and immutable assets
+        shell: bash
+        env:
+          SHADOW_VERSION_ID: ${{ steps.shadow.outputs.version_id }}
+        run: |
+          set -euo pipefail
+          version_id="$INPUT_VERSION_ID"
+          if [[ '${{ inputs.operation }}' == 'shadow' ]]; then version_id="$SHADOW_VERSION_ID"; fi
+          node scripts/smoke-release.mjs --base-url "$BASE_URL" --worker-name "$WORKER_NAME" --version-id "$version_id" --dist-manifest artifacts/dist-manifest.json | tee artifacts/smoke.log
+
+      - name: Observe cutover for 60 minutes at five-minute intervals
+        if: ${{ inputs.operation == 'cutover' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > artifacts/monitor.log
+          for check in $(seq 1 13); do
+            printf '%s check=%s/13\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$check" | tee -a artifacts/monitor.log
+            node scripts/smoke-release.mjs --base-url "$BASE_URL" --worker-name "$WORKER_NAME" --version-id "$INPUT_VERSION_ID" --dist-manifest artifacts/dist-manifest.json | tee -a artifacts/monitor.log
+            if [[ "$check" -lt 13 ]]; then sleep 300; fi
+          done
+
+      - name: Enforce post-cutover observability gates
+        if: ${{ inputs.operation == 'cutover' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          observation_end=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          node scripts/check-worker-observability.mjs \
+            --account-id "$CLOUDFLARE_ACCOUNT_ID" \
+            --worker-name "$WORKER_NAME" \
+            --version-id "$INPUT_VERSION_ID" \
+            --baseline-version-id "$PREVIOUS_STABLE_VERSION_ID" \
+            --window-start "$CUTOVER_STARTED_AT" \
+            --window-end "$observation_end" \
+            --output artifacts/observability.json
+
+      - name: Restore the previous stable version after a failed cutover gate
+        if: ${{ failure() && inputs.operation == 'cutover' && env.CUTOVER_STARTED_AT != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$PREVIOUS_STABLE_VERSION_ID" =~ ^[A-Za-z0-9_-]+$ ]] || { echo '::error::Previous stable version is unavailable; automatic rollback is unsafe'; exit 1; }
+          args=(--env ""); if [[ -n "$WRANGLER_ENV" ]]; then args=(--env "$WRANGLER_ENV"); fi
+          npx --no-install wrangler versions deploy "${args[@]}" --name "$WORKER_NAME" "$PREVIOUS_STABLE_VERSION_ID@100%" --dry-run --yes
+          npx --no-install wrangler versions deploy "${args[@]}" --name "$WORKER_NAME" "$PREVIOUS_STABLE_VERSION_ID@100%" --yes
+          node <<'NODE'
+          const fs = require('node:fs');
+          fs.writeFileSync('artifacts/automatic-rollback.json', `${JSON.stringify({
+            schemaVersion: 1,
+            restoredVersionId: process.env.PREVIOUS_STABLE_VERSION_ID,
+            failedVersionId: process.env.INPUT_VERSION_ID,
+            completedAt: new Date().toISOString(),
+          }, null, 2)}\n`);
+          NODE
+
+      - name: Record machine-readable release evidence
+        shell: bash
+        env:
+          SHADOW_VERSION_ID: ${{ steps.shadow.outputs.version_id }}
+          STABLE_VERSION_ID: ${{ steps.shadow.outputs.stable_version_id }}
+        run: |
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const operation = '${{ inputs.operation }}';
+          const versionId = operation === 'shadow' ? process.env.SHADOW_VERSION_ID : process.env.INPUT_VERSION_ID;
+          const observability = operation === 'cutover'
+            ? JSON.parse(fs.readFileSync('artifacts/observability.json', 'utf8'))
+            : null;
+          const evidence = {
+            schemaVersion: 2,
+            target: '${{ inputs.target }}',
+            operation,
+            commit: process.env.GITHUB_SHA,
+            workerName: process.env.WORKER_NAME,
+            baseUrl: new URL(process.env.BASE_URL).origin,
+            versionId,
+            projectRefHash: crypto.createHash('sha256').update(process.env.EXPECTED_SUPABASE_PROJECT_REF).digest('hex'),
+            v2Compatible: operation === 'cutover' && /^[0-9]+$/.test(String(process.env.EXPAND_EVIDENCE_RUN_ID || '')),
+            expandEvidenceRunId: operation === 'rollback' ? null : process.env.EXPAND_EVIDENCE_RUN_ID,
+            expandProjectRefHash: operation === 'rollback' ? null : process.env.EXPAND_PROJECT_REF_HASH,
+            expandAppliedAt: operation === 'rollback' ? null : process.env.EXPAND_APPLIED_AT,
+            previousStableVersionId: process.env.PREVIOUS_STABLE_VERSION_ID || process.env.STABLE_VERSION_ID || null,
+            rollbackMode: operation === 'rollback' ? process.env.ROLLBACK_MODE : null,
+            rollbackEvidenceRunId: operation === 'rollback' ? process.env.ROLLBACK_SOURCE_EVIDENCE_RUN_ID : null,
+            rollbackSourceVersionId: operation === 'rollback' ? process.env.ROLLBACK_SOURCE_VERSION_ID : null,
+            lockdownEvidenceRunId: operation === 'rollback' && process.env.ROLLBACK_MODE === 'post-lockdown' ? process.env.LOCKDOWN_EVIDENCE_RUN_ID : null,
+            completedAt: new Date().toISOString(),
+            smokePassed: true,
+            monitorChecks: operation === 'cutover' ? 13 : 0,
+            monitorMinutes: observability?.window?.minutes || 0,
+            observabilityPassed: observability?.passed ?? null,
+            observabilityMetrics: observability?.metrics || null,
+            observabilityWindow: observability?.window || null,
+            baselineWindow: observability?.baselineWindow || null,
+          };
+          fs.writeFileSync('artifacts/release-evidence.json', `${JSON.stringify(evidence, null, 2)}\n`);
+          NODE
+
+      - name: Upload release evidence
+        uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: release-evidence-${{ inputs.target }}-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: error

@@ -1,12 +1,17 @@
+import { createHash } from 'node:crypto';
 import { buildApiErrorResult, buildJsonResult } from '../modules/http-response.js';
-import { getChatAuthConfig, getChatRuntimeLimits, getDailyChatLimit, getGeminiThinkingLevel } from '../modules/runtime-config.js';
-import { resolveAuthenticatedUser } from '../modules/auth-guard.js';
+import { getChatRuntimeLimits, getDailyChatLimit, getGeminiThinkingLevel } from '../modules/runtime-config.js';
+import { hasAuthorizationHeader, resolveAuthenticatedUser } from '../modules/auth-guard.js';
 import { executeGeminiChatRequest } from '../modules/gemini-orchestrator.js';
 import { GEMINI_CHAT_MODEL_NAME } from '../modules/gemini-model.js';
 import { normalizeAssistantPayload } from '../modules/response-normalizer.js';
-import { logServerWarn } from '../modules/server-logger.js';
 import * as memoryStore from './content-store.js';
 import * as persistentStore from './supabase-platform-repository.js';
+import {
+  validateContentAssetReferences,
+  validateContentPayload,
+  validateUploadVariants,
+} from './input-contracts.js';
 
 // 플랫폼 라우터는 public read, authenticated write, owner ops를 하나의 계약으로 묶는다.
 const PLATFORM_ALLOWED_METHODS = 'GET, POST, PATCH, DELETE, OPTIONS';
@@ -55,108 +60,180 @@ const parseQuery = (queryStringParameters = {}) => ({
   tag: String(queryStringParameters.tag || '').trim(),
 });
 
-const resolveOptionalUser = async ({ event, traceId, requireAuth = false }) => {
-  const { requireAuth: defaultRequireAuth } = getChatAuthConfig();
-  if (!requireAuth && !defaultRequireAuth) {
-    return { ok: true, userId: 'demo-user' };
+const resolveOptionalUser = async ({ event, traceId, requireAuth = false, allowLocalDemo = false }) => {
+  if (!requireAuth && !hasAuthorizationHeader(event?.headers)) {
+    const canUseLocalDemo = allowLocalDemo
+      && !persistentStore.isPersistentPlatformAvailable()
+      && !persistentStore.isPersistentPlatformRequired();
+    return { ok: true, userId: canUseLocalDemo ? 'demo-user' : '' };
   }
-  const authResult = await resolveAuthenticatedUser({ event, requestTraceId: traceId, forceAuth: requireAuth });
-  return authResult.ok ? authResult : authResult;
+  return resolveAuthenticatedUser({ event, requestTraceId: traceId, forceAuth: true });
 };
 
-const normalizeCharacterPayload = (payload) => ({
-  name: String(payload.name || '').trim(),
-  headline: String(payload.headline || '').trim(),
-  summary: String(payload.summary || '').trim(),
-  tags: Array.isArray(payload.tags) ? payload.tags.map((item) => String(item).trim()).filter(Boolean) : [],
-  visibility: String(payload.visibility || 'private').trim(),
-  sourceType: String(payload.sourceType || 'original').trim(),
-  coverImageUrl: String(payload.coverImageUrl || '').trim(),
-  avatarImageUrl: String(payload.avatarImageUrl || '').trim(),
-  creatorName: String(payload.creatorName || '').trim(),
-  sourceUrl: String(payload.sourceUrl || '').trim(),
-  rightsConfirmed: payload.rightsConfirmed === true,
-});
-
-const normalizeWorldPayload = (payload) => ({
-  name: String(payload.name || '').trim(),
-  headline: String(payload.headline || '').trim(),
-  summary: String(payload.summary || '').trim(),
-  tags: Array.isArray(payload.tags) ? payload.tags.map((item) => String(item).trim()).filter(Boolean) : [],
-  visibility: String(payload.visibility || 'private').trim(),
-  sourceType: String(payload.sourceType || 'original').trim(),
-  coverImageUrl: String(payload.coverImageUrl || '').trim(),
-  worldRulesMarkdown: String(payload.worldRulesMarkdown || '').trim(),
-  creatorName: String(payload.creatorName || '').trim(),
-  sourceUrl: String(payload.sourceUrl || '').trim(),
-  rightsConfirmed: payload.rightsConfirmed === true,
-});
-
-const getPublishAttestationError = (payload) => {
-  if (String(payload?.visibility || 'private') !== 'public') return null;
-  if (payload?.rightsConfirmed !== true) return { error: '공개하려면 콘텐츠 권리 보유를 확인해야 합니다.', errorCode: 'RIGHTS_ATTESTATION_REQUIRED' };
-  return null;
-};
 const REPORT_REASONS = new Set(['sexual_content', 'minor_safety', 'hate_or_harassment', 'copyright', 'spam', 'other']);
 
-// 룸 채팅은 room 존재 확인, auth, 모델 호출, 메시지 정규화를 한 트랜잭션 흐름처럼 다룬다.
-const handleRoomChat = async ({ event, headers, startedAtMs, traceId, roomId }) => {
-  const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable() });
-  if (!authResult.ok) {
-    return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
-  }
+const buildRequestFingerprint = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
-  const room = await getPlatformStore().getRoom({ event, roomId });
-  if (!room) {
-    return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Room not found.', errorCode: 'ROOM_NOT_FOUND' });
+const mutationUnavailableError = ({ headers, startedAtMs, traceId }) => jsonError({
+  statusCode: 503,
+  headers,
+  startedAtMs,
+  traceId,
+  error: '요청한 기능을 지금 사용할 수 없습니다. 잠시 후 다시 시도해주세요.',
+  errorCode: 'FEATURE_TEMPORARILY_UNAVAILABLE',
+  retryable: true,
+});
+
+const ensurePersistentMutationAvailable = ({ headers, startedAtMs, traceId }) => (
+  (persistentStore.isPersistentPlatformAvailable() || persistentStore.isPersistentPlatformRequired())
+    && !persistentStore.isPersistentMutationAvailable()
+    ? mutationUnavailableError({ headers, startedAtMs, traceId })
+    : null
+);
+
+const toContentValidationError = ({ validation, headers, startedAtMs, traceId }) => jsonError({
+  statusCode: 400,
+  headers,
+  startedAtMs,
+  traceId,
+  error: validation.error,
+  errorCode: validation.errorCode,
+  details: validation.details,
+});
+
+const validateContentRequest = async ({ event, userId, entityType, body, mode, slug }) => {
+  const store = getPlatformStore();
+  const existing = mode === 'patch'
+    ? await (entityType === 'character'
+      ? store.getCharacterDetail({ event, slug, userId })
+      : store.getWorldDetail({ event, slug, userId }))
+    : null;
+  if (mode === 'patch' && (!existing || String(existing.creator?.id || '') !== String(userId || ''))) {
+    return { ok: false, notFound: true };
   }
+  const normalized = validateContentPayload({ entityType, payload: body, mode, existing });
+  if (!normalized.ok) return normalized;
+  const config = persistentStore.getPlatformPersistenceConfig();
+  const references = validateContentAssetReferences({
+    payload: normalized.value,
+    existingPayload: existing,
+    userId,
+    entityType,
+    supabaseUrl: config.supabaseUrl,
+    bucket: config.storageBucket,
+    enforceCanonical: persistentStore.isPersistentPlatformAvailable(),
+  });
+  if (!references.ok) return references;
+  return { ok: true, value: normalized.value, existing };
+};
+
+export const mapStoreError = ({ error, headers, startedAtMs, traceId }) => {
+  const code = String(error?.code || error?.message || '');
+  if (code.includes('ACCOUNT_DELETE_IN_PROGRESS')) {
+    return jsonError({
+      statusCode: 409,
+      headers,
+      startedAtMs,
+      traceId,
+      error: '계정 삭제가 진행 중이어서 새 업로드를 시작하지 않았습니다.',
+      errorCode: 'ACCOUNT_DELETE_IN_PROGRESS',
+    });
+  }
+  if (code.includes('ASSET_UPLOAD_STATE_UNKNOWN')) {
+    return jsonError({
+      statusCode: 503,
+      headers,
+      startedAtMs,
+      traceId,
+      error: '업로드 가능 상태를 확인하지 못했습니다. 현재 데이터는 유지되며 잠시 후 다시 시도해주세요.',
+      errorCode: 'ASSET_UPLOAD_STATE_UNKNOWN',
+      retryable: true,
+    });
+  }
+  if (code.includes('CONTENT_DELETE_STATE_UNKNOWN')) {
+    return jsonError({
+      statusCode: 503,
+      headers,
+      startedAtMs,
+      traceId,
+      error: '삭제 결과를 확인하지 못했습니다. 목록을 다시 불러와 현재 상태를 확인해주세요.',
+      errorCode: 'CONTENT_DELETE_STATE_UNKNOWN',
+      retryable: true,
+    });
+  }
+  if (code.includes('ROOM_TARGET_NOT_STARTABLE')) {
+    return jsonError({ statusCode: 409, headers, startedAtMs, traceId, error: '선택한 콘텐츠로는 대화를 시작할 수 없습니다.', errorCode: 'ROOM_TARGET_NOT_STARTABLE' });
+  }
+  if (code.includes('ROOM_TARGET_NOT_FOUND')) {
+    return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: '선택한 콘텐츠를 찾을 수 없습니다.', errorCode: 'ROOM_TARGET_NOT_FOUND' });
+  }
+  if (code.includes('CHAT_REQUEST_CONFLICT') || code.includes('CLIENT_REQUEST_ID_CONFLICT')) {
+    return jsonError({ statusCode: 409, headers, startedAtMs, traceId, error: '같은 요청 ID에 다른 메시지가 사용되었습니다.', errorCode: 'CLIENT_REQUEST_ID_CONFLICT' });
+  }
+  if (code.includes('CHAT_ROOM_VERSION_CONFLICT') || code.includes('CHAT_RESERVATION_EXPIRED')) {
+    return jsonError({ statusCode: 409, headers, startedAtMs, traceId, error: '대화 상태가 변경되었습니다. 최신 상태에서 다시 시도해주세요.', errorCode: 'CHAT_STATE_CONFLICT', retryable: true });
+  }
+  return null;
+};
+
+// 외부 모델 호출은 DB 트랜잭션 밖에서 실행하되, quota lease와 room commit은 서버 전용 RPC로 묶는다.
+export const handleRoomChat = async ({ event, headers, startedAtMs, traceId, roomId, storeOverride = null }) => {
+  const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
+  if (!authResult.ok) {
+    return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || '로그인이 필요합니다.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
+  }
+  const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId });
+  if (unavailable) return unavailable;
+
+  const store = storeOverride || getPlatformStore();
+  const room = await store.getRoom({ event, roomId, userId: authResult.userId });
+  if (!room) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: '대화방을 찾을 수 없습니다.', errorCode: 'ROOM_NOT_FOUND' });
 
   const body = parseJsonBody(event.body);
-  if (!body) {
-    return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: 'Invalid request body.', errorCode: 'INVALID_REQUEST_BODY' });
-  }
-
+  if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: '요청 본문을 확인해주세요.', errorCode: 'INVALID_REQUEST_BODY' });
   const userMessage = String(body.userMessage || '').trim();
-  if (!userMessage) {
-    return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: 'userMessage is required.', errorCode: 'INVALID_USER_MESSAGE' });
+  if (!userMessage || userMessage.length > 12000) {
+    return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: '메시지는 1자 이상 12,000자 이하로 입력해주세요.', errorCode: 'INVALID_USER_MESSAGE' });
   }
-
   const clientRequestId = String(body.clientRequestId || '').trim();
   if (clientRequestId && !/^[A-Za-z0-9_-]{8,128}$/.test(clientRequestId)) {
-    return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: 'clientRequestId must use 8-128 URL-safe characters.', errorCode: 'INVALID_CLIENT_REQUEST_ID' });
+    return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: '요청 ID 형식을 확인해주세요.', errorCode: 'INVALID_CLIENT_REQUEST_ID' });
   }
-
   const apiKey = process.env.GOOGLE_API_KEY;
-  if (!apiKey) {
-    return jsonError({ statusCode: 500, headers, startedAtMs, traceId, error: 'API key not configured. Please set GOOGLE_API_KEY in runtime secrets.', errorCode: 'SERVER_API_KEY_NOT_CONFIGURED' });
-  }
+  if (!apiKey) return mutationUnavailableError({ headers, startedAtMs, traceId });
 
-  const promptContext = await getPlatformStore().getRoomPromptContext({ event, roomId });
-  if (!promptContext) {
-    return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Room not found.', errorCode: 'ROOM_NOT_FOUND' });
-  }
-
-  const roomHistory = await getPlatformStore().getRoomHistoryForModel({ event, roomId });
   const chatRuntimeLimits = getChatRuntimeLimits();
   const dailyLimit = getDailyChatLimit();
-  const quotaRequestId = `${authResult.userId}:${roomId}:${clientRequestId || traceId}`;
-  const quota = await getPlatformStore().reserveChatQuota({ event, userId: authResult.userId, requestId: quotaRequestId, limit: dailyLimit });
-  if (quota?.duplicate) {
-    if (quota.response?.message) {
-      const currentRoom = await getPlatformStore().getRoom({ event, roomId });
-      return jsonOk({
-        headers,
-        startedAtMs,
-        body: {
-          room: currentRoom || room,
-          message: quota.response.message,
-          trace_id: quota.response.trace_id || traceId,
-          quota: { limit: quota.limit, remaining: quota.remaining, resetAt: quota.resetAt },
-          thinking_level: getGeminiThinkingLevel(),
-          history_window: chatRuntimeLimits.maxHistoryMessages,
-        },
-      });
-    }
+  const quotaRequestId = `room:${roomId}:${clientRequestId || traceId}`;
+  const requestFingerprint = buildRequestFingerprint({ route: 'room', roomId, character: room.character.slug, userMessage });
+  const quota = await store.reserveChatQuota({
+    event,
+    userId: authResult.userId,
+    route: 'room',
+    roomId,
+    requestId: quotaRequestId,
+    requestFingerprint,
+    limit: dailyLimit,
+  });
+  if (quota?.disposition === 'conflict') {
+    return jsonError({ statusCode: 409, headers, startedAtMs, traceId, error: '같은 요청 ID에 다른 메시지가 사용되었습니다.', errorCode: 'CLIENT_REQUEST_ID_CONFLICT' });
+  }
+  if (quota?.disposition === 'replay' && quota.response?.message) {
+    const currentRoom = await store.getRoom({ event, roomId, userId: authResult.userId });
+    return jsonOk({
+      headers,
+      startedAtMs,
+      body: {
+        room: currentRoom || room,
+        message: quota.response.message,
+        trace_id: quota.response.trace_id || traceId,
+        quota: { limit: quota.limit, remaining: quota.remaining, resetAt: quota.resetAt },
+        thinking_level: getGeminiThinkingLevel(),
+        history_window: chatRuntimeLimits.maxHistoryMessages,
+      },
+    });
+  }
+  if (quota?.disposition === 'in_progress' || quota?.duplicate) {
     return jsonError({
       statusCode: 409,
       headers,
@@ -168,7 +245,7 @@ const handleRoomChat = async ({ event, headers, startedAtMs, traceId, roomId }) 
       details: { quota: { limit: quota.limit, remaining: quota.remaining, resetAt: quota.resetAt } },
     });
   }
-  if (!quota?.allowed) {
+  if (!quota?.allowed || quota?.disposition === 'limit_exceeded') {
     return jsonError({
       statusCode: 429,
       headers,
@@ -179,9 +256,24 @@ const handleRoomChat = async ({ event, headers, startedAtMs, traceId, roomId }) 
       details: { quota: { limit: quota?.limit || dailyLimit, remaining: 0, resetAt: quota?.resetAt } },
     });
   }
-  let result;
+
+  const refund = async () => store.refundChatQuota({
+    event,
+    userId: authResult.userId,
+    requestId: quotaRequestId,
+    requestFingerprint,
+    limit: dailyLimit,
+  });
+  const refundBestEffort = async () => refund().catch(() => null);
   try {
-    result = await executeGeminiChatRequest({
+    const promptContext = await store.getRoomPromptContext({ event, roomId, userId: authResult.userId });
+    const roomHistory = await store.getRoomHistoryForModel({ event, roomId, userId: authResult.userId });
+    if (!promptContext) {
+      await refundBestEffort();
+      return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: '대화방을 찾을 수 없습니다.', errorCode: 'ROOM_NOT_FOUND' });
+    }
+
+    const result = await executeGeminiChatRequest({
       apiKey,
       modelName: GEMINI_CHAT_MODEL_NAME,
       requestStartedAt: startedAtMs,
@@ -193,48 +285,55 @@ const handleRoomChat = async ({ event, headers, startedAtMs, traceId, roomId }) 
       trimmedSystemPrompt: promptContext.promptSnapshot,
       promptCacheAdapter: null,
     });
+    if (!result.ok) {
+      await refundBestEffort();
+      return jsonError({ statusCode: result.error?.status === 429 ? 429 : 503, headers, startedAtMs, traceId, error: '응답을 생성하지 못했습니다. 잠시 후 다시 시도해주세요.', errorCode: result.error?.status === 429 ? 'RESPONSE_RATE_LIMITED' : 'RESPONSE_SERVICE_UNAVAILABLE', retryable: true });
+    }
+
+    const message = normalizeAssistantPayload(result.modelText, {
+      traceId,
+      roomId,
+      modelName: GEMINI_CHAT_MODEL_NAME,
+      promptSnapshotLength: String(promptContext.promptSnapshot || '').length,
+      historyMessageCount: roomHistory.length,
+      outputLimit: chatRuntimeLimits.primaryMaxOutputTokens,
+    });
+    let nextRoom;
+    if (typeof store.commitRoomTurn === 'function') {
+      nextRoom = await store.commitRoomTurn({
+        event,
+        userId: authResult.userId,
+        roomId,
+        requestId: quotaRequestId,
+        requestFingerprint,
+        expectedVersion: quota.roomVersion ?? room.version ?? 0,
+        userMessage,
+        assistantMessage: message,
+        response: { message, trace_id: traceId },
+      });
+    } else {
+      nextRoom = await store.appendRoomMessages({ event, userId: authResult.userId, roomId, userMessage, assistantMessage: message });
+      await store.completeChatQuota?.({ event, userId: authResult.userId, requestId: quotaRequestId, requestFingerprint, response: { message, trace_id: traceId } });
+    }
+
+    return jsonOk({
+      headers,
+      startedAtMs,
+      body: {
+        room: nextRoom,
+        message,
+        trace_id: traceId,
+        quota: { limit: quota.limit, remaining: quota.remaining, resetAt: quota.resetAt },
+        thinking_level: getGeminiThinkingLevel(),
+        history_window: chatRuntimeLimits.maxHistoryMessages,
+      },
+    });
   } catch (error) {
-    await getPlatformStore().refundChatQuota({ event, userId: authResult.userId, requestId: quotaRequestId, limit: dailyLimit });
+    await refundBestEffort();
+    const mapped = mapStoreError({ error, headers, startedAtMs, traceId });
+    if (mapped) return mapped;
     throw error;
   }
-
-  if (!result.ok) {
-    await getPlatformStore().refundChatQuota({ event, userId: authResult.userId, requestId: quotaRequestId, limit: dailyLimit });
-    return jsonError({ statusCode: result.error?.status || 500, headers, startedAtMs, traceId, error: result.error?.message || 'Room chat failed.', errorCode: result.error?.code || 'ROOM_CHAT_FAILED', retryable: Boolean(result.retryable) });
-  }
-
-  const message = normalizeAssistantPayload(result.modelText, {
-    traceId,
-    roomId,
-    modelName: GEMINI_CHAT_MODEL_NAME,
-    promptSnapshotLength: String(promptContext.promptSnapshot || '').length,
-    historyMessageCount: roomHistory.length,
-    outputLimit: chatRuntimeLimits.primaryMaxOutputTokens,
-  });
-  const nextRoom = await getPlatformStore().appendRoomMessages({ event, roomId, userMessage, assistantMessage: message });
-
-  try {
-    await getPlatformStore().completeChatQuota?.({ event, userId: authResult.userId, requestId: quotaRequestId, response: { message, trace_id: traceId } });
-  } catch (error) {
-    logServerWarn('[V-MATE] Chat response completed but idempotency snapshot could not be stored', {
-      roomId,
-      traceId,
-      message: error?.message || String(error),
-    });
-  }
-
-  return jsonOk({
-    headers,
-    startedAtMs,
-    body: {
-      room: nextRoom,
-      message,
-      trace_id: traceId,
-      quota: { limit: quota.limit, remaining: quota.remaining, resetAt: quota.resetAt },
-      thinking_level: getGeminiThinkingLevel(),
-      history_window: chatRuntimeLimits.maxHistoryMessages,
-    },
-  });
 };
 
 export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }) => {
@@ -248,6 +347,12 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
 
   if (segments[0] !== 'api') {
     return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Not found.', errorCode: 'NOT_FOUND' });
+  }
+
+  // Production-like runtimes must never downgrade writes to the process-local demo store.
+  if (!['GET', 'OPTIONS', 'HEAD'].includes(method)) {
+    const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId });
+    if (unavailable) return unavailable;
   }
 
   // 공개 탐색 라우트
@@ -267,25 +372,29 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
   }
 
   if (method === 'GET' && segments[1] === 'characters' && segments[2]) {
-    const item = await getPlatformStore().getCharacterDetail(segments[2]);
+    const authResult = await resolveOptionalUser({ event, traceId });
+    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || '로그인 정보를 확인해주세요.', errorCode: authResult.errorCode || 'AUTH_UNAUTHORIZED', retryable: Boolean(authResult.retryable) });
+    const item = await getPlatformStore().getCharacterDetail({ event, slug: segments[2], userId: authResult.userId });
     if (!item) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Character not found.', errorCode: 'CHARACTER_NOT_FOUND' });
     return jsonOk({ headers, startedAtMs, body: { item } });
   }
 
   if (method === 'GET' && segments[1] === 'worlds' && segments[2]) {
-    const item = await getPlatformStore().getWorldDetail(segments[2]);
+    const authResult = await resolveOptionalUser({ event, traceId });
+    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || '로그인 정보를 확인해주세요.', errorCode: authResult.errorCode || 'AUTH_UNAUTHORIZED', retryable: Boolean(authResult.retryable) });
+    const item = await getPlatformStore().getWorldDetail({ event, slug: segments[2], userId: authResult.userId });
     if (!item) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'World not found.', errorCode: 'WORLD_NOT_FOUND' });
     return jsonOk({ headers, startedAtMs, body: { item } });
   }
 
   if (method === 'GET' && segments[1] === 'recent-rooms') {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable() });
+    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
     if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
     return jsonOk({ headers, startedAtMs, body: { items: await getPlatformStore().listRecentRooms({ event, userId: authResult.userId }) } });
   }
 
   if (method === 'GET' && segments[1] === 'library') {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable() });
+    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
     if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
     return jsonOk({ headers, startedAtMs, body: await getPlatformStore().getLibraryPayload({ event, userId: authResult.userId }) });
   }
@@ -313,24 +422,63 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
 
   // 로그인 사용자 데이터 라우트
   if (method === 'DELETE' && segments[1] === 'account' && !segments[2]) {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable() });
+    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
     if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
-    const result = await getPlatformStore().deleteAccount({ event, userId: authResult.userId });
+    let result;
+    try {
+      result = await getPlatformStore().deleteAccount({ event, userId: authResult.userId });
+    } catch (error) {
+      if (error?.code === 'ACCOUNT_DELETE_STORAGE_STATE_UNKNOWN') {
+        return jsonError({
+          statusCode: 503,
+          headers,
+          startedAtMs,
+          traceId,
+          error: '업로드 정리 상태를 확인하지 못했습니다. 계정은 유지되며, 다시 시도하면 남은 삭제를 이어갑니다.',
+          errorCode: 'ACCOUNT_DELETE_STORAGE_STATE_UNKNOWN',
+          retryable: true,
+        });
+      }
+      if (error?.code === 'ACCOUNT_DELETE_PARTIAL_STORAGE_REMOVED') {
+        return jsonError({
+          statusCode: 503,
+          headers,
+          startedAtMs,
+          traceId,
+          error: '업로드는 정리되었지만 계정 삭제를 완료하지 못했습니다. 다시 시도해주세요.',
+          errorCode: 'ACCOUNT_DELETE_PARTIAL_STORAGE_REMOVED',
+          retryable: true,
+        });
+      }
+      if (error?.code === 'ACCOUNT_DELETE_STATE_UNKNOWN') {
+        return jsonError({
+          statusCode: 503,
+          headers,
+          startedAtMs,
+          traceId,
+          error: '계정 삭제 상태를 확인하지 못했습니다. 다시 로그인해 상태를 확인한 뒤 재시도해주세요.',
+          errorCode: 'ACCOUNT_DELETE_STATE_UNKNOWN',
+          retryable: true,
+        });
+      }
+      throw error;
+    }
     if (result?.reason === 'admin_not_configured') {
       return jsonError({
         statusCode: 503,
         headers,
         startedAtMs,
         traceId,
-        error: 'Account deletion is not configured. SUPABASE_SERVICE_ROLE_KEY is required on the Worker.',
+        error: '계정 삭제 기능을 지금 사용할 수 없습니다. 잠시 후 다시 시도해주세요.',
         errorCode: 'ACCOUNT_DELETE_NOT_CONFIGURED',
+        retryable: true,
       });
     }
     return jsonOk({ headers, startedAtMs, body: { ok: true, deleted: true, data: result } });
   }
 
   if (method === 'POST' && segments[1] === 'recent-views') {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable() });
+    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
     if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
     const body = parseJsonBody(event.body);
     if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: 'Invalid request body.', errorCode: 'INVALID_REQUEST_BODY' });
@@ -339,7 +487,7 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
   }
 
   if (method === 'POST' && segments[1] === 'bookmarks') {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable() });
+    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
     if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
     const body = parseJsonBody(event.body);
     if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: 'Invalid request body.', errorCode: 'INVALID_REQUEST_BODY' });
@@ -349,7 +497,7 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
   }
 
   if (method === 'DELETE' && segments[1] === 'bookmarks' && segments[2]) {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable() });
+    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
     if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
     await getPlatformStore().removeBookmark({ event, userId: authResult.userId, bookmarkId: segments[2] });
     return jsonOk({ headers, startedAtMs, body: { ok: true } });
@@ -357,23 +505,28 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
 
   // 제작 및 편집 라우트
   if (method === 'POST' && segments[1] === 'characters') {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable() });
+    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
     if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
+    const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId });
+    if (unavailable) return unavailable;
     const body = parseJsonBody(event.body);
-    if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: 'Invalid request body.', errorCode: 'INVALID_REQUEST_BODY' });
-    const attestationError = getPublishAttestationError(body);
-    if (attestationError) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, ...attestationError });
-    return jsonOk({ statusCode: 201, headers, startedAtMs, body: { item: await getPlatformStore().createCharacter({ event, userId: authResult.userId, payload: { ...normalizeCharacterPayload(body), assets: body.assets, profileJson: body.profileJson, speechStyleJson: body.speechStyleJson, promptProfileJson: body.promptProfileJson } }) } });
+    if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: '요청 본문을 확인해주세요.', errorCode: 'INVALID_REQUEST_BODY' });
+    const validation = await validateContentRequest({ event, userId: authResult.userId, entityType: 'character', body, mode: 'create' });
+    if (!validation.ok) return toContentValidationError({ validation, headers, startedAtMs, traceId });
+    return jsonOk({ statusCode: 201, headers, startedAtMs, body: { item: await getPlatformStore().createCharacter({ event, userId: authResult.userId, payload: validation.value }) } });
   }
 
   if (method === 'PATCH' && segments[1] === 'characters' && segments[2]) {
     const authResult = await resolveOptionalUser({ event, traceId, requireAuth: true });
     if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
+    const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId });
+    if (unavailable) return unavailable;
     const body = parseJsonBody(event.body);
-    if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: 'Invalid request body.', errorCode: 'INVALID_REQUEST_BODY' });
-    const attestationError = getPublishAttestationError(body);
-    if (attestationError) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, ...attestationError });
-    const item = await getPlatformStore().updateCharacter?.({ event, userId: authResult.userId, slug: segments[2], payload: { ...normalizeCharacterPayload(body), assets: body.assets, profileJson: body.profileJson, speechStyleJson: body.speechStyleJson, promptProfileJson: body.promptProfileJson } });
+    if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: '요청 본문을 확인해주세요.', errorCode: 'INVALID_REQUEST_BODY' });
+    const validation = await validateContentRequest({ event, userId: authResult.userId, entityType: 'character', body, mode: 'patch', slug: segments[2] });
+    if (validation.notFound) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Character not found.', errorCode: 'CHARACTER_NOT_FOUND' });
+    if (!validation.ok) return toContentValidationError({ validation, headers, startedAtMs, traceId });
+    const item = await getPlatformStore().updateCharacter?.({ event, userId: authResult.userId, slug: segments[2], payload: validation.value });
     if (!item) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Character not found.', errorCode: 'CHARACTER_NOT_FOUND' });
     return jsonOk({ headers, startedAtMs, body: { item } });
   }
@@ -381,30 +534,44 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
   if (method === 'DELETE' && segments[1] === 'characters' && segments[2]) {
     const authResult = await resolveOptionalUser({ event, traceId, requireAuth: true });
     if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
-    const ok = await (getPlatformStore().deleteOwnedContent?.({ event, userId: authResult.userId, entityType: 'character', id: segments[2] })
-      ?? getPlatformStore().deleteContent({ event, entityType: 'character', id: segments[2] }));
+    const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId });
+    if (unavailable) return unavailable;
+    let ok;
+    try {
+      ok = await (getPlatformStore().deleteOwnedContent?.({ event, userId: authResult.userId, entityType: 'character', id: segments[2] })
+        ?? getPlatformStore().deleteContent({ event, entityType: 'character', id: segments[2] }));
+    } catch (error) {
+      const mapped = mapStoreError({ error, headers, startedAtMs, traceId });
+      if (mapped) return mapped;
+      throw error;
+    }
     if (!ok) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Character not found.', errorCode: 'CHARACTER_NOT_FOUND' });
     return jsonOk({ headers, startedAtMs, body: { ok: true } });
   }
 
   if (method === 'POST' && segments[1] === 'worlds') {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable() });
+    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
     if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
+    const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId });
+    if (unavailable) return unavailable;
     const body = parseJsonBody(event.body);
-    if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: 'Invalid request body.', errorCode: 'INVALID_REQUEST_BODY' });
-    const attestationError = getPublishAttestationError(body);
-    if (attestationError) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, ...attestationError });
-    return jsonOk({ statusCode: 201, headers, startedAtMs, body: { item: await getPlatformStore().createWorld({ event, userId: authResult.userId, payload: { ...normalizeWorldPayload(body), assets: body.assets, promptProfileJson: body.promptProfileJson } }) } });
+    if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: '요청 본문을 확인해주세요.', errorCode: 'INVALID_REQUEST_BODY' });
+    const validation = await validateContentRequest({ event, userId: authResult.userId, entityType: 'world', body, mode: 'create' });
+    if (!validation.ok) return toContentValidationError({ validation, headers, startedAtMs, traceId });
+    return jsonOk({ statusCode: 201, headers, startedAtMs, body: { item: await getPlatformStore().createWorld({ event, userId: authResult.userId, payload: validation.value }) } });
   }
 
   if (method === 'PATCH' && segments[1] === 'worlds' && segments[2]) {
     const authResult = await resolveOptionalUser({ event, traceId, requireAuth: true });
     if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
+    const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId });
+    if (unavailable) return unavailable;
     const body = parseJsonBody(event.body);
-    if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: 'Invalid request body.', errorCode: 'INVALID_REQUEST_BODY' });
-    const attestationError = getPublishAttestationError(body);
-    if (attestationError) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, ...attestationError });
-    const item = await getPlatformStore().updateWorld?.({ event, userId: authResult.userId, slug: segments[2], payload: { ...normalizeWorldPayload(body), assets: body.assets, promptProfileJson: body.promptProfileJson } });
+    if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: '요청 본문을 확인해주세요.', errorCode: 'INVALID_REQUEST_BODY' });
+    const validation = await validateContentRequest({ event, userId: authResult.userId, entityType: 'world', body, mode: 'patch', slug: segments[2] });
+    if (validation.notFound) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'World not found.', errorCode: 'WORLD_NOT_FOUND' });
+    if (!validation.ok) return toContentValidationError({ validation, headers, startedAtMs, traceId });
+    const item = await getPlatformStore().updateWorld?.({ event, userId: authResult.userId, slug: segments[2], payload: validation.value });
     if (!item) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'World not found.', errorCode: 'WORLD_NOT_FOUND' });
     return jsonOk({ headers, startedAtMs, body: { item } });
   }
@@ -412,43 +579,71 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
   if (method === 'DELETE' && segments[1] === 'worlds' && segments[2]) {
     const authResult = await resolveOptionalUser({ event, traceId, requireAuth: true });
     if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
-    const ok = await (getPlatformStore().deleteOwnedContent?.({ event, userId: authResult.userId, entityType: 'world', id: segments[2] })
-      ?? getPlatformStore().deleteContent({ event, entityType: 'world', id: segments[2] }));
+    const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId });
+    if (unavailable) return unavailable;
+    let ok;
+    try {
+      ok = await (getPlatformStore().deleteOwnedContent?.({ event, userId: authResult.userId, entityType: 'world', id: segments[2] })
+        ?? getPlatformStore().deleteContent({ event, entityType: 'world', id: segments[2] }));
+    } catch (error) {
+      const mapped = mapStoreError({ error, headers, startedAtMs, traceId });
+      if (mapped) return mapped;
+      throw error;
+    }
     if (!ok) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'World not found.', errorCode: 'WORLD_NOT_FOUND' });
     return jsonOk({ headers, startedAtMs, body: { ok: true } });
   }
 
   if (method === 'POST' && segments[1] === 'uploads' && segments[2] === 'prepare') {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable() });
+    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
     if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
+    const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId });
+    if (unavailable) return unavailable;
     const body = parseJsonBody(event.body);
-    if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: 'Invalid request body.', errorCode: 'INVALID_REQUEST_BODY' });
-    const variants = Array.isArray(body.variants) ? body.variants.map((item) => ({ kind: String(item.kind || ''), width: Number(item.width || 0), height: Number(item.height || 0) })).filter((item) => item.kind && item.width > 0 && item.height > 0) : [];
-    if (!variants.length) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: 'variants is required.', errorCode: 'INVALID_REQUEST_BODY' });
-    const prepared = await getPlatformStore().prepareAssetUploads({ event, userId: authResult.userId, entityType: String(body.entityType || 'character'), variants });
+    if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: '요청 본문을 확인해주세요.', errorCode: 'INVALID_REQUEST_BODY' });
+    const entityType = String(body.entityType || '');
+    const variantsValidation = validateUploadVariants({ entityType, variants: body.variants });
+    if (!variantsValidation.ok) return toContentValidationError({ validation: variantsValidation, headers, startedAtMs, traceId });
+    let prepared;
+    try {
+      prepared = await getPlatformStore().prepareAssetUploads({ event, userId: authResult.userId, entityType, variants: variantsValidation.value });
+    } catch (error) {
+      const mapped = mapStoreError({ error, headers, startedAtMs, traceId });
+      if (mapped) return mapped;
+      throw error;
+    }
     return jsonOk({ headers, startedAtMs, body: prepared });
   }
 
   if (method === 'POST' && segments[1] === 'rooms' && segments.length === 2) {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable() });
+    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
     if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
+    const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId });
+    if (unavailable) return unavailable;
     const body = parseJsonBody(event.body);
     if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: 'Invalid request body.', errorCode: 'INVALID_REQUEST_BODY' });
-    const room = await getPlatformStore().createRoom({
-      event,
-      userId: authResult.userId,
-      characterSlug: body.characterSlug || body.characterId,
-      worldSlug: body.worldSlug || body.worldId || null,
-      userAlias: String(body.userAlias || '').trim() || '나',
-    });
+    const characterSlug = String(body.characterSlug || body.characterId || '').trim();
+    const worldSlug = String(body.worldSlug || body.worldId || '').trim() || null;
+    const userAlias = String(body.userAlias || '').trim() || '나';
+    if (!characterSlug || characterSlug.length > 120 || (worldSlug && worldSlug.length > 120) || userAlias.length > 40) {
+      return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: '대화방 입력값을 확인해주세요.', errorCode: 'INVALID_REQUEST_BODY' });
+    }
+    let room;
+    try {
+      room = await getPlatformStore().createRoom({ event, userId: authResult.userId, characterSlug, worldSlug, userAlias });
+    } catch (error) {
+      const mapped = mapStoreError({ error, headers, startedAtMs, traceId });
+      if (mapped) return mapped;
+      throw error;
+    }
     if (!room) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Character not found.', errorCode: 'ROOM_TARGET_NOT_FOUND' });
     return jsonOk({ statusCode: 201, headers, startedAtMs, body: { room } });
   }
 
   if (method === 'GET' && segments[1] === 'rooms' && segments[2]) {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable() });
+    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
     if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
-    const room = await getPlatformStore().getRoom({ event, roomId: segments[2] });
+    const room = await getPlatformStore().getRoom({ event, roomId: segments[2], userId: authResult.userId });
     if (!room) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Room not found.', errorCode: 'ROOM_NOT_FOUND' });
     return jsonOk({ headers, startedAtMs, body: { room } });
   }
@@ -498,7 +693,9 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
     if (!isOwner) {
       return jsonError({ statusCode: 403, headers, startedAtMs, traceId, error: 'Owner access required.', errorCode: 'OWNER_FORBIDDEN' });
     }
-    const ok = await getPlatformStore().setContentVisibility({ event, entityType: segments[3], id: segments[4], status });
+    const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId });
+    if (unavailable) return unavailable;
+    const ok = await getPlatformStore().setContentVisibility({ event, userId: authResult.userId, entityType: segments[3], id: segments[4], status });
     if (!ok) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Content not found.', errorCode: 'CONTENT_NOT_FOUND' });
     return jsonOk({ headers, startedAtMs, body: { ok: true } });
   }
@@ -510,7 +707,16 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
     if (!isOwner) {
       return jsonError({ statusCode: 403, headers, startedAtMs, traceId, error: 'Owner access required.', errorCode: 'OWNER_FORBIDDEN' });
     }
-    const ok = await getPlatformStore().deleteContent({ event, entityType: segments[3], id: segments[4] });
+    const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId });
+    if (unavailable) return unavailable;
+    let ok;
+    try {
+      ok = await getPlatformStore().deleteContent({ event, userId: authResult.userId, entityType: segments[3], id: segments[4] });
+    } catch (error) {
+      const mapped = mapStoreError({ error, headers, startedAtMs, traceId });
+      if (mapped) return mapped;
+      throw error;
+    }
     if (!ok) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Content not found.', errorCode: 'CONTENT_NOT_FOUND' });
     return jsonOk({ headers, startedAtMs, body: { ok: true } });
   }

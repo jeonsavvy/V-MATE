@@ -1,0 +1,219 @@
+name: release-post-lockdown-privilege-smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Database target whose completed lockdown is being verified
+        required: true
+        type: choice
+        options: [staging, production]
+      project_ref:
+        description: Project ref registered in the selected protected environment
+        required: true
+        type: string
+      lockdown_evidence_run_id:
+        description: apply-lockdown database release evidence run
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: post-lockdown-privilege-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: ${{ inputs.target == 'production' && 'production-post-lockdown-privilege' || 'staging-post-lockdown-privilege' }}
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      PROJECT_REF: ${{ inputs.project_ref }}
+      EXPECTED_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+      PRODUCTION_PROJECT_REF: ${{ vars.PRODUCTION_SUPABASE_PROJECT_REF }}
+      PRODUCTION_SUPABASE_PROJECT_REF: ${{ vars.PRODUCTION_SUPABASE_PROJECT_REF }}
+      LOCKDOWN_EVIDENCE_RUN_ID: ${{ inputs.lockdown_evidence_run_id }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate approved target
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$SUPABASE_ACCESS_TOKEN" && -n "$SUPABASE_URL" && -n "$SUPABASE_ANON_KEY" && -n "$SUPABASE_SERVICE_ROLE_KEY" && "$PROJECT_REF" =~ ^[a-z0-9]{8,32}$ && "$LOCKDOWN_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::required privilege-smoke input or credential is absent'; exit 1; }
+          [[ "$PROJECT_REF" == "$EXPECTED_PROJECT_REF" ]] || { echo '::error::project_ref does not match the selected environment'; exit 1; }
+          if [[ '${{ inputs.target }}' == 'production' ]]; then [[ "$PROJECT_REF" == "$PRODUCTION_PROJECT_REF" ]] || { echo '::error::production project guard mismatch'; exit 1; }; else [[ "$PROJECT_REF" != "$PRODUCTION_PROJECT_REF" ]] || { echo '::error::staging cannot use the production project'; exit 1; }; fi
+
+      - name: Verify applied lockdown evidence binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/lockdown
+          gh run download "$LOCKDOWN_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "database-release-evidence-${{ inputs.target }}-$LOCKDOWN_EVIDENCE_RUN_ID" --dir evidence/lockdown
+          node <<'NODE'
+          const crypto = require('node:crypto'); const fs = require('node:fs'); const path = require('node:path');
+          const files = []; const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).forEach((entry) => { const item = path.join(dir, entry.name); if (entry.isDirectory()) walk(item); else if (entry.name === 'database-release-evidence.json') files.push(item); }); walk('evidence/lockdown');
+          if (files.length !== 1) process.exit(1);
+          const value = JSON.parse(fs.readFileSync(files[0], 'utf8'));
+          const refHash = crypto.createHash('sha256').update(process.env.PROJECT_REF).digest('hex');
+          const valid = value.schemaVersion === 3
+            && value.target === '${{ inputs.target }}'
+            && value.operation === 'apply-lockdown'
+            && value.commit === process.env.GITHUB_SHA
+            && value.migration === '20260726020000_backend_stabilization_lockdown.sql'
+            && value.projectRefHash === refHash
+            && /^[A-Za-z0-9_-]+$/.test(String(value.workerVersionId || ''))
+            && /^[A-Za-z0-9_-]+$/.test(String(value.previousStableWorkerVersionId || ''));
+          if (!valid) process.exit(1);
+          fs.appendFileSync(
+            process.env.GITHUB_ENV,
+            `LOCKDOWN_WORKER_VERSION_ID=${value.workerVersionId}\nLOCKDOWN_PREVIOUS_STABLE_VERSION_ID=${value.previousStableWorkerVersionId}\n`,
+          );
+          NODE
+
+      - name: Link disposable worktree to approved project
+        shell: bash
+        run: |
+          set -euo pipefail
+          workdir=$(mktemp -d "$RUNNER_TEMP/vmate-privilege-smoke-XXXXXX")
+          mkdir -p "$workdir/supabase"
+          cp supabase/config.toml "$workdir/supabase/config.toml"
+          npx --no-install supabase link --workdir "$workdir" --project-ref "$PROJECT_REF"
+          echo "SUPABASE_WORKDIR=$workdir" >> "$GITHUB_ENV"
+
+      - name: Verify SQL role and transaction privilege contracts
+        id: sql_probe
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$SUPABASE_WORKDIR/post_lockdown_privilege_smoke.sql" <<'SQL'
+          begin;
+          do $$
+          begin
+            set local role anon;
+            begin insert into public.characters(owner_user_id, slug, name) values ('00000000-0000-0000-0000-000000000001', 'privilege-smoke-anon', 'privilege smoke'); raise exception 'anon content write unexpectedly succeeded'; exception when insufficient_privilege then null; end;
+            begin insert into public.rooms(user_id, character_id, title) values ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', 'privilege smoke'); raise exception 'anon room write unexpectedly succeeded'; exception when insufficient_privilege then null; end;
+            begin insert into storage.objects(bucket_id, name) values ('vmate-assets', 'privilege-smoke/anon.webp'); raise exception 'anon storage write unexpectedly succeeded'; exception when insufficient_privilege then null; end;
+            reset role;
+            set local role authenticated;
+            perform set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000001', true);
+            begin insert into public.characters(owner_user_id, slug, name) values ('00000000-0000-0000-0000-000000000001', 'privilege-smoke-authenticated', 'privilege smoke'); raise exception 'authenticated content write unexpectedly succeeded'; exception when insufficient_privilege then null; end;
+            begin insert into public.rooms(user_id, character_id, title) values ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', 'privilege smoke'); raise exception 'authenticated room write unexpectedly succeeded'; exception when insufficient_privilege then null; end;
+            begin insert into storage.objects(bucket_id, name) values ('vmate-assets', 'privilege-smoke/authenticated.webp'); raise exception 'authenticated storage write unexpectedly succeeded'; exception when insufficient_privilege then null; end;
+            begin perform public.reserve_daily_chat_message('privilege-smoke-request', 30); raise exception 'legacy quota RPC unexpectedly succeeded'; exception when insufficient_privilege then null; end;
+            perform public.get_daily_chat_quota(30);
+            reset role;
+            if exists (
+              select 1
+              from unnest(array['anon', 'authenticated']) as roles(role_name)
+              cross join unnest(array[
+                'public.characters', 'public.worlds', 'public.character_assets', 'public.world_assets',
+                'public.rooms', 'public.room_messages', 'public.room_state_summaries'
+              ]) as tables(table_name)
+              cross join unnest(array['INSERT', 'UPDATE', 'DELETE']) as privileges(privilege_name)
+              where has_table_privilege(role_name, table_name, privilege_name)
+            ) then raise exception 'an API role retains a direct mutation grant'; end if;
+            if exists (
+              select 1
+              from unnest(array['anon', 'authenticated']) as roles(role_name)
+              cross join unnest(array[
+                'public.reserve_daily_chat_message(text,integer)',
+                'public.complete_daily_chat_message(text,jsonb)',
+                'public.refund_daily_chat_message(text,integer)'
+              ]) as functions(signature)
+              where has_function_privilege(role_name, signature, 'EXECUTE')
+            ) then raise exception 'an API role retains a legacy quota mutation grant'; end if;
+            if exists (
+              select 1 from pg_policies
+              where schemaname = 'storage' and tablename = 'objects'
+                and policyname in (
+                  'Authenticated users can upload vmate assets to their own folder',
+                  'Authenticated users can update vmate assets in their own folder',
+                  'Authenticated users can delete vmate assets in their own folder'
+                )
+            ) then raise exception 'an authenticated Storage write policy remains'; end if;
+            if not has_function_privilege('service_role', 'public.reserve_chat_message_v2(uuid,text,uuid,text,text,integer,integer)', 'EXECUTE') then raise exception 'service v2 reserve RPC is not callable'; end if;
+          end $$;
+          rollback;
+          SQL
+          npx --no-install supabase db query --workdir "$SUPABASE_WORKDIR" --linked --file "$SUPABASE_WORKDIR/post_lockdown_privilege_smoke.sql" > /dev/null
+
+      - name: Verify actual remote anon and authenticated HTTP privilege boundaries
+        id: http_probe
+        if: ${{ steps.sql_probe.outcome != '' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p private-artifacts
+          node scripts/remote-privilege-smoke.mjs \
+            --project-ref "$PROJECT_REF" \
+            --target "${{ inputs.target }}" \
+            --commit "$GITHUB_SHA" \
+            --worker-version-id "$LOCKDOWN_WORKER_VERSION_ID" \
+            --output private-artifacts/remote-privilege-result.json \
+            --confirm-remote-writes
+
+      - name: Record sanitized privilege smoke evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          trap 'rm -rf private-artifacts evidence' EXIT
+          node <<'NODE'
+          const crypto = require('node:crypto'); const fs = require('node:fs');
+          const refHash = crypto.createHash('sha256').update(process.env.PROJECT_REF).digest('hex');
+          const sqlPassed = '${{ steps.sql_probe.outcome }}' === 'success';
+          let remote = null;
+          try { remote = JSON.parse(fs.readFileSync('private-artifacts/remote-privilege-result.json', 'utf8')); } catch {}
+          const scenarios = remote?.scenarios && typeof remote.scenarios === 'object' ? remote.scenarios : {};
+          const requiredScenarios = [
+            'ephemeralUserCreated', 'anonCharactersInsertDenied', 'authenticatedCharactersInsertDenied',
+            'anonRoomsInsertDenied', 'authenticatedRoomsInsertDenied', 'legacyQuotaMutationDenied',
+            'authenticatedStorageUploadDenied', 'authenticatedQuotaReadAllowed',
+            'serviceRoleV2ReserveRefundAllowed', 'ephemeralUserCleanupSucceeded',
+          ];
+          const remotePassed = remote?.schemaVersion === 1
+            && remote?.target === '${{ inputs.target }}'
+            && remote?.commit === process.env.GITHUB_SHA
+            && remote?.projectRefHash === refHash
+            && remote?.workerVersionId === process.env.LOCKDOWN_WORKER_VERSION_ID
+            && Object.keys(scenarios).length === requiredScenarios.length
+            && requiredScenarios.every((name) => scenarios[name] === true);
+          const evidence = { schemaVersion: 1, target: '${{ inputs.target }}', operation: 'post-lockdown-privilege-smoke', commit: process.env.GITHUB_SHA, projectRefHash: refHash, workerVersionId: process.env.LOCKDOWN_WORKER_VERSION_ID || null, previousStableWorkerVersionId: process.env.LOCKDOWN_PREVIOUS_STABLE_VERSION_ID || null, lockdownEvidenceRunId: process.env.LOCKDOWN_EVIDENCE_RUN_ID, sqlRoleProbePassed: sqlPassed, httpGatewayProbePassed: remotePassed, gatewayScenarios: Object.fromEntries(requiredScenarios.map((name) => [name, scenarios[name] === true])), allPassed: sqlPassed && remotePassed, completedAt: new Date().toISOString() };
+          fs.writeFileSync('artifacts/post-lockdown-privilege-smoke-evidence.json', `${JSON.stringify(evidence, null, 2)}\n`);
+          if (!evidence.allPassed) process.exitCode = 1;
+          NODE
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: post-lockdown-privilege-evidence-${{ inputs.target }}-${{ github.run_id }}
+          path: artifacts/post-lockdown-privilege-smoke-evidence.json
+          if-no-files-found: error
+
+      - name: Remove disposable worktree
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          if [[ -n "${SUPABASE_WORKDIR:-}" && "$SUPABASE_WORKDIR" == "$RUNNER_TEMP"/* ]]; then rm -rf -- "$SUPABASE_WORKDIR"; fi

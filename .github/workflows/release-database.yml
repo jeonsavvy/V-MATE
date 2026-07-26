@@ -1,0 +1,501 @@
+name: release-database
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Target database; writes use operation-specific approval environments
+        required: true
+        type: choice
+        options: [staging, production]
+      operation:
+        description: Preview or explicitly apply exactly one stabilization stage
+        required: true
+        type: choice
+        options: [dry-run-expand, apply-expand, dry-run-lockdown, apply-lockdown]
+      project_ref:
+        description: Project ref registered in the selected GitHub environment
+        required: true
+        type: string
+      worker_version_id:
+        description: Required for apply-lockdown; must match a verified cutover artifact
+        required: false
+        type: string
+      worker_evidence_run_id:
+        description: Required for apply-lockdown; GitHub run containing verified cutover evidence
+        required: false
+        type: string
+      backup_evidence_run_id:
+        description: Required before apply-expand; GitHub run containing approved backup readiness evidence
+        required: false
+        type: string
+      synthetic_evidence_run_id:
+        description: Required before staging apply-lockdown; GitHub run containing the approved synthetic A/B smoke evidence
+        required: false
+        type: string
+      staging_privilege_evidence_run_id:
+        description: Required before production apply-expand; completed staging post-lockdown privilege smoke for this commit
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: database-release-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: ${{ inputs.operation }} ${{ inputs.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment:
+      name: ${{ inputs.target == 'production' && format('production-db-{0}', inputs.operation) || format('staging-db-{0}', inputs.operation) }}
+    env:
+      PROJECT_REF: ${{ inputs.project_ref }}
+      EXPECTED_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+      PRODUCTION_PROJECT_REF: ${{ vars.PRODUCTION_SUPABASE_PROJECT_REF }}
+      STAGING_PROJECT_REF: ${{ vars.STAGING_SUPABASE_PROJECT_REF }}
+      WORKER_VERSION_ID: ${{ inputs.worker_version_id }}
+      WORKER_EVIDENCE_RUN_ID: ${{ inputs.worker_evidence_run_id }}
+      BACKUP_EVIDENCE_RUN_ID: ${{ inputs.backup_evidence_run_id }}
+      SYNTHETIC_EVIDENCE_RUN_ID: ${{ inputs.synthetic_evidence_run_id }}
+      STAGING_PRIVILEGE_EVIDENCE_RUN_ID: ${{ inputs.staging_privilege_evidence_run_id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: ".nvmrc"
+          cache: npm
+
+      - name: Require successful CI for this default-branch commit
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$DEFAULT_BRANCH" && "$GITHUB_REF" == "refs/heads/$DEFAULT_BRANCH" ]] || {
+            echo '::error::Database releases must run from the default branch';
+            exit 1;
+          }
+          node --input-type=module <<'NODE'
+          const headers = {
+            Accept: 'application/vnd.github+json',
+            Authorization: `Bearer ${process.env.GH_TOKEN}`,
+            'X-GitHub-Api-Version': '2022-11-28',
+          };
+          const api = async (path) => {
+            const response = await fetch(`https://api.github.com${path}`, { headers });
+            if (!response.ok) throw new Error(`GitHub API request failed with status ${response.status}`);
+            return response.json();
+          };
+          const repository = process.env.GITHUB_REPOSITORY;
+          const sha = process.env.GITHUB_SHA;
+          const branch = process.env.DEFAULT_BRANCH;
+          const runs = await api(`/repos/${repository}/actions/workflows/ci.yml/runs?head_sha=${sha}&status=completed&per_page=100`);
+          const run = runs.workflow_runs?.find((candidate) => candidate.event === 'push'
+            && candidate.head_sha === sha
+            && candidate.head_branch === branch
+            && candidate.conclusion === 'success');
+          if (!run) throw new Error('No successful CI run exists for this default-branch commit.');
+          const jobs = await api(`/repos/${repository}/actions/runs/${run.id}/jobs?filter=latest&per_page=100`);
+          const conclusions = new Map((jobs.jobs || []).map((job) => [job.name, job.conclusion]));
+          for (const required of ['quality', 'Database contracts (local Docker only)']) {
+            if (conclusions.get(required) !== 'success') throw new Error(`Required CI job did not pass: ${required}`);
+          }
+          NODE
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate approved target and selected migration stage
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$SUPABASE_ACCESS_TOKEN" ]] || { echo '::error::Database release credential is not configured'; exit 1; }
+          [[ "$PROJECT_REF" =~ ^[a-z0-9]{8,32}$ ]] || { echo '::error::project_ref is not canonical'; exit 1; }
+          [[ -n "$EXPECTED_PROJECT_REF" && "$PROJECT_REF" == "$EXPECTED_PROJECT_REF" ]] || { echo '::error::project_ref does not match the selected approval environment'; exit 1; }
+          [[ -n "$PRODUCTION_PROJECT_REF" ]] || { echo '::error::production project guard is not configured'; exit 1; }
+          if [[ '${{ inputs.target }}' == 'staging' ]]; then
+            [[ "$PROJECT_REF" != "$PRODUCTION_PROJECT_REF" ]] || { echo '::error::staging cannot use the production project'; exit 1; }
+          else
+            [[ "$PROJECT_REF" == "$PRODUCTION_PROJECT_REF" ]] || { echo '::error::production project guard mismatch'; exit 1; }
+          fi
+          case '${{ inputs.operation }}' in
+            dry-run-expand|apply-expand) migration='20260726010000_backend_stabilization_expand.sql' ;;
+            dry-run-lockdown|apply-lockdown) migration='20260726020000_backend_stabilization_lockdown.sql' ;;
+            *) echo '::error::unsupported migration operation'; exit 1 ;;
+          esac
+          [[ -f "supabase/migrations/$migration" ]] || { echo '::error::allowlisted migration is absent'; exit 1; }
+          echo "MIGRATION=$migration" >> "$GITHUB_ENV"
+          if [[ '${{ inputs.operation }}' == 'apply-lockdown' ]]; then
+            [[ "$WORKER_VERSION_ID" =~ ^[A-Za-z0-9_-]+$ ]] || { echo '::error::worker_version_id is required for lockdown'; exit 1; }
+            [[ "$WORKER_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::worker_evidence_run_id is required for lockdown'; exit 1; }
+          fi
+          if [[ '${{ inputs.operation }}' == 'apply-expand' ]]; then
+            [[ "$BACKUP_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::backup_evidence_run_id is required before apply-expand'; exit 1; }
+          fi
+          if [[ '${{ inputs.target }}' == 'production' && '${{ inputs.operation }}' == 'apply-expand' ]]; then
+            [[ "$STAGING_PRIVILEGE_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::staging_privilege_evidence_run_id is required before production apply-expand'; exit 1; }
+            [[ "$STAGING_PROJECT_REF" =~ ^[a-z0-9]{8,32}$ && "$STAGING_PROJECT_REF" != "$PRODUCTION_PROJECT_REF" ]] || { echo '::error::staging project guard is not configured or is not distinct from production'; exit 1; }
+          fi
+          if [[ '${{ inputs.target }}' == 'staging' && '${{ inputs.operation }}' == 'apply-lockdown' ]]; then
+            [[ "$SYNTHETIC_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::synthetic_evidence_run_id is required before staging apply-lockdown'; exit 1; }
+          fi
+
+      - name: Verify approved backup readiness before expand
+        if: ${{ inputs.operation == 'apply-expand' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/backup-readiness
+          gh run download "$BACKUP_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "backup-readiness-evidence-${{ inputs.target }}-$BACKUP_EVIDENCE_RUN_ID" --dir artifacts/backup-readiness
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const files = [];
+          const walk = (directory) => fs.readdirSync(directory, { withFileTypes: true }).forEach((entry) => {
+            const item = path.join(directory, entry.name);
+            if (entry.isDirectory()) walk(item); else if (entry.name === 'backup-readiness-evidence.json') files.push(item);
+          });
+          walk('artifacts/backup-readiness');
+          if (files.length !== 1) process.exit(1);
+          const evidence = JSON.parse(fs.readFileSync(files[0], 'utf8'));
+          const refHash = crypto.createHash('sha256').update(process.env.PROJECT_REF).digest('hex');
+          const capturedAt = Date.parse(evidence.capturedAt || '');
+          const fresh = Number.isFinite(capturedAt) && Date.now() - capturedAt <= 6 * 60 * 60 * 1000 && Date.now() >= capturedAt;
+          const valid = evidence.schemaVersion === 1
+            && evidence.target === '${{ inputs.target }}'
+            && evidence.operation === 'backup-readiness'
+            && evidence.commit === process.env.GITHUB_SHA
+            && evidence.projectRefHash === refHash
+            && evidence.physicalBackupPresent === true
+            && evidence.backupReadinessApproved === true
+            && ('${{ inputs.target }}' !== 'production' || evidence.pitrReadinessApproved === true)
+            && fresh;
+          if (!valid) process.exit(1);
+          NODE
+
+      - name: Verify successful staging post-lockdown privilege smoke before production expand
+        if: ${{ inputs.target == 'production' && inputs.operation == 'apply-expand' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_metadata=$(gh run view "$STAGING_PRIVILEGE_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --json conclusion,headSha,workflowName)
+          node --input-type=module - "$run_metadata" <<'NODE'
+          const run = JSON.parse(process.argv[2]);
+          if (run.conclusion !== 'success' || run.headSha !== process.env.GITHUB_SHA || run.workflowName !== 'release-post-lockdown-privilege-smoke') process.exit(1);
+          NODE
+          mkdir -p artifacts/staging-privilege-smoke
+          gh run download "$STAGING_PRIVILEGE_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "post-lockdown-privilege-evidence-staging-$STAGING_PRIVILEGE_EVIDENCE_RUN_ID" --dir artifacts/staging-privilege-smoke
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const files = [];
+          const walk = (directory) => fs.readdirSync(directory, { withFileTypes: true }).forEach((entry) => {
+            const item = path.join(directory, entry.name);
+            if (entry.isDirectory()) walk(item); else if (entry.name === 'post-lockdown-privilege-smoke-evidence.json') files.push(item);
+          });
+          walk('artifacts/staging-privilege-smoke');
+          if (files.length !== 1) process.exit(1);
+          const evidence = JSON.parse(fs.readFileSync(files[0], 'utf8'));
+          const stagingRefHash = crypto.createHash('sha256').update(process.env.STAGING_PROJECT_REF).digest('hex');
+          const valid = evidence.schemaVersion === 1
+            && evidence.target === 'staging'
+            && evidence.operation === 'post-lockdown-privilege-smoke'
+            && evidence.commit === process.env.GITHUB_SHA
+            && evidence.projectRefHash === stagingRefHash
+            && evidence.allPassed === true
+            && evidence.sqlRoleProbePassed === true
+            && evidence.httpGatewayProbePassed === true
+            && /^[A-Za-z0-9_-]+$/.test(String(evidence.workerVersionId || ''))
+            && /^[0-9]+$/.test(String(evidence.lockdownEvidenceRunId || ''));
+          if (!valid) process.exit(1);
+          NODE
+
+      - name: Verify staging synthetic A/B smoke before lockdown
+        if: ${{ inputs.target == 'staging' && inputs.operation == 'apply-lockdown' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/synthetic-smoke
+          gh run download "$SYNTHETIC_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "synthetic-smoke-evidence-staging-$SYNTHETIC_EVIDENCE_RUN_ID" --dir artifacts/synthetic-smoke
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const files = [];
+          const walk = (directory) => fs.readdirSync(directory, { withFileTypes: true }).forEach((entry) => {
+            const item = path.join(directory, entry.name);
+            if (entry.isDirectory()) walk(item); else if (entry.name === 'synthetic-smoke-evidence.json') files.push(item);
+          });
+          walk('artifacts/synthetic-smoke');
+          if (files.length !== 1) process.exit(1);
+          const evidence = JSON.parse(fs.readFileSync(files[0], 'utf8'));
+          const refHash = crypto.createHash('sha256').update(process.env.PROJECT_REF).digest('hex');
+          const scenarioValues = evidence.scenarios && typeof evidence.scenarios === 'object' ? Object.values(evidence.scenarios) : [];
+          const valid = evidence.schemaVersion === 1
+            && evidence.target === 'staging'
+            && evidence.operation === 'synthetic-smoke'
+            && evidence.commit === process.env.GITHUB_SHA
+            && evidence.projectRefHash === refHash
+            && evidence.allPassed === true
+            && scenarioValues.length >= 20
+            && scenarioValues.every((value) => value === true)
+            && evidence.workerVersionId === process.env.WORKER_VERSION_ID;
+          if (!valid) process.exit(1);
+          NODE
+
+      - name: Verify compatible Worker cutover evidence before lockdown
+        if: ${{ inputs.operation == 'apply-lockdown' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/worker-evidence
+          artifact_name="release-evidence-${{ inputs.target }}-${WORKER_EVIDENCE_RUN_ID}"
+          gh run download "$WORKER_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$artifact_name" --dir artifacts/worker-evidence
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const files = [];
+          const walk = (directory) => fs.readdirSync(directory, { withFileTypes: true }).forEach((entry) => {
+            const item = path.join(directory, entry.name);
+            if (entry.isDirectory()) walk(item); else if (entry.name === 'release-evidence.json') files.push(item);
+          });
+          walk('artifacts/worker-evidence');
+          if (files.length !== 1) process.exit(1);
+          const evidence = JSON.parse(fs.readFileSync(files[0], 'utf8'));
+          const projectRefHash = crypto.createHash('sha256').update(process.env.PROJECT_REF).digest('hex');
+          const valid = evidence.schemaVersion === 2
+            && evidence.target === '${{ inputs.target }}'
+            && evidence.operation === 'cutover'
+            && evidence.commit === process.env.GITHUB_SHA
+            && evidence.versionId === process.env.WORKER_VERSION_ID
+            && /^[0-9]+$/.test(String(evidence.expandEvidenceRunId || ''))
+            && evidence.expandProjectRefHash === projectRefHash
+            && Number.isFinite(Date.parse(evidence.expandAppliedAt || ''))
+            && /^[A-Za-z0-9_-]+$/.test(String(evidence.previousStableVersionId || ''))
+            && evidence.smokePassed === true
+            && evidence.monitorChecks >= 13
+            && evidence.monitorMinutes >= 60
+            && evidence.observabilityPassed === true
+            && evidence.observabilityMetrics?.cronSuccesses >= 2
+            && evidence.observabilityMetrics?.cronFailures === 0
+            && evidence.observabilityMetrics?.currentFailedOutcomes === 0
+            && evidence.observabilityMetrics?.currentRequests > 0
+            && evidence.observabilityMetrics?.baselineRequests > 0
+            && evidence.baselineWindow?.hours === 24;
+          if (!valid) process.exit(1);
+          fs.appendFileSync(
+            process.env.GITHUB_ENV,
+            `LOCKDOWN_EXPAND_EVIDENCE_RUN_ID=${evidence.expandEvidenceRunId}\nLOCKDOWN_PREVIOUS_STABLE_VERSION_ID=${evidence.previousStableVersionId}\n`,
+          );
+          NODE
+
+      - name: Build migration chain through selected stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          workdir=$(mktemp -d "$RUNNER_TEMP/vmate-db-release-XXXXXX")
+          mkdir -p "$workdir/supabase/migrations" artifacts
+          cp supabase/config.toml "$workdir/supabase/config.toml"
+          found=false
+          : > artifacts/migration-allowlist.txt
+          while IFS= read -r source; do
+            filename=$(basename "$source")
+            cp "$source" "$workdir/supabase/migrations/$filename"
+            printf '%s\n' "$filename" >> artifacts/migration-allowlist.txt
+            if [[ "$filename" == "$MIGRATION" ]]; then found=true; break; fi
+          done < <(find supabase/migrations -maxdepth 1 -type f -name '*.sql' | sort)
+          [[ "$found" == true ]] || { echo '::error::selected migration is not in the ordered chain'; exit 1; }
+          [[ "$(grep -c "^${MIGRATION}$" artifacts/migration-allowlist.txt)" -eq 1 ]] || { echo '::error::selected migration must occur exactly once'; exit 1; }
+          echo "SUPABASE_WORKDIR=$workdir" >> "$GITHUB_ENV"
+
+      - name: Link disposable worktree to approved project
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: npx --no-install supabase link --workdir "$SUPABASE_WORKDIR" --project-ref "$PROJECT_REF"
+
+      - name: Verify consolidated legacy baseline before expand
+        if: ${{ inputs.operation == 'dry-run-expand' || inputs.operation == 'apply-expand' }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$SUPABASE_WORKDIR/verify_legacy_baseline.sql" <<'SQL'
+          begin;
+          do $$
+          begin
+            if to_regprocedure('public.has_confirmed_age()') is not null then raise exception 'legacy age function remains'; end if;
+            if exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'profiles' and column_name = 'age_confirmed_at') then raise exception 'legacy age profile column remains'; end if;
+            if exists (select 1 from auth.users where coalesce(raw_user_meta_data, '{}'::jsonb) ? 'ageConfirmed') then raise exception 'legacy age metadata remains'; end if;
+            if exists (select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects' and policyname = 'Public can read vmate assets') then raise exception 'public storage listing policy remains'; end if;
+            if to_regprocedure('public.rls_auto_enable()') is not null
+              and (has_function_privilege('anon', 'public.rls_auto_enable()', 'EXECUTE') or has_function_privilege('authenticated', 'public.rls_auto_enable()', 'EXECUTE')) then
+              raise exception 'database-internal RLS helper remains exposed';
+            end if;
+            if has_function_privilege('anon', 'public.apply_content_report_action(uuid,text,text)', 'EXECUTE') then raise exception 'owner report action remains public'; end if;
+            if not has_function_privilege('authenticated', 'public.reserve_daily_chat_message(text,integer)', 'EXECUTE') then raise exception 'pre-lockdown quota contract is absent'; end if;
+            if not exists (
+              select 1 from pg_policies
+              where schemaname = 'public' and tablename = 'characters' and policyname = 'Users can insert their own characters'
+                and coalesce(with_check, '') not ilike '%has_confirmed_age%'
+            ) then raise exception 'character rights-only publishing policy is absent'; end if;
+            if not exists (
+              select 1 from pg_policies
+              where schemaname = 'public' and tablename = 'worlds' and policyname = 'Users can insert their own worlds'
+                and coalesce(with_check, '') not ilike '%has_confirmed_age%'
+            ) then raise exception 'world rights-only publishing policy is absent'; end if;
+          end $$;
+          rollback;
+          SQL
+          npx --no-install supabase db query --workdir "$SUPABASE_WORKDIR" --linked --file "$SUPABASE_WORKDIR/verify_legacy_baseline.sql" > /dev/null
+
+      - name: Capture remote database state before preview
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp scripts/capture-release-state.sql "$SUPABASE_WORKDIR/capture_release_state.sql"
+          cp scripts/capture-migration-state.sql "$SUPABASE_WORKDIR/capture_migration_state.sql"
+          NO_COLOR=1 npx --no-install supabase migration list --workdir "$SUPABASE_WORKDIR" --linked > "$RUNNER_TEMP/migration-history-before.txt"
+          npx --no-install supabase db query --workdir "$SUPABASE_WORKDIR" --linked --file "$SUPABASE_WORKDIR/capture_release_state.sql" > "$RUNNER_TEMP/release-state-before.txt"
+          npx --no-install supabase db query --workdir "$SUPABASE_WORKDIR" --linked --file "$SUPABASE_WORKDIR/capture_migration_state.sql" > "$RUNNER_TEMP/migration-state-before.txt"
+
+      - name: Preview and prove exactly one pending migration
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          NO_COLOR=1 npx --no-install supabase db push --workdir "$SUPABASE_WORKDIR" --linked --dry-run 2>&1 | tee "$RUNNER_TEMP/db-push-dry-run.txt"
+          node <<'NODE'
+          const fs = require('node:fs');
+          const selected = process.env.MIGRATION;
+          const known = fs.readFileSync('artifacts/migration-allowlist.txt', 'utf8').trim().split(/\r?\n/).filter(Boolean);
+          const output = fs.readFileSync(`${process.env.RUNNER_TEMP}/db-push-dry-run.txt`, 'utf8');
+          const pending = known.filter((file) => output.includes(file) || output.includes(file.replace(/\.sql$/, '')));
+          if (pending.length !== 1 || pending[0] !== selected) {
+            console.error('::error::dry-run did not prove that only the selected migration is pending');
+            process.exit(1);
+          }
+          NODE
+
+      - name: Apply exactly the approved migration stage
+        if: ${{ startsWith(inputs.operation, 'apply-') }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: npx --no-install supabase db push --workdir "$SUPABASE_WORKDIR" --linked
+
+      - name: Prove dry-run did not change remote database state
+        if: ${{ startsWith(inputs.operation, 'dry-run-') }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          NO_COLOR=1 npx --no-install supabase migration list --workdir "$SUPABASE_WORKDIR" --linked > "$RUNNER_TEMP/migration-history-after-dry-run.txt"
+          npx --no-install supabase db query --workdir "$SUPABASE_WORKDIR" --linked --file "$SUPABASE_WORKDIR/capture_release_state.sql" > "$RUNNER_TEMP/release-state-after-dry-run.txt"
+          npx --no-install supabase db query --workdir "$SUPABASE_WORKDIR" --linked --file "$SUPABASE_WORKDIR/capture_migration_state.sql" > "$RUNNER_TEMP/migration-state-after-dry-run.txt"
+          cmp --silent "$RUNNER_TEMP/migration-history-before.txt" "$RUNNER_TEMP/migration-history-after-dry-run.txt" || {
+            echo '::error::dry-run changed remote migration history';
+            exit 1;
+          }
+          cmp --silent "$RUNNER_TEMP/release-state-before.txt" "$RUNNER_TEMP/release-state-after-dry-run.txt" || {
+            echo '::error::dry-run changed the remote database catalog';
+            exit 1;
+          }
+          cmp --silent "$RUNNER_TEMP/migration-state-before.txt" "$RUNNER_TEMP/migration-state-after-dry-run.txt" || {
+            echo '::error::dry-run changed remote migration row contents';
+            exit 1;
+          }
+
+      - name: Capture remote database state after apply
+        if: ${{ startsWith(inputs.operation, 'apply-') }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          NO_COLOR=1 npx --no-install supabase migration list --workdir "$SUPABASE_WORKDIR" --linked > "$RUNNER_TEMP/migration-history-after.txt"
+          npx --no-install supabase db query --workdir "$SUPABASE_WORKDIR" --linked --file "$SUPABASE_WORKDIR/capture_release_state.sql" > "$RUNNER_TEMP/release-state-after.txt"
+          npx --no-install supabase db query --workdir "$SUPABASE_WORKDIR" --linked --file "$SUPABASE_WORKDIR/capture_migration_state.sql" > "$RUNNER_TEMP/migration-state-after.txt"
+
+      - name: Record sanitized database release evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const operation = '${{ inputs.operation }}';
+          const applied = operation.startsWith('apply-');
+          const historyPath = `${process.env.RUNNER_TEMP}/migration-history-${applied ? 'after' : 'after-dry-run'}.txt`;
+          const statePath = `${process.env.RUNNER_TEMP}/release-state-${applied ? 'after' : 'after-dry-run'}.txt`;
+          const migrationStatePath = `${process.env.RUNNER_TEMP}/migration-state-${applied ? 'after' : 'after-dry-run'}.txt`;
+          const history = fs.readFileSync(historyPath, 'utf8');
+          const stateMatches = fs.readFileSync(statePath, 'utf8').match(/\b[a-f0-9]{32}\b/g) || [];
+          if (stateMatches.length !== 1) throw new Error('Remote state fingerprint was not canonical.');
+          const stateFingerprint = stateMatches[0];
+          const migrationStateMatches = fs.readFileSync(migrationStatePath, 'utf8').match(/\b[a-f0-9]{32}\b/g) || [];
+          if (migrationStateMatches.length !== 1) throw new Error('Migration row fingerprint was not canonical.');
+          const evidence = {
+            schemaVersion: 3,
+            target: '${{ inputs.target }}',
+            operation,
+            commit: process.env.GITHUB_SHA,
+            migration: process.env.MIGRATION,
+            projectRefHash: crypto.createHash('sha256').update(process.env.PROJECT_REF).digest('hex'),
+            migrationHistoryHash: crypto.createHash('sha256').update(history).digest('hex'),
+            remoteStateFingerprint: stateFingerprint,
+            migrationRowsFingerprint: migrationStateMatches[0],
+            appliedAt: applied ? new Date().toISOString() : null,
+            previewedAt: applied ? null : new Date().toISOString(),
+            workerVersionId: operation === 'apply-lockdown' ? process.env.WORKER_VERSION_ID : null,
+            workerEvidenceRunId: operation === 'apply-lockdown' ? process.env.WORKER_EVIDENCE_RUN_ID : null,
+            previousStableWorkerVersionId: operation === 'apply-lockdown' ? process.env.LOCKDOWN_PREVIOUS_STABLE_VERSION_ID : null,
+            expandEvidenceRunId: operation === 'apply-lockdown' ? process.env.LOCKDOWN_EXPAND_EVIDENCE_RUN_ID : null,
+            backupEvidenceRunId: operation === 'apply-expand' ? process.env.BACKUP_EVIDENCE_RUN_ID : null,
+            syntheticEvidenceRunId: '${{ inputs.target }}' === 'staging' && '${{ inputs.operation }}' === 'apply-lockdown' ? process.env.SYNTHETIC_EVIDENCE_RUN_ID : null,
+          };
+          fs.writeFileSync('artifacts/database-release-evidence.json', `${JSON.stringify(evidence, null, 2)}\n`);
+          NODE
+
+      - name: Upload sanitized database release evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: database-release-evidence-${{ inputs.target }}-${{ github.run_id }}
+          path: artifacts/database-release-evidence.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove disposable migration worktree
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${SUPABASE_WORKDIR:-}" && "$SUPABASE_WORKDIR" == "$RUNNER_TEMP"/* ]]; then
+            rm -rf -- "$SUPABASE_WORKDIR"
+          fi

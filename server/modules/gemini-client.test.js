@@ -55,21 +55,30 @@ test('isCacheLookupErrorMessage detects cache lookup failures', () => {
 });
 
 test('callGeminiWithTimeout returns success for valid upstream response', async () => {
+  let requestUrl = '';
+  let requestOptions = null;
   const result = await callGeminiWithTimeout({
-    apiKey: 'key',
+    apiKey: 'secret-test-key',
     modelName: 'gemini',
     timeoutMs: 200,
     payload: { contents: [] },
-    fetchImpl: async () =>
+    fetchImpl: async (url, options) => {
+      requestUrl = String(url);
+      requestOptions = options;
+      return (
       new Response(
         JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] }),
         { status: 200, headers: { 'content-type': 'application/json' } }
-      ),
+      ));
+    },
   });
 
   assert.equal(result.ok, true);
   assert.equal(result.error, null);
   assert.ok(result.data);
+  assert.equal(requestUrl, 'https://generativelanguage.googleapis.com/v1beta/models/gemini:generateContent');
+  assert.equal(requestUrl.includes('secret-test-key'), false);
+  assert.equal(requestOptions?.headers?.['x-goog-api-key'], 'secret-test-key');
 });
 
 test('callGeminiWithTimeout maps invalid json and abort errors', async () => {
@@ -106,15 +115,20 @@ test('callGeminiWithTimeout maps invalid json and abort errors', async () => {
 });
 
 test('createPromptCacheEntry returns normalized cache entry', async () => {
+  let requestUrl = '';
+  let requestOptions = null;
   const entry = await createPromptCacheEntry({
-    apiKey: 'key',
+    apiKey: 'secret-cache-key',
     modelName: 'gemini',
     characterId: 'mika',
     systemPrompt: 'prompt',
     cacheKey: 'cache-key',
     ttlSeconds: 3600,
     createTimeoutMs: 200,
-    fetchImpl: async () =>
+    fetchImpl: async (url, options) => {
+      requestUrl = String(url);
+      requestOptions = options;
+      return (
       new Response(
         JSON.stringify({
           name: 'cachedContents/generated',
@@ -124,9 +138,13 @@ test('createPromptCacheEntry returns normalized cache entry', async () => {
           status: 200,
           headers: { 'content-type': 'application/json' },
         }
-      ),
+      ));
+    },
   });
 
   assert.equal(entry?.name, 'cachedContents/generated');
   assert.equal(typeof entry?.expireAtMs, 'number');
+  assert.equal(requestUrl, 'https://generativelanguage.googleapis.com/v1beta/cachedContents');
+  assert.equal(requestUrl.includes('secret-cache-key'), false);
+  assert.equal(requestOptions?.headers?.['x-goog-api-key'], 'secret-cache-key');
 });
