@@ -53,6 +53,7 @@ describe('PasswordRecoveryPage', () => {
     render(<PasswordRecoveryPage onComplete={onComplete} onOpenAuth={vi.fn()} />)
 
     const password = await screen.findByLabelText('새 비밀번호')
+    expect(screen.getByText('(6자 이상)')).toBeTruthy()
     expect(window.location.pathname).toBe('/auth/recovery')
     expect(window.location.search).toBe('')
     expect(window.location.hash).toBe('')
