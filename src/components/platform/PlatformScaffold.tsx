@@ -39,6 +39,7 @@ interface PlatformShellProps {
   onClearSelectedEntity?: (entityType: 'character' | 'world') => void
   onStartCombination?: () => Promise<void>
   showCombinationDock?: boolean
+  showCombinationDockOnMobile?: boolean
   children: ReactNode
 }
 
@@ -191,16 +192,17 @@ function SelectionSlot({ item, type, onClear, onNavigate }: { item: EntitySummar
   )
 }
 
-function CombinationDock({ character, world, isStarting, onClear, onStart, onNavigate }: {
+function CombinationDock({ character, world, isStarting, onClear, onStart, onNavigate, showOnMobile }: {
   character: CharacterSummary | null
   world: WorldSummary | null
   isStarting: boolean
   onClear?: (entityType: 'character' | 'world') => void
   onStart?: () => Promise<void>
   onNavigate: (path: string) => void
+  showOnMobile: boolean
 }) {
   return (
-    <div className="fixed inset-x-0 bottom-[calc(66px+env(safe-area-inset-bottom))] z-40 border-t border-[#e2e2e2] bg-white/95 px-3 py-2 shadow-[0_-14px_36px_-30px_rgba(0,0,0,0.3)] backdrop-blur-sm lg:bottom-0 lg:left-[232px] lg:px-6">
+    <section aria-label="대화 조합" className={cn('fixed inset-x-0 bottom-[calc(66px+env(safe-area-inset-bottom))] z-40 border-t border-[#e2e2e2] bg-white/95 px-3 py-2 shadow-[0_-14px_36px_-30px_rgba(0,0,0,0.3)] backdrop-blur-sm lg:bottom-0 lg:left-[232px] lg:block lg:px-6', !showOnMobile && 'hidden')}>
       <div className="mx-auto grid max-w-[1440px] grid-cols-2 items-stretch gap-2 sm:flex">
         <SelectionSlot item={character} type="character" onClear={() => onClear?.('character')} onNavigate={onNavigate} />
         <SelectionSlot item={world} type="world" onClear={() => onClear?.('world')} onNavigate={onNavigate} />
@@ -210,7 +212,7 @@ function CombinationDock({ character, world, isStarting, onClear, onStart, onNav
           {!isStarting ? <ChevronRight className="ml-1 size-4" /> : null}
         </Button>
       </div>
-    </div>
+    </section>
   )
 }
 
@@ -230,6 +232,7 @@ export function PlatformShell({
   onClearSelectedEntity,
   onStartCombination,
   showCombinationDock = true,
+  showCombinationDockOnMobile = true,
   children,
 }: PlatformShellProps) {
   const [isAccountOpen, setIsAccountOpen] = useState(false)
@@ -284,10 +287,10 @@ export function PlatformShell({
 
       <div className="min-h-dvh pt-16 lg:pl-[232px]">
 
-        <main id="platform-main" className={cn('mx-auto w-full max-w-[1280px] px-4 py-5 sm:px-6 sm:py-8 lg:px-10', showCombinationDock ? 'pb-44 sm:pb-36 lg:pb-28' : 'pb-24 lg:pb-10')}>
+        <main id="platform-main" className={cn('mx-auto w-full max-w-[1280px] px-4 py-5 sm:px-6 sm:py-8 lg:px-10', showCombinationDock ? (showCombinationDockOnMobile ? 'pb-44 sm:pb-36 lg:pb-28' : 'pb-24 lg:pb-28') : 'pb-24 lg:pb-10')}>
           {children}
         </main>
-        <footer className={cn('border-t border-[#e9e9e9] px-4 py-7 text-center text-xs text-[#666]', showCombinationDock && 'mb-[150px] lg:mb-[86px]')}>
+        <footer className={cn('border-t border-[#e9e9e9] px-4 py-7 text-center text-xs text-[#666]', showCombinationDock && (showCombinationDockOnMobile ? 'mb-[150px] lg:mb-[86px]' : 'lg:mb-[86px]'))}>
           <span>© V-MATE</span><span className="mx-2">·</span><NavigationLink path="/privacy" onNavigate={onNavigate} className="underline-offset-4 hover:underline">개인정보처리방침</NavigationLink>
         </footer>
       </div>
@@ -299,7 +302,7 @@ export function PlatformShell({
         <div className="flex items-center justify-center px-1"><div className="w-full [&_button]:p-1"><AccountPanel user={user} authStatus={authStatus} userAvatarInitial={userAvatarInitial} onAuthRequest={onAuthRequest} onOpenAccount={openAccount} compact /></div></div>
       </nav>
       <AccountDialog user={user} onNavigate={onNavigate} onSignOut={onSignOut} onDeleteAccount={onDeleteAccount} open={isAccountOpen} onOpenChange={changeAccountOpen} />
-      {showCombinationDock ? <CombinationDock character={selectedCharacter} world={selectedWorld} isStarting={isStartingCombination} onClear={onClearSelectedEntity} onStart={onStartCombination} onNavigate={onNavigate} /> : null}
+      {showCombinationDock ? <CombinationDock character={selectedCharacter} world={selectedWorld} isStarting={isStartingCombination} onClear={onClearSelectedEntity} onStart={onStartCombination} onNavigate={onNavigate} showOnMobile={showCombinationDockOnMobile} /> : null}
     </div>
   )
 }

@@ -16,7 +16,7 @@ import type { PlatformPageChromeProps } from '@/components/platform/pageTypes'
 const safeActionError = (error: unknown, fallback: string) => toUserFacingError(error, fallback).message
 const imageProcessingFailureMessage = () => '이미지를 처리하지 못했습니다. 기존 이미지는 유지됩니다. 파일을 다시 선택한 뒤 다시 시도해 주세요.'
 
-const PageFrame = ({ chrome, children, showCombinationDock = true }: { chrome: PlatformPageChromeProps; children: ReactNode; showCombinationDock?: boolean }) => (
+const PageFrame = ({ chrome, children, showCombinationDock = true, showCombinationDockOnMobile = true }: { chrome: PlatformPageChromeProps; children: ReactNode; showCombinationDock?: boolean; showCombinationDockOnMobile?: boolean }) => (
   <PlatformShell
     user={chrome.user}
     authStatus={chrome.authStatus}
@@ -33,6 +33,7 @@ const PageFrame = ({ chrome, children, showCombinationDock = true }: { chrome: P
     onClearSelectedEntity={chrome.onClearSelectedEntity}
     onStartCombination={chrome.onStartCombination}
     showCombinationDock={showCombinationDock}
+    showCombinationDockOnMobile={showCombinationDockOnMobile}
   >
     {children}
   </PlatformShell>
@@ -214,13 +215,13 @@ export function CharacterDetailPage({ chrome, slug }: { chrome: PlatformPageChro
   }))
 
   if (!item) {
-    return <PageFrame chrome={chrome}>{loadError ? <EmptyState title="캐릭터를 불러오지 못했습니다" description={loadError} action={<Button onClick={() => setReloadVersion((value) => value + 1)}>다시 불러오기</Button>} /> : <LoadingState label="캐릭터 불러오는 중…" />}</PageFrame>
+    return <PageFrame chrome={chrome} showCombinationDockOnMobile={false}>{loadError ? <EmptyState title="캐릭터를 불러오지 못했습니다" description={loadError} action={<Button onClick={() => setReloadVersion((value) => value + 1)}>다시 불러오기</Button>} /> : <LoadingState label="캐릭터 불러오는 중…" />}</PageFrame>
   }
 
   const characterArtwork = resolveEntityArtworkSources(item, 'detail')
 
   return (
-    <PageFrame chrome={chrome}>
+    <PageFrame chrome={chrome} showCombinationDockOnMobile={false}>
       <ReportDialog open={reportOpen} onOpenChange={setReportOpen} entityType="character" entityId={item.id} entityName={item.name} />
       <CharacterWorldPicker
         open={pickerOpen}
@@ -352,11 +353,11 @@ export function WorldDetailPage({ chrome, slug }: { chrome: PlatformPageChromePr
   }
 
   if (!item) {
-    return <PageFrame chrome={chrome}>{loadError ? <EmptyState title="월드를 불러오지 못했습니다" description={loadError} action={<Button onClick={() => setReloadVersion((value) => value + 1)}>다시 불러오기</Button>} /> : <LoadingState label="월드 불러오는 중…" />}</PageFrame>
+    return <PageFrame chrome={chrome} showCombinationDockOnMobile={false}>{loadError ? <EmptyState title="월드를 불러오지 못했습니다" description={loadError} action={<Button onClick={() => setReloadVersion((value) => value + 1)}>다시 불러오기</Button>} /> : <LoadingState label="월드 불러오는 중…" />}</PageFrame>
   }
 
   return (
-    <PageFrame chrome={chrome}>
+    <PageFrame chrome={chrome} showCombinationDockOnMobile={false}>
       <ReportDialog open={reportOpen} onOpenChange={setReportOpen} entityType="world" entityId={item.id} entityName={item.name} />
       <CharacterWorldPicker
         open={pickerOpen}

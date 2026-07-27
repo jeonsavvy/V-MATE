@@ -76,6 +76,27 @@ describe('PlatformShell combination dock', () => {
     expect(onStart).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps the combination dock on desktop while removing its mobile overlay', () => {
+    render(
+      <PlatformShell
+        user={null}
+        authStatus="anonymous"
+        userAvatarInitial="V"
+        onNavigate={vi.fn()}
+        onAuthRequest={vi.fn()}
+        onSignOut={vi.fn()}
+        onDeleteAccount={vi.fn(async () => undefined)}
+        showCombinationDockOnMobile={false}
+      >
+        <p>상세 본문</p>
+      </PlatformShell>,
+    )
+
+    expect(screen.getByRole('region', { name: '대화 조합' }).className).toContain('hidden')
+    expect(document.querySelector('#platform-main')?.className).toContain('pb-24')
+    expect(document.querySelector('#platform-main')?.className).toContain('lg:pb-28')
+  })
+
   it('keeps the dock out of chat and create screens when disabled', () => {
     render(
       <PlatformShell
