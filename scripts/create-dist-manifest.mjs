@@ -19,9 +19,13 @@ const collectFiles = async (directory) => {
 }
 
 const files = (await collectFiles(distDirectory))
-  // The Worker injects runtime configuration into index.html, so its deployed
-  // bytes intentionally differ from Vite's local build output.
-  .filter((file) => path.relative(distDirectory, file).split(path.sep).join('/') !== 'index.html')
+  .filter((file) => {
+    const relativePath = path.relative(distDirectory, file).split(path.sep).join('/')
+    // The Worker injects runtime configuration into index.html, so its deployed
+    // bytes intentionally differ from Vite's local build output. Cloudflare
+    // consumes _headers as deployment metadata and does not serve it as an asset.
+    return relativePath !== 'index.html' && relativePath !== '_headers'
+  })
 const manifestFiles = await Promise.all(files.map(async (file) => {
   const contents = await readFile(file)
   return {

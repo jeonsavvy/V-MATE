@@ -61,14 +61,41 @@ const timeoutFetch = async (url, options = {}) => {
   return response
 }
 
+const manifestFile = argumentsByName.get('--dist-manifest')
+const manifest = manifestFile ? JSON.parse(await readFile(manifestFile, 'utf8')) : null
+if (manifest && (manifest.version !== 1 || !Array.isArray(manifest.files))) {
+  throw new Error('Invalid dist manifest')
+}
+const manifestPaths = manifest
+  ? new Set(manifest.files.map((asset) => asset.path))
+  : null
+const runtimeAssetPaths = (html) => [
+  ...html.matchAll(/(?:src|href)=["'](?:\/?)(assets\/[^"']+\.(?:js|css))(?:\?[^"']*)?["']/gi),
+].map((match) => match[1])
+
 const appUrl = new URL(baseUrl)
 appUrl.pathname = '/'
-const homepage = await timeoutFetch(appUrl, { headers: { Accept: 'text/html' } })
-const html = await homepage.text()
-if (!html.includes('window.__V_MATE_RUNTIME_ENV__')) {
-  throw new Error('Homepage did not include the runtime environment marker')
+const homepageAttempts = workerName && manifestPaths ? 10 : 1
+let html = ''
+for (let attempt = 1; attempt <= homepageAttempts; attempt += 1) {
+  const homepage = await timeoutFetch(appUrl, { headers: { Accept: 'text/html' } })
+  html = await homepage.text()
+  if (!html.includes('window.__V_MATE_RUNTIME_ENV__')) {
+    throw new Error('Homepage did not include the runtime environment marker')
+  }
+  assertNoInternalDetails(html, 'Homepage')
+
+  const unexpectedAssetPath = manifestPaths
+    ? runtimeAssetPaths(html).find((assetPath) => !manifestPaths.has(assetPath))
+    : undefined
+  if (!unexpectedAssetPath) break
+  if (attempt === homepageAttempts) {
+    throw new Error(`Homepage references an asset absent from the manifest: ${unexpectedAssetPath}`)
+  }
+  // Cloudflare documents a short propagation window before a newly added
+  // zero-traffic version starts honoring version-override requests globally.
+  await new Promise((resolve) => setTimeout(resolve, 2_000))
 }
-assertNoInternalDetails(html, 'Homepage')
 
 const recoveryUrl = new URL('/auth/recovery', baseUrl)
 const recoveryPage = await timeoutFetch(recoveryUrl, { headers: { Accept: 'text/html' } })
@@ -96,16 +123,7 @@ if (expectedChatStatus === 401) {
   if (payload.error_code !== 'AUTH_REQUIRED') throw new Error('Chat auth smoke returned an unexpected error code')
 }
 
-const manifestFile = argumentsByName.get('--dist-manifest')
-if (manifestFile) {
-  const manifest = JSON.parse(await readFile(manifestFile, 'utf8'))
-  if (manifest.version !== 1 || !Array.isArray(manifest.files)) throw new Error('Invalid dist manifest')
-  const manifestPaths = new Set(manifest.files.map((asset) => asset.path))
-  const runtimeAssetReferences = [...html.matchAll(/(?:src|href)=["'](?:\/?)(assets\/[^"']+\.(?:js|css))(?:\?[^"']*)?["']/gi)]
-    .map((match) => match[1])
-  for (const assetPath of runtimeAssetReferences) {
-    if (!manifestPaths.has(assetPath)) throw new Error(`Homepage references an asset absent from the manifest: ${assetPath}`)
-  }
+if (manifest) {
   for (const asset of manifest.files) {
     const assetUrl = new URL(asset.path, baseUrl)
     const response = await timeoutFetch(assetUrl)
