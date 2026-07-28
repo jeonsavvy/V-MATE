@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { runSupabaseReadOnlyQuery } from '../scripts/run-supabase-read-only-query.mjs';
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(dirname, '..');
@@ -69,9 +70,46 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(baseline, /20260727000000/);
   assert.match(baseline, /20260727025134/);
   assert.match(baseline, /lockdownMigrationAliasHash/);
+  assert.match(baseline, /run-supabase-read-only-query\.mjs/);
+  assert.match(baseline, /queryMode: 'supabase_read_only_user'/);
+  assert.match(baseline, /Record sanitized read-only baseline evidence[\s\S]*trap 'rm -rf private-artifacts' EXIT/);
   assert.doesNotMatch(baseline, /!\s+git diff --quiet/);
-  assert.doesNotMatch(baseline, /supabase db push|confirm-remote-writes|^\s*(?:insert|update|delete)\s+/im);
+  assert.doesNotMatch(baseline, /supabase db push|supabase db query|confirm-remote-writes|^\s*(?:insert|update|delete)\s+/im);
   assert.match(smoke, /\/auth\/recovery/);
+});
+
+test('read-only database attestation uses only the dedicated Management API endpoint', async () => {
+  const calls = [];
+  const payload = await runSupabaseReadOnlyQuery({
+    projectRef: 'shwatxuoowaboymrpdjs',
+    accessToken: 'test-access-token',
+    query: 'select 1 as ok;',
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify([{ ok: 1 }]), {
+        status: 201,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+
+  assert.deepEqual(payload, [{ ok: 1 }]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://api.supabase.com/v1/projects/shwatxuoowaboymrpdjs/database/query/read-only');
+  assert.equal(calls[0].init.method, 'POST');
+  assert.equal(new Headers(calls[0].init.headers).get('authorization'), 'Bearer test-access-token');
+  assert.deepEqual(JSON.parse(calls[0].init.body), { query: 'select 1 as ok;' });
+
+  await assert.rejects(
+    runSupabaseReadOnlyQuery({
+      projectRef: 'shwatxuoowaboymrpdjs',
+      accessToken: 'test-access-token',
+      query: 'select 1;',
+      fetchImpl: async () => new Response(JSON.stringify({ message: 'private backend detail' }), { status: 403 }),
+    }),
+    (error) => error.message === 'Supabase read-only query failed with status 403.'
+      && !error.message.includes('private backend detail'),
+  );
 });
 
 test('database release stages expand and lockdown separately behind evidence gates', async () => {
@@ -113,8 +151,9 @@ test('database release stages expand and lockdown separately behind evidence gat
   assert.doesNotMatch(jobEnvironment, /SUPABASE_ACCESS_TOKEN|GH_TOKEN/);
   assert.match(release, /Capture remote database state before preview/);
   assert.match(release, /scripts\/capture-release-state\.sql/);
-  assert.match(fingerprintQuery, /from pg_policy policy_record/);
-  assert.match(fingerprintQuery, /from pg_trigger trigger_record/);
+  assert.match(fingerprintQuery, /from pg_catalog\.pg_policy policy_record/);
+  assert.match(fingerprintQuery, /from pg_catalog\.pg_trigger trigger_record/);
+  assert.doesNotMatch(fingerprintQuery, /\b(?:from|join|left join)\s+pg_(?:class|namespace|attribute|attrdef|constraint|policy|proc|trigger)\b/i);
   assert.match(fingerprintQuery, /release_state_fingerprint/);
   assert.match(release, /scripts\/capture-migration-state\.sql/);
   assert.match(migrationFingerprintQuery, /to_jsonb\(migration_record\)/);

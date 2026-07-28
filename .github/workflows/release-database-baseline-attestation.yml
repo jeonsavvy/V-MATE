@@ -59,6 +59,9 @@ jobs:
           .github/workflows/release-worker.yml
           README.md
           index.html
+          scripts/capture-migration-state.sql
+          scripts/capture-release-state.sql
+          scripts/run-supabase-read-only-query.mjs
           scripts/validate-github-workflows.mjs
           server/deployment-workflow-sync.test.js
           worker.test.js
@@ -100,13 +103,16 @@ jobs:
         run: |
           set -euo pipefail
           workdir=$(mktemp -d "$RUNNER_TEMP/vmate-baseline-attestation-XXXXXX")
-          mkdir -p "$workdir/supabase" private-artifacts artifacts
-          trap 'rm -rf "$workdir" private-artifacts' EXIT
-          cp supabase/config.toml "$workdir/supabase/config.toml"
-          npx --no-install supabase link --workdir "$workdir" --project-ref "$PROJECT_REF"
-          npx --no-install supabase migration list --workdir "$workdir" --linked --output json > private-artifacts/migration-list.json
-          npx --no-install supabase db query --workdir "$workdir" --linked --output-format json --file scripts/capture-migration-state.sql > private-artifacts/migration-state.json
-          npx --no-install supabase db query --workdir "$workdir" --linked --output-format json --file scripts/capture-release-state.sql > private-artifacts/release-state.json
+          mkdir -p private-artifacts artifacts
+          trap 'rm -rf "$workdir"' EXIT
+          cat > "$workdir/migration-list.sql" <<'SQL'
+          select migration_record.version, migration_record.name
+          from supabase_migrations.schema_migrations migration_record
+          order by migration_record.version;
+          SQL
+          node scripts/run-supabase-read-only-query.mjs --project-ref "$PROJECT_REF" --sql-file "$workdir/migration-list.sql" --output private-artifacts/migration-list.json
+          node scripts/run-supabase-read-only-query.mjs --project-ref "$PROJECT_REF" --sql-file scripts/capture-migration-state.sql --output private-artifacts/migration-state.json
+          node scripts/run-supabase-read-only-query.mjs --project-ref "$PROJECT_REF" --sql-file scripts/capture-release-state.sql --output private-artifacts/release-state.json
           {
             printf 'with expected(source_version, remote_version, remote_name) as (values '
             first=true
@@ -126,42 +132,51 @@ jobs:
               fi
             done < <(find supabase/migrations -maxdepth 1 -type f -name '*.sql' -printf '%f\n' | sort)
             [[ "$first" == false ]] || { echo '::error::no source migrations found'; exit 1; }
-            printf ') select coalesce(jsonb_agg(expected.source_version order by expected.source_version), '\''[]'\''::jsonb) as missing_source_versions from expected left join supabase_migrations.schema_migrations applied on applied.version = expected.remote_version and (expected.remote_name is null or applied.name = expected.remote_name) where applied.version is null;\n'
+            printf ') select pg_catalog.coalesce(pg_catalog.jsonb_agg(expected.source_version order by expected.source_version), '\''[]'\''::jsonb) as missing_source_versions from expected left join supabase_migrations.schema_migrations applied on applied.version = expected.remote_version and (expected.remote_name is null or applied.name = expected.remote_name) where applied.version is null;\n'
           } > "$workdir/migration-coverage.sql"
-          npx --no-install supabase db query --workdir "$workdir" --linked --output-format json --file "$workdir/migration-coverage.sql" > private-artifacts/migration-coverage.json
+          node scripts/run-supabase-read-only-query.mjs --project-ref "$PROJECT_REF" --sql-file "$workdir/migration-coverage.sql" --output private-artifacts/migration-coverage.json
           cat > "$workdir/baseline-invariants.sql" <<'SQL'
-          select jsonb_build_object(
+          select pg_catalog.jsonb_build_object(
             'expandApplied', exists (select 1 from supabase_migrations.schema_migrations where version = '20260726190559'),
             'lockdownAliasApplied', exists (select 1 from supabase_migrations.schema_migrations where version = '20260727025134' and name = 'backend_stabilization_lockdown'),
             'directTableWritesBlocked', not exists (
-              select 1 from unnest(array['anon', 'authenticated']) as roles(role_name)
-              cross join unnest(array['public.characters', 'public.worlds', 'public.character_assets', 'public.world_assets', 'public.rooms', 'public.room_messages', 'public.room_state_summaries']) as tables(table_name)
-              cross join unnest(array['INSERT', 'UPDATE', 'DELETE']) as privileges(privilege_name)
-              where has_table_privilege(role_name, table_name, privilege_name)
+              select 1 from pg_catalog.unnest(array['anon', 'authenticated']) as roles(role_name)
+              cross join pg_catalog.unnest(array['public.characters', 'public.worlds', 'public.character_assets', 'public.world_assets', 'public.rooms', 'public.room_messages', 'public.room_state_summaries']) as tables(table_name)
+              cross join pg_catalog.unnest(array['INSERT', 'UPDATE', 'DELETE']) as privileges(privilege_name)
+              where pg_catalog.has_table_privilege(role_name, table_name, privilege_name)
             ),
             'legacyQuotaWritesBlocked', not exists (
-              select 1 from unnest(array['anon', 'authenticated']) as roles(role_name)
-              cross join unnest(array['public.reserve_daily_chat_message(text,integer)', 'public.complete_daily_chat_message(text,jsonb)', 'public.refund_daily_chat_message(text,integer)']) as functions(signature)
-              where has_function_privilege(role_name, signature, 'EXECUTE')
+              select 1 from pg_catalog.unnest(array['anon', 'authenticated']) as roles(role_name)
+              cross join pg_catalog.unnest(array['public.reserve_daily_chat_message(text,integer)', 'public.complete_daily_chat_message(text,jsonb)', 'public.refund_daily_chat_message(text,integer)']) as functions(signature)
+              where pg_catalog.has_function_privilege(role_name, signature, 'EXECUTE')
             ),
             'storageWritePoliciesAbsent', not exists (
-              select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects'
+              select 1 from pg_catalog.pg_policies where schemaname = 'storage' and tablename = 'objects'
               and policyname in ('Authenticated users can upload vmate assets to their own folder', 'Authenticated users can update vmate assets in their own folder', 'Authenticated users can delete vmate assets in their own folder')
             ),
-            'serviceV2ReserveCallable', has_function_privilege('service_role', 'public.reserve_chat_message_v2(uuid,text,uuid,text,text,integer,integer)', 'EXECUTE')
+            'serviceV2ReserveCallable', pg_catalog.has_function_privilege('service_role', 'public.reserve_chat_message_v2(uuid,text,uuid,text,text,integer,integer)', 'EXECUTE')
           ) as invariants;
           SQL
-          npx --no-install supabase db query --workdir "$workdir" --linked --output-format json --file "$workdir/baseline-invariants.sql" > private-artifacts/invariants.json
+          node scripts/run-supabase-read-only-query.mjs --project-ref "$PROJECT_REF" --sql-file "$workdir/baseline-invariants.sql" --output private-artifacts/invariants.json
 
       - name: Record sanitized read-only baseline evidence
         shell: bash
         run: |
           set -euo pipefail
+          trap 'rm -rf private-artifacts' EXIT
           node <<'NODE'
           const crypto = require('node:crypto');
           const fs = require('node:fs');
           const readJson = (path) => JSON.parse(fs.readFileSync(path, 'utf8'));
-          const firstRow = (value) => Array.isArray(value) ? value[0] : value?.data?.[0] || value?.result?.[0];
+          const firstRow = (value) => Array.isArray(value)
+            ? value[0]
+            : Array.isArray(value?.data)
+              ? value.data[0]
+              : Array.isArray(value?.result)
+                ? value.result[0]
+                : value && typeof value === 'object'
+                  ? value
+                  : undefined;
           const migration = firstRow(readJson('private-artifacts/migration-state.json'));
           const release = firstRow(readJson('private-artifacts/release-state.json'));
           const migrationCoverage = firstRow(readJson('private-artifacts/migration-coverage.json'));
@@ -176,6 +191,7 @@ jobs:
             schemaVersion: 1,
             target: 'production',
             operation: 'read-only-baseline-attestation',
+            queryMode: 'supabase_read_only_user',
             commit: process.env.GITHUB_SHA,
             baselineSourceSha: process.env.BASELINE_SOURCE_SHA,
             projectRefHash: crypto.createHash('sha256').update(process.env.PROJECT_REF).digest('hex'),

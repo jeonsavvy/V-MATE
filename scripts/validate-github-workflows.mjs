@@ -146,12 +146,14 @@ const validateWorkflow = (file, source) => {
       'backend_stabilization_lockdown',
       'lockdownMigrationAliasHash',
       'database-baseline-evidence-production-',
-      'supabase db query',
+      'run-supabase-read-only-query.mjs',
+      "queryMode: 'supabase_read_only_user'",
+      "trap 'rm -rf private-artifacts' EXIT",
       'read-only-baseline-attestation',
     ]) {
       if (!source.includes(required)) fail(file, `missing read-only baseline attestation guard: ${required}`)
     }
-    for (const forbidden of ['supabase db push', 'confirm-remote-writes']) {
+    for (const forbidden of ['supabase db push', 'supabase db query', 'confirm-remote-writes']) {
       if (source.toLowerCase().includes(forbidden)) fail(file, `read-only baseline attestation includes forbidden write surface: ${forbidden}`)
     }
     if (/^\s*(?:insert|update|delete)\s+/im.test(source)) fail(file, 'read-only baseline attestation includes a SQL DML statement')
@@ -177,6 +179,14 @@ if (unregisteredReleaseWorkflows.length) {
 for (const file of workflowFiles) {
   const source = await readFile(path.join(workflowDirectory, file), 'utf8')
   validateWorkflow(file, source)
+}
+
+const readOnlyQueryHelper = await readFile(path.resolve(scriptDirectory, 'run-supabase-read-only-query.mjs'), 'utf8')
+if (!readOnlyQueryHelper.includes('/database/query/read-only')) {
+  fail('scripts/run-supabase-read-only-query.mjs', 'Supabase read-only Management API endpoint is absent')
+}
+if (/\/database\/query(?:[`'"]|\?)/.test(readOnlyQueryHelper)) {
+  fail('scripts/run-supabase-read-only-query.mjs', 'write-capable Supabase query endpoint is present')
 }
 
 process.stdout.write(`Validated ${workflowFiles.length} GitHub Actions workflow structures.\n`)

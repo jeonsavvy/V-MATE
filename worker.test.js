@@ -119,7 +119,9 @@ test('declares the canonical production hostname while preserving Workers.dev an
   assert.match(baselineWorkflow, /20260727025134/);
   assert.match(baselineWorkflow, /backend_stabilization_lockdown/);
   assert.match(baselineWorkflow, /database-baseline-evidence-production-/);
-  assert.doesNotMatch(baselineWorkflow, /supabase db push|confirm-remote-writes|^\s*(?:insert|update|delete)\s+/im);
+  assert.match(baselineWorkflow, /run-supabase-read-only-query\.mjs/);
+  assert.match(baselineWorkflow, /queryMode: 'supabase_read_only_user'/);
+  assert.doesNotMatch(baselineWorkflow, /supabase db push|supabase db query|confirm-remote-writes|^\s*(?:insert|update|delete)\s+/im);
 });
 
 test('returns configuration error for account deletion when service role secret is missing', async () => {
