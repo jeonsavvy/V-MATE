@@ -16,6 +16,14 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   const release = await readUtf8('.github/workflows/release-worker.yml');
   const baseline = await readUtf8('.github/workflows/release-database-baseline-attestation.yml');
   const smoke = await readUtf8('scripts/smoke-release.mjs');
+  const baselineAllowlist = baseline
+    .match(/allowed-baseline-files\.txt" <<'EOF'\r?\n([\s\S]*?)\r?\n\s+EOF/)?.[1]
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const releaseAllowlist = release
+    .match(/allowed_files=\$'([^']+)'/)?.[1]
+    .split('\\n');
 
   assert.doesNotMatch(ci, /CLOUDFLARE_API_TOKEN|versions deploy|cf:deploy/);
   assert.match(ci, /npm run verify/);
@@ -32,6 +40,7 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(release, /concurrency:/);
   assert.match(release, /CLOUDFLARE_API_TOKEN/);
   assert.match(release, /CLOUDFLARE_ACCOUNT_ID/);
+  assert.deepEqual(releaseAllowlist, baselineAllowlist);
   assert.match(release, /Cloudflare-Workers-Version-Overrides|smoke-release\.mjs/);
   assert.match(release, /seq 1 13/);
   assert.match(release, /check-worker-observability\.mjs/);
@@ -57,6 +66,13 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(release, /baseline_evidence_run_id/);
   assert.match(release, /exactly one expand_evidence_run_id or baseline_evidence_run_id is required/);
   assert.match(release, /baseline evidence change scope is not allowlisted/);
+  for (const releaseSmokePath of [
+    'scripts/create-dist-manifest.mjs',
+    'scripts/smoke-release.mjs',
+    'server/smoke-release.test.js',
+  ]) {
+    assert.ok(release.includes(releaseSmokePath), `release allowlist is missing ${releaseSmokePath}`);
+  }
   assert.match(release, /AUTHORIZED_DOMAIN_RELEASE_SHA/);
   assert.match(release, /actions\/runs\/\$BASELINE_EVIDENCE_RUN_ID/);
   assert.match(release, /actions\/workflows\/release-database-baseline-attestation\.yml/);
