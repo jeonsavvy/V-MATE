@@ -49,7 +49,10 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(release, /rollback-preflight-smoke\.log/);
   assert.match(release, /GH_TOKEN: \$\{\{ github\.token \}\}/);
   assert.match(release, /APPROVED_ORIGIN=\$input_origin/);
-  assert.match(release, /wrangler versions upload[\s\S]*--var "ALLOWED_ORIGINS:\$APPROVED_ORIGIN"/);
+  assert.match(release, /wrangler triggers deploy --env "" --name "\$WORKER_NAME" --dry-run/);
+  assert.match(release, /wrangler triggers deploy --env "" --name "\$WORKER_NAME"\n/);
+  assert.match(release, /release_allowed_origins="\$APPROVED_ORIGIN,\$LEGACY_ORIGIN"/);
+  assert.match(release, /wrangler versions upload[\s\S]*--var "ALLOWED_ORIGINS:\$release_allowed_origins"/);
   assert.match(smoke, /\/auth\/recovery/);
 });
 

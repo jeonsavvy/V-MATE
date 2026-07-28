@@ -115,7 +115,10 @@ const validateWorkflow = (file, source) => {
   if (file === 'release-worker.yml') {
     for (const required of [
       'echo "APPROVED_ORIGIN=$input_origin" >> "$GITHUB_ENV"',
-      '--var "ALLOWED_ORIGINS:$APPROVED_ORIGIN"',
+      'release_allowed_origins="$APPROVED_ORIGIN"',
+      'release_allowed_origins="$APPROVED_ORIGIN,$LEGACY_ORIGIN"',
+      '--var "ALLOWED_ORIGINS:$release_allowed_origins"',
+      'wrangler triggers deploy --env "" --name "$WORKER_NAME" --dry-run',
       'wrangler versions upload',
     ]) {
       if (!source.includes(required)) fail(file, `missing approved-origin Worker upload guard: ${required}`)

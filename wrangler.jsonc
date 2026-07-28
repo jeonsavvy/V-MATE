@@ -2,6 +2,13 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "v-mate",
   "main": "worker.js",
+  "workers_dev": true,
+  "routes": [
+    {
+      "pattern": "v-mate.satinode.com",
+      "custom_domain": true
+    }
+  ],
   "compatibility_date": "2026-02-21",
   "compatibility_flags": [
     "nodejs_compat"
@@ -72,6 +79,8 @@
   "env": {
     "staging": {
       "name": "v-mate-staging",
+      "workers_dev": true,
+      "routes": [],
       "vars": {
         "APP_ENV": "staging",
         "REQUIRE_CONFIGURED_SUPABASE_URL": "true",

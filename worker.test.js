@@ -89,6 +89,26 @@ test('platform artwork frames fill their media slots without thumbnail padding',
   assert.doesNotMatch(source, /h-full w-full object-contain p-3/);
 });
 
+test('declares the canonical production hostname while preserving Workers.dev and isolating staging routes', () => {
+  const config = JSON.parse(readFileSync('wrangler.jsonc', 'utf8'));
+  const index = readFileSync('index.html', 'utf8');
+  const workflow = readFileSync('.github/workflows/release-worker.yml', 'utf8');
+
+  assert.equal(config.workers_dev, true);
+  assert.deepEqual(config.routes, [{ pattern: 'v-mate.satinode.com', custom_domain: true }]);
+  assert.equal(config.env.staging.workers_dev, true);
+  assert.deepEqual(config.env.staging.routes, []);
+  assert.match(index, /<link rel="canonical" href="https:\/\/v-mate\.satinode\.com\/" \/>/);
+  assert.match(index, /<meta property="og:url" content="https:\/\/v-mate\.satinode\.com\/" \/>/);
+  assert.match(workflow, /legacy_origin='https:\/\/v-mate\.jeonsavvy\.workers\.dev'/);
+  assert.match(workflow, /wrangler triggers deploy --env "" --name "\$WORKER_NAME" --dry-run/);
+  assert.match(workflow, /wrangler triggers deploy --env "" --name "\$WORKER_NAME"\n/);
+  assert.match(workflow, /release_allowed_origins="\$APPROVED_ORIGIN"\n          if \[\[ '\$\{\{ inputs\.target \}\}' == 'production' \]\]/);
+  assert.match(workflow, /release_allowed_origins="\$APPROVED_ORIGIN,\$LEGACY_ORIGIN"/);
+  assert.match(workflow, /--var "ALLOWED_ORIGINS:\$release_allowed_origins"/);
+  assert.match(workflow, /Smoke preserved legacy Workers\.dev hostname/);
+});
+
 test('returns configuration error for account deletion when service role secret is missing', async () => {
   const originalFetch = globalThis.fetch;
   const userId = '11111111-1111-4111-8111-111111111111';
