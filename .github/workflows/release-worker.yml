@@ -177,17 +177,21 @@ jobs:
           mkdir -p artifacts/database-evidence
           if [[ "$BASELINE_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]]; then
             gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BASELINE_EVIDENCE_RUN_ID" > artifacts/database-evidence/baseline-run.json
+            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release-database-baseline-attestation.yml" > artifacts/database-evidence/baseline-workflow.json
             node <<'NODE'
           const fs = require('node:fs');
           const run = JSON.parse(fs.readFileSync('artifacts/database-evidence/baseline-run.json', 'utf8'));
+          const workflow = JSON.parse(fs.readFileSync('artifacts/database-evidence/baseline-workflow.json', 'utf8'));
           const defaultBranch = process.env.DEFAULT_BRANCH;
+          const expectedPath = '.github/workflows/release-database-baseline-attestation.yml';
           const valid = run.conclusion === 'success'
             && run.status === 'completed'
             && run.event === 'workflow_dispatch'
             && run.head_sha === process.env.GITHUB_SHA
             && run.head_branch === defaultBranch
-            && typeof run.path === 'string'
-            && run.path.startsWith('.github/workflows/release-database-baseline-attestation.yml@');
+            && run.path === expectedPath
+            && workflow.path === expectedPath
+            && run.workflow_id === workflow.id;
           if (!valid) throw new Error('Baseline evidence run metadata does not bind to the approved attestation workflow and current default-branch commit.');
           NODE
             gh run download "$BASELINE_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "database-baseline-evidence-production-$BASELINE_EVIDENCE_RUN_ID" --dir artifacts/database-evidence

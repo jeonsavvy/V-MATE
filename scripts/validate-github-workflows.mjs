@@ -144,7 +144,8 @@ const validateWorkflow = (file, source) => {
       'AUTHORIZED_DOMAIN_RELEASE_SHA',
       'authorized domain release SHA guard mismatch',
       'actions/runs/$BASELINE_EVIDENCE_RUN_ID',
-      'release-database-baseline-attestation.yml@',
+      'actions/workflows/release-database-baseline-attestation.yml',
+      'run.workflow_id === workflow.id',
       'wrangler versions upload',
     ]) {
       if (!source.includes(required)) fail(file, `missing approved-origin Worker upload guard: ${required}`)

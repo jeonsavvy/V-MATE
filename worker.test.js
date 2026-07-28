@@ -110,7 +110,8 @@ test('declares the canonical production hostname while preserving Workers.dev an
   assert.match(workflow, /Smoke preserved legacy Workers\.dev hostname/);
   assert.match(workflow, /exactly one expand_evidence_run_id or baseline_evidence_run_id is required/);
   assert.match(workflow, /AUTHORIZED_DOMAIN_RELEASE_SHA/);
-  assert.match(workflow, /release-database-baseline-attestation\.yml@/);
+  assert.match(workflow, /actions\/workflows\/release-database-baseline-attestation\.yml/);
+  assert.match(workflow, /run\.workflow_id === workflow\.id/);
   assert.match(baselineWorkflow, /READ_ONLY_BASELINE_APPROVED/);
   assert.match(baselineWorkflow, /AUTHORIZED_DOMAIN_RELEASE_SHA/);
   assert.match(baselineWorkflow, /if: \$\{\{ success\(\) \}\}/);
