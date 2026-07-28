@@ -149,7 +149,7 @@ jobs:
               allowed_files=$'.github/workflows/release-database-baseline-attestation.yml\n.github/workflows/release-worker.yml\nREADME.md\nindex.html\nscripts/validate-github-workflows.mjs\nserver/deployment-workflow-sync.test.js\nworker.test.js\nwrangler.jsonc'
               unexpected=$(comm -23 <(git diff --name-only 5adce9d2128bc7452e30bae9a2c8fca7790baa49 "$GITHUB_SHA" | sort -u) <(printf '%s\n' "$allowed_files" | sort -u))
               [[ -z "$unexpected" ]] || { echo '::error::baseline evidence change scope is not allowlisted'; exit 1; }
-              ! git diff --quiet 5adce9d2128bc7452e30bae9a2c8fca7790baa49 "$GITHUB_SHA" -- supabase server/platform server/chat-handler.js worker.js || { echo '::error::database or mutation runtime surface changed'; exit 1; }
+              git diff --quiet 5adce9d2128bc7452e30bae9a2c8fca7790baa49 "$GITHUB_SHA" -- supabase server/platform server/chat-handler.js worker.js || { echo '::error::database or mutation runtime surface changed'; exit 1; }
             fi
           fi
           [[ "$EXPECTED_SUPABASE_PROJECT_REF" =~ ^[a-z0-9]{8,32}$ ]] || { echo '::error::approved Supabase project ref is missing or invalid'; exit 1; }

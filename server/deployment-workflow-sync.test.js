@@ -59,6 +59,7 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(release, /AUTHORIZED_DOMAIN_RELEASE_SHA/);
   assert.match(release, /actions\/runs\/\$BASELINE_EVIDENCE_RUN_ID/);
   assert.match(release, /release-database-baseline-attestation\.yml@/);
+  assert.doesNotMatch(release, /!\s+git diff --quiet/);
   assert.match(release, /wrangler versions upload[\s\S]*--var "ALLOWED_ORIGINS:\$release_allowed_origins"/);
   assert.match(baseline, /environment: production-db-baseline-attestation/);
   assert.match(baseline, /READ_ONLY_BASELINE_APPROVED/);
@@ -68,6 +69,7 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(baseline, /20260727000000/);
   assert.match(baseline, /20260727025134/);
   assert.match(baseline, /lockdownMigrationAliasHash/);
+  assert.doesNotMatch(baseline, /!\s+git diff --quiet/);
   assert.doesNotMatch(baseline, /supabase db push|confirm-remote-writes|^\s*(?:insert|update|delete)\s+/im);
   assert.match(smoke, /\/auth\/recovery/);
 });

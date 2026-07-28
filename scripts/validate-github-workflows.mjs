@@ -131,6 +131,7 @@ const validateWorkflow = (file, source) => {
     ]) {
       if (!source.includes(required)) fail(file, `missing approved-origin Worker upload guard: ${required}`)
     }
+    if (/!\s+git diff --quiet/.test(source)) fail(file, 'database runtime diff guard is inverted')
   }
   if (file === 'release-database-baseline-attestation.yml') {
     for (const required of [
@@ -154,6 +155,7 @@ const validateWorkflow = (file, source) => {
       if (source.toLowerCase().includes(forbidden)) fail(file, `read-only baseline attestation includes forbidden write surface: ${forbidden}`)
     }
     if (/^\s*(?:insert|update|delete)\s+/im.test(source)) fail(file, 'read-only baseline attestation includes a SQL DML statement')
+    if (/!\s+git diff --quiet/.test(source)) fail(file, 'database runtime diff guard is inverted')
   }
 }
 

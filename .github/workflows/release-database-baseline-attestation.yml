@@ -69,7 +69,7 @@ jobs:
           comm -23 "$RUNNER_TEMP/changed-baseline-files.txt" <(sort -u "$RUNNER_TEMP/allowed-baseline-files.txt") | grep -q . && { echo '::error::baseline attestation change scope is not allowlisted'; exit 1; } || true
           grep -Fxq '.github/workflows/release-worker.yml' "$RUNNER_TEMP/changed-baseline-files.txt" || { echo '::error::baseline release guard change is absent'; exit 1; }
           grep -Fxq 'wrangler.jsonc' "$RUNNER_TEMP/changed-baseline-files.txt" || { echo '::error::Custom Domain configuration change is absent'; exit 1; }
-          ! git diff --quiet "$BASELINE_SOURCE_SHA" "$GITHUB_SHA" -- supabase server/platform server/chat-handler.js worker.js || { echo '::error::database or mutation runtime surface changed'; exit 1; }
+          git diff --quiet "$BASELINE_SOURCE_SHA" "$GITHUB_SHA" -- supabase server/platform server/chat-handler.js worker.js || { echo '::error::database or mutation runtime surface changed'; exit 1; }
 
       - name: Require successful CI for this default-branch commit
         env:
