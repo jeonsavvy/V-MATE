@@ -153,6 +153,7 @@ test('database release stages expand and lockdown separately behind evidence gat
   assert.match(release, /scripts\/capture-release-state\.sql/);
   assert.match(fingerprintQuery, /from pg_catalog\.pg_policy policy_record/);
   assert.match(fingerprintQuery, /from pg_catalog\.pg_trigger trigger_record/);
+  assert.doesNotMatch(fingerprintQuery, /pg_catalog\.coalesce/);
   assert.doesNotMatch(fingerprintQuery, /\b(?:from|join|left join)\s+pg_(?:class|namespace|attribute|attrdef|constraint|policy|proc|trigger)\b/i);
   assert.match(fingerprintQuery, /release_state_fingerprint/);
   assert.match(release, /scripts\/capture-migration-state\.sql/);

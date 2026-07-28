@@ -70,7 +70,7 @@ with release_objects(kind, identity, definition) as (
   where namespace_record.nspname in ('public', 'storage', 'auth')
     and not trigger_record.tgisinternal
 )
-select pg_catalog.md5(pg_catalog.coalesce(
+select pg_catalog.md5(coalesce(
   pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(kind, identity, definition) order by kind, identity)::text,
   '[]'
 )) as release_state_fingerprint
