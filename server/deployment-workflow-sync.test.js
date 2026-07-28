@@ -60,6 +60,7 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(release, /AUTHORIZED_DOMAIN_RELEASE_SHA/);
   assert.match(release, /actions\/runs\/\$BASELINE_EVIDENCE_RUN_ID/);
   assert.match(release, /release-database-baseline-attestation\.yml@/);
+  assert.match(release, /node <<'NODE'\r?\n          const fs = require\('node:fs'\);[\s\S]*?\r?\n          NODE\r?\n            gh run download/);
   assert.doesNotMatch(release, /!\s+git diff --quiet/);
   assert.match(release, /wrangler versions upload[\s\S]*--var "ALLOWED_ORIGINS:\$release_allowed_origins"/);
   assert.match(baseline, /environment: production-db-baseline-attestation/);

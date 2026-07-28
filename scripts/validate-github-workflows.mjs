@@ -80,6 +80,24 @@ const validateWorkflow = (file, source) => {
   if (!root.jobs || Array.isArray(root.jobs) || typeof root.jobs !== 'object' || !Object.keys(root.jobs).length) {
     fail(file, 'jobs must contain at least one named mapping')
   }
+  for (const [jobName, job] of Object.entries(root.jobs)) {
+    for (const [stepIndex, step] of (Array.isArray(job?.steps) ? job.steps : []).entries()) {
+      if (step?.shell !== 'bash' || typeof step.run !== 'string') continue
+      let pendingHeredoc = null
+      for (const line of step.run.split(/\r?\n/)) {
+        if (pendingHeredoc) {
+          const candidate = pendingHeredoc.stripTabs ? line.replace(/^\t+/, '') : line
+          if (candidate === pendingHeredoc.delimiter) pendingHeredoc = null
+          continue
+        }
+        const match = line.match(/<<(-?)\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/)
+        if (match) pendingHeredoc = { delimiter: match[2], stripTabs: match[1] === '-' }
+      }
+      if (pendingHeredoc) {
+        fail(file, `job ${jobName} step ${stepIndex + 1} has an unclosed or indented Bash heredoc: ${pendingHeredoc.delimiter}`)
+      }
+    }
+  }
   if (!/^name:\s*\S/m.test(source)) fail(file, 'name must have a value')
   if (!/^jobs:\s*$/m.test(source) || !/^  [A-Za-z_][A-Za-z0-9_-]*:\s*$/m.test(source)) {
     fail(file, 'jobs must contain at least one named mapping')
