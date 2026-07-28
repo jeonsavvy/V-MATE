@@ -250,6 +250,7 @@ starter 콘텐츠는 권리가 확인된 운영 절차로 관리합니다.
 - `main` push와 pull request는 읽기 전용 검증만 수행합니다.
 - Worker와 데이터베이스 변경은 승인된 GitHub Environment의 수동 `workflow_dispatch`에서만 실행합니다.
 - 데이터베이스는 확장 단계와 권한 회수 단계를 분리합니다. Worker는 확장 단계 검증 후 0% version override에서 smoke하고, 검증된 version만 원자 전환합니다.
+- DB/schema/data 변경이 없는 allowlisted domain/canonical 변경은 별도 승인된 read-only baseline attestation으로 현재 migration·catalog·권한 상태를 증명한 뒤에만 Worker release evidence로 사용할 수 있습니다. 이 경로는 `db push`나 원격 DML을 실행하지 않으며, 확장 migration evidence 경로를 대체하거나 약화하지 않습니다. 이 경로는 각 승인 환경의 외부 trust-root 변수 `AUTHORIZED_DOMAIN_RELEASE_SHA`가 현재 40자리 commit SHA와 정확히 일치할 때만 열리므로, 승인 후에는 운영자가 이 값을 해당 release commit으로 설정해야 합니다.
 - 수동 rollback은 검증된 release evidence에 결속됩니다. lockdown 후에는 호환되는 v2 Worker만 복원하며, 직접 client write 권한이나 Storage 소유권 검증을 되살리지 않습니다.
 
 승인 환경은 Cloudflare 배포 자격 증명(`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_OBSERVABILITY_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`)과 Supabase 관리 자격 증명(`SUPABASE_ACCESS_TOKEN`)을 보관합니다. 런타임 공개 구성은 `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` 또는 `VITE_SUPABASE_PUBLISHABLE_KEY`, `VITE_CHAT_API_BASE_URL`을 사용합니다. `wrangler versions deploy`는 승인된 release workflow 안에서만 사용합니다.

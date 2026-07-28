@@ -30,7 +30,11 @@ on:
         required: false
         type: string
       expand_evidence_run_id:
-        description: Required for shadow, smoke, and cutover; apply-expand database evidence for this target and commit
+        description: Mutually exclusive with baseline_evidence_run_id; apply-expand database evidence for this target and commit
+        required: false
+        type: string
+      baseline_evidence_run_id:
+        description: Mutually exclusive with expand_evidence_run_id; read-only production baseline evidence for the allowlisted domain-only change
         required: false
         type: string
       rollback_mode:
@@ -78,15 +82,20 @@ jobs:
       PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_WORKER_BASE_URL }}
       PRODUCTION_WORKER_NAME: ${{ vars.PRODUCTION_WORKER_NAME }}
       EXPAND_EVIDENCE_RUN_ID: ${{ inputs.expand_evidence_run_id }}
+      BASELINE_EVIDENCE_RUN_ID: ${{ inputs.baseline_evidence_run_id }}
       EXPECTED_SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
       ROLLBACK_MODE: ${{ inputs.rollback_mode }}
       ROLLBACK_EVIDENCE_RUN_ID: ${{ inputs.rollback_evidence_run_id }}
       LOCKDOWN_EVIDENCE_RUN_ID: ${{ inputs.lockdown_evidence_run_id }}
       GH_TOKEN: ${{ github.token }}
+      AUTHORIZED_DOMAIN_RELEASE_SHA: ${{ vars.AUTHORIZED_DOMAIN_RELEASE_SHA }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -126,7 +135,22 @@ jobs:
             [[ "$INPUT_VERSION_ID" =~ ^[A-Za-z0-9_-]+$ ]] || { echo '::error::version_id is required and must be canonical'; exit 1; }
           fi
           if [[ '${{ inputs.operation }}' != 'rollback' ]]; then
-            [[ "$EXPAND_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::expand_evidence_run_id is required for shadow, smoke, and cutover'; exit 1; }
+            [[ -z "$EXPAND_EVIDENCE_RUN_ID" || "$EXPAND_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::expand_evidence_run_id must be canonical'; exit 1; }
+            [[ -z "$BASELINE_EVIDENCE_RUN_ID" || "$BASELINE_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::baseline_evidence_run_id must be canonical'; exit 1; }
+            expand_set=false; baseline_set=false
+            [[ "$EXPAND_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] && expand_set=true
+            [[ "$BASELINE_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] && baseline_set=true
+            [[ "$expand_set" != "$baseline_set" ]] || { echo '::error::exactly one expand_evidence_run_id or baseline_evidence_run_id is required'; exit 1; }
+            if [[ "$baseline_set" == true ]]; then
+              [[ '${{ inputs.target }}' == 'production' ]] || { echo '::error::baseline evidence is production-only'; exit 1; }
+              [[ -n "$DEFAULT_BRANCH" && "$GITHUB_REF" == "refs/heads/$DEFAULT_BRANCH" ]] || { echo '::error::baseline release must run from the default branch'; exit 1; }
+              [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ && "$AUTHORIZED_DOMAIN_RELEASE_SHA" =~ ^[0-9a-f]{40}$ && "$GITHUB_SHA" == "$AUTHORIZED_DOMAIN_RELEASE_SHA" ]] || { echo '::error::authorized domain release SHA guard mismatch'; exit 1; }
+              git merge-base --is-ancestor 5adce9d2128bc7452e30bae9a2c8fca7790baa49 "$GITHUB_SHA" || { echo '::error::baseline source is not an ancestor of this commit'; exit 1; }
+              allowed_files=$'.github/workflows/release-database-baseline-attestation.yml\n.github/workflows/release-worker.yml\nREADME.md\nindex.html\nscripts/validate-github-workflows.mjs\nserver/deployment-workflow-sync.test.js\nworker.test.js\nwrangler.jsonc'
+              unexpected=$(comm -23 <(git diff --name-only 5adce9d2128bc7452e30bae9a2c8fca7790baa49 "$GITHUB_SHA" | sort -u) <(printf '%s\n' "$allowed_files" | sort -u))
+              [[ -z "$unexpected" ]] || { echo '::error::baseline evidence change scope is not allowlisted'; exit 1; }
+              ! git diff --quiet 5adce9d2128bc7452e30bae9a2c8fca7790baa49 "$GITHUB_SHA" -- supabase server/platform server/chat-handler.js worker.js || { echo '::error::database or mutation runtime surface changed'; exit 1; }
+            fi
           fi
           [[ "$EXPECTED_SUPABASE_PROJECT_REF" =~ ^[a-z0-9]{8,32}$ ]] || { echo '::error::approved Supabase project ref is missing or invalid'; exit 1; }
           if [[ '${{ inputs.operation }}' == 'rollback' ]]; then
@@ -145,13 +169,31 @@ jobs:
             [[ -n "$CLOUDFLARE_OBSERVABILITY_TOKEN" ]] || { echo '::error::Scoped Worker observability credential is not configured for this environment'; exit 1; }
           fi
 
-      - name: Verify matching expand migration evidence before serving the new Worker
+      - name: Verify matching database evidence before serving the new Worker
         if: ${{ inputs.operation != 'rollback' }}
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p artifacts/expand-evidence
-          gh run download "$EXPAND_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "database-release-evidence-${{ inputs.target }}-$EXPAND_EVIDENCE_RUN_ID" --dir artifacts/expand-evidence
+          mkdir -p artifacts/database-evidence
+          if [[ "$BASELINE_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]]; then
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BASELINE_EVIDENCE_RUN_ID" > artifacts/database-evidence/baseline-run.json
+            node <<'NODE'
+            const fs = require('node:fs');
+            const run = JSON.parse(fs.readFileSync('artifacts/database-evidence/baseline-run.json', 'utf8'));
+            const defaultBranch = process.env.DEFAULT_BRANCH;
+            const valid = run.conclusion === 'success'
+              && run.status === 'completed'
+              && run.event === 'workflow_dispatch'
+              && run.head_sha === process.env.GITHUB_SHA
+              && run.head_branch === defaultBranch
+              && typeof run.path === 'string'
+              && run.path.startsWith('.github/workflows/release-database-baseline-attestation.yml@');
+            if (!valid) throw new Error('Baseline evidence run metadata does not bind to the approved attestation workflow and current default-branch commit.');
+            NODE
+            gh run download "$BASELINE_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "database-baseline-evidence-production-$BASELINE_EVIDENCE_RUN_ID" --dir artifacts/database-evidence
+          else
+            gh run download "$EXPAND_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "database-release-evidence-${{ inputs.target }}-$EXPAND_EVIDENCE_RUN_ID" --dir artifacts/database-evidence
+          fi
           node <<'NODE'
           const crypto = require('node:crypto');
           const fs = require('node:fs');
@@ -159,23 +201,37 @@ jobs:
           const files = [];
           const walk = (directory) => fs.readdirSync(directory, { withFileTypes: true }).forEach((entry) => {
             const item = path.join(directory, entry.name);
-            if (entry.isDirectory()) walk(item); else if (entry.name === 'database-release-evidence.json') files.push(item);
+            if (entry.isDirectory()) walk(item); else if (entry.name === 'database-release-evidence.json' || entry.name === 'database-baseline-evidence.json') files.push(item);
           });
-          walk('artifacts/expand-evidence');
+          walk('artifacts/database-evidence');
           if (files.length !== 1) process.exit(1);
           const evidence = JSON.parse(fs.readFileSync(files[0], 'utf8'));
           const projectRef = process.env.EXPECTED_SUPABASE_PROJECT_REF;
           if (!/^[a-z0-9]{8,32}$/.test(projectRef || '')) process.exit(1);
           const refHash = crypto.createHash('sha256').update(projectRef).digest('hex');
-          const valid = evidence.schemaVersion === 3
-            && evidence.target === '${{ inputs.target }}'
-            && evidence.operation === 'apply-expand'
-            && evidence.commit === process.env.GITHUB_SHA
-            && evidence.migration === '20260726190559_backend_stabilization_expand.sql'
-            && evidence.projectRefHash === refHash
-            && Number.isFinite(Date.parse(evidence.appliedAt || ''));
+          const baseline = /^[0-9]+$/.test(String(process.env.BASELINE_EVIDENCE_RUN_ID || ''));
+          const lockdownMigrationAlias = { sourceVersion: '20260727000000', remoteVersion: '20260727025134', remoteName: 'backend_stabilization_lockdown' };
+          const lockdownMigrationAliasHash = crypto.createHash('sha256').update(JSON.stringify(lockdownMigrationAlias)).digest('hex');
+          const valid = baseline
+            ? evidence.schemaVersion === 1
+              && evidence.target === 'production'
+              && evidence.operation === 'read-only-baseline-attestation'
+              && evidence.commit === process.env.GITHUB_SHA
+              && evidence.baselineSourceSha === '5adce9d2128bc7452e30bae9a2c8fca7790baa49'
+              && evidence.projectRefHash === refHash
+              && JSON.stringify(evidence.lockdownMigrationAlias) === JSON.stringify(lockdownMigrationAlias)
+              && evidence.lockdownMigrationAliasHash === lockdownMigrationAliasHash
+              && evidence.allPassed === true
+              && Number.isFinite(Date.parse(evidence.attestedAt || ''))
+            : evidence.schemaVersion === 3
+              && evidence.target === '${{ inputs.target }}'
+              && evidence.operation === 'apply-expand'
+              && evidence.commit === process.env.GITHUB_SHA
+              && evidence.migration === '20260726190559_backend_stabilization_expand.sql'
+              && evidence.projectRefHash === refHash
+              && Number.isFinite(Date.parse(evidence.appliedAt || ''));
           if (!valid) process.exit(1);
-          fs.appendFileSync(process.env.GITHUB_ENV, `EXPAND_PROJECT_REF_HASH=${refHash}\nEXPAND_APPLIED_AT=${evidence.appliedAt}\n`);
+          fs.appendFileSync(process.env.GITHUB_ENV, `DATABASE_EVIDENCE_MODE=${baseline ? 'baseline' : 'expand'}\nEXPAND_PROJECT_REF_HASH=${baseline ? '' : refHash}\nEXPAND_APPLIED_AT=${baseline ? '' : evidence.appliedAt}\n`);
           NODE
 
       - name: Verify evidence-bound manual rollback target
@@ -523,6 +579,8 @@ jobs:
             baseUrl: new URL(process.env.BASE_URL).origin,
             versionId,
             projectRefHash: crypto.createHash('sha256').update(process.env.EXPECTED_SUPABASE_PROJECT_REF).digest('hex'),
+            databaseEvidenceMode: operation === 'rollback' ? null : process.env.DATABASE_EVIDENCE_MODE || null,
+            baselineEvidenceRunId: operation === 'rollback' ? null : (/^[0-9]+$/.test(String(process.env.BASELINE_EVIDENCE_RUN_ID || '')) ? process.env.BASELINE_EVIDENCE_RUN_ID : null),
             v2Compatible: operation === 'cutover' && /^[0-9]+$/.test(String(process.env.EXPAND_EVIDENCE_RUN_ID || '')),
             expandEvidenceRunId: operation === 'rollback' ? null : process.env.EXPAND_EVIDENCE_RUN_ID,
             expandProjectRefHash: operation === 'rollback' ? null : process.env.EXPAND_PROJECT_REF_HASH,

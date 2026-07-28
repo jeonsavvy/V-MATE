@@ -93,6 +93,7 @@ test('declares the canonical production hostname while preserving Workers.dev an
   const config = JSON.parse(readFileSync('wrangler.jsonc', 'utf8'));
   const index = readFileSync('index.html', 'utf8');
   const workflow = readFileSync('.github/workflows/release-worker.yml', 'utf8');
+  const baselineWorkflow = readFileSync('.github/workflows/release-database-baseline-attestation.yml', 'utf8');
 
   assert.equal(config.workers_dev, true);
   assert.deepEqual(config.routes, [{ pattern: 'v-mate.satinode.com', custom_domain: true }]);
@@ -107,6 +108,18 @@ test('declares the canonical production hostname while preserving Workers.dev an
   assert.match(workflow, /release_allowed_origins="\$APPROVED_ORIGIN,\$LEGACY_ORIGIN"/);
   assert.match(workflow, /--var "ALLOWED_ORIGINS:\$release_allowed_origins"/);
   assert.match(workflow, /Smoke preserved legacy Workers\.dev hostname/);
+  assert.match(workflow, /exactly one expand_evidence_run_id or baseline_evidence_run_id is required/);
+  assert.match(workflow, /AUTHORIZED_DOMAIN_RELEASE_SHA/);
+  assert.match(workflow, /release-database-baseline-attestation\.yml@/);
+  assert.match(baselineWorkflow, /READ_ONLY_BASELINE_APPROVED/);
+  assert.match(baselineWorkflow, /AUTHORIZED_DOMAIN_RELEASE_SHA/);
+  assert.match(baselineWorkflow, /if: \$\{\{ success\(\) \}\}/);
+  assert.match(baselineWorkflow, /5adce9d2128bc7452e30bae9a2c8fca7790baa49/);
+  assert.match(baselineWorkflow, /20260727000000/);
+  assert.match(baselineWorkflow, /20260727025134/);
+  assert.match(baselineWorkflow, /backend_stabilization_lockdown/);
+  assert.match(baselineWorkflow, /database-baseline-evidence-production-/);
+  assert.doesNotMatch(baselineWorkflow, /supabase db push|confirm-remote-writes|^\s*(?:insert|update|delete)\s+/im);
 });
 
 test('returns configuration error for account deletion when service role secret is missing', async () => {

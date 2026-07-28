@@ -1,0 +1,200 @@
+name: release-database-baseline-attestation
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_ref:
+        description: Production project ref registered in the protected environment
+        required: true
+        type: string
+      baseline_approved:
+        description: Type READ_ONLY_BASELINE_APPROVED after reviewing the protected-environment request
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: production-database-baseline-attestation
+  cancel-in-progress: false
+
+jobs:
+  attest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production-db-baseline-attestation
+    env:
+      PROJECT_REF: ${{ inputs.project_ref }}
+      EXPECTED_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+      PRODUCTION_PROJECT_REF: ${{ vars.PRODUCTION_SUPABASE_PROJECT_REF }}
+      BASELINE_APPROVED: ${{ inputs.baseline_approved }}
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+      BASELINE_SOURCE_SHA: 5adce9d2128bc7452e30bae9a2c8fca7790baa49
+      AUTHORIZED_DOMAIN_RELEASE_SHA: ${{ vars.AUTHORIZED_DOMAIN_RELEASE_SHA }}
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+
+      - name: Validate protected read-only baseline scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$PROJECT_REF" =~ ^[a-z0-9]{8,32}$ && "$PROJECT_REF" == "$EXPECTED_PROJECT_REF" && "$PROJECT_REF" == "$PRODUCTION_PROJECT_REF" ]] || { echo '::error::production project guard mismatch'; exit 1; }
+          [[ "$BASELINE_APPROVED" == 'READ_ONLY_BASELINE_APPROVED' ]] || { echo '::error::read-only baseline approval is required'; exit 1; }
+          [[ -n "$SUPABASE_ACCESS_TOKEN" ]] || { echo '::error::Database release credential is not configured'; exit 1; }
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ && "$AUTHORIZED_DOMAIN_RELEASE_SHA" =~ ^[0-9a-f]{40}$ && "$GITHUB_SHA" == "$AUTHORIZED_DOMAIN_RELEASE_SHA" ]] || { echo '::error::authorized domain release SHA guard mismatch'; exit 1; }
+          git merge-base --is-ancestor "$BASELINE_SOURCE_SHA" "$GITHUB_SHA" || { echo '::error::baseline source is not an ancestor of this commit'; exit 1; }
+          cat > "$RUNNER_TEMP/allowed-baseline-files.txt" <<'EOF'
+          .github/workflows/release-database-baseline-attestation.yml
+          .github/workflows/release-worker.yml
+          README.md
+          index.html
+          scripts/validate-github-workflows.mjs
+          server/deployment-workflow-sync.test.js
+          worker.test.js
+          wrangler.jsonc
+          EOF
+          git diff --name-only "$BASELINE_SOURCE_SHA" "$GITHUB_SHA" | sort -u > "$RUNNER_TEMP/changed-baseline-files.txt"
+          [[ -s "$RUNNER_TEMP/changed-baseline-files.txt" ]] || { echo '::error::baseline attestation requires an approved domain-only change'; exit 1; }
+          comm -23 "$RUNNER_TEMP/changed-baseline-files.txt" <(sort -u "$RUNNER_TEMP/allowed-baseline-files.txt") | grep -q . && { echo '::error::baseline attestation change scope is not allowlisted'; exit 1; } || true
+          grep -Fxq '.github/workflows/release-worker.yml' "$RUNNER_TEMP/changed-baseline-files.txt" || { echo '::error::baseline release guard change is absent'; exit 1; }
+          grep -Fxq 'wrangler.jsonc' "$RUNNER_TEMP/changed-baseline-files.txt" || { echo '::error::Custom Domain configuration change is absent'; exit 1; }
+          ! git diff --quiet "$BASELINE_SOURCE_SHA" "$GITHUB_SHA" -- supabase server/platform server/chat-handler.js worker.js || { echo '::error::database or mutation runtime surface changed'; exit 1; }
+
+      - name: Require successful CI for this default-branch commit
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$DEFAULT_BRANCH" && "$GITHUB_REF" == "refs/heads/$DEFAULT_BRANCH" ]] || { echo '::error::Baseline attestation must run from the default branch'; exit 1; }
+          node --input-type=module <<'NODE'
+          const headers = { Accept: 'application/vnd.github+json', Authorization: `Bearer ${process.env.GH_TOKEN}`, 'X-GitHub-Api-Version': '2022-11-28' };
+          const response = await fetch(`https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${process.env.GITHUB_SHA}&status=completed&per_page=100`, { headers });
+          if (!response.ok) throw new Error(`GitHub API request failed with status ${response.status}`);
+          const payload = await response.json();
+          const run = payload.workflow_runs?.find((candidate) => candidate.event === 'push' && candidate.head_sha === process.env.GITHUB_SHA && candidate.head_branch === process.env.DEFAULT_BRANCH && candidate.conclusion === 'success');
+          if (!run) throw new Error('No successful CI run exists for this default-branch commit.');
+          const jobsResponse = await fetch(`https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}/actions/runs/${run.id}/jobs?filter=latest&per_page=100`, { headers });
+          if (!jobsResponse.ok) throw new Error(`GitHub jobs request failed with status ${jobsResponse.status}`);
+          const jobs = await jobsResponse.json();
+          const conclusions = new Map((jobs.jobs || []).map((job) => [job.name, job.conclusion]));
+          for (const required of ['quality', 'Database contracts (local Docker only)']) if (conclusions.get(required) !== 'success') throw new Error(`Required CI job did not pass: ${required}`);
+          NODE
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Capture read-only database baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          workdir=$(mktemp -d "$RUNNER_TEMP/vmate-baseline-attestation-XXXXXX")
+          mkdir -p "$workdir/supabase" private-artifacts artifacts
+          trap 'rm -rf "$workdir" private-artifacts' EXIT
+          cp supabase/config.toml "$workdir/supabase/config.toml"
+          npx --no-install supabase link --workdir "$workdir" --project-ref "$PROJECT_REF"
+          npx --no-install supabase migration list --workdir "$workdir" --linked --output json > private-artifacts/migration-list.json
+          npx --no-install supabase db query --workdir "$workdir" --linked --output-format json --file scripts/capture-migration-state.sql > private-artifacts/migration-state.json
+          npx --no-install supabase db query --workdir "$workdir" --linked --output-format json --file scripts/capture-release-state.sql > private-artifacts/release-state.json
+          {
+            printf 'with expected(source_version, remote_version, remote_name) as (values '
+            first=true
+            while IFS= read -r migration; do
+              version="${migration%%_*}"
+              remote_version="$version"
+              remote_name=''
+              if [[ "$version" == '20260727000000' ]]; then
+                remote_version='20260727025134'
+                remote_name='backend_stabilization_lockdown'
+              fi
+              if [[ "$first" == true ]]; then first=false; else printf ','; fi
+              if [[ -n "$remote_name" ]]; then
+                printf "('%s','%s','%s')" "$version" "$remote_version" "$remote_name"
+              else
+                printf "('%s','%s',null)" "$version" "$remote_version"
+              fi
+            done < <(find supabase/migrations -maxdepth 1 -type f -name '*.sql' -printf '%f\n' | sort)
+            [[ "$first" == false ]] || { echo '::error::no source migrations found'; exit 1; }
+            printf ') select coalesce(jsonb_agg(expected.source_version order by expected.source_version), '\''[]'\''::jsonb) as missing_source_versions from expected left join supabase_migrations.schema_migrations applied on applied.version = expected.remote_version and (expected.remote_name is null or applied.name = expected.remote_name) where applied.version is null;\n'
+          } > "$workdir/migration-coverage.sql"
+          npx --no-install supabase db query --workdir "$workdir" --linked --output-format json --file "$workdir/migration-coverage.sql" > private-artifacts/migration-coverage.json
+          cat > "$workdir/baseline-invariants.sql" <<'SQL'
+          select jsonb_build_object(
+            'expandApplied', exists (select 1 from supabase_migrations.schema_migrations where version = '20260726190559'),
+            'lockdownAliasApplied', exists (select 1 from supabase_migrations.schema_migrations where version = '20260727025134' and name = 'backend_stabilization_lockdown'),
+            'directTableWritesBlocked', not exists (
+              select 1 from unnest(array['anon', 'authenticated']) as roles(role_name)
+              cross join unnest(array['public.characters', 'public.worlds', 'public.character_assets', 'public.world_assets', 'public.rooms', 'public.room_messages', 'public.room_state_summaries']) as tables(table_name)
+              cross join unnest(array['INSERT', 'UPDATE', 'DELETE']) as privileges(privilege_name)
+              where has_table_privilege(role_name, table_name, privilege_name)
+            ),
+            'legacyQuotaWritesBlocked', not exists (
+              select 1 from unnest(array['anon', 'authenticated']) as roles(role_name)
+              cross join unnest(array['public.reserve_daily_chat_message(text,integer)', 'public.complete_daily_chat_message(text,jsonb)', 'public.refund_daily_chat_message(text,integer)']) as functions(signature)
+              where has_function_privilege(role_name, signature, 'EXECUTE')
+            ),
+            'storageWritePoliciesAbsent', not exists (
+              select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects'
+              and policyname in ('Authenticated users can upload vmate assets to their own folder', 'Authenticated users can update vmate assets in their own folder', 'Authenticated users can delete vmate assets in their own folder')
+            ),
+            'serviceV2ReserveCallable', has_function_privilege('service_role', 'public.reserve_chat_message_v2(uuid,text,uuid,text,text,integer,integer)', 'EXECUTE')
+          ) as invariants;
+          SQL
+          npx --no-install supabase db query --workdir "$workdir" --linked --output-format json --file "$workdir/baseline-invariants.sql" > private-artifacts/invariants.json
+
+      - name: Record sanitized read-only baseline evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const readJson = (path) => JSON.parse(fs.readFileSync(path, 'utf8'));
+          const firstRow = (value) => Array.isArray(value) ? value[0] : value?.data?.[0] || value?.result?.[0];
+          const migration = firstRow(readJson('private-artifacts/migration-state.json'));
+          const release = firstRow(readJson('private-artifacts/release-state.json'));
+          const migrationCoverage = firstRow(readJson('private-artifacts/migration-coverage.json'));
+          const invariants = firstRow(readJson('private-artifacts/invariants.json'))?.invariants;
+          if (!migration?.migration_rows_fingerprint || !release?.release_state_fingerprint || !migrationCoverage || !invariants || typeof invariants !== 'object') throw new Error('Read-only baseline query result is invalid.');
+          if (!Array.isArray(migrationCoverage.missing_source_versions) || migrationCoverage.missing_source_versions.length !== 0) throw new Error('A source migration is not applied remotely.');
+          const required = ['expandApplied', 'lockdownAliasApplied', 'directTableWritesBlocked', 'legacyQuotaWritesBlocked', 'storageWritePoliciesAbsent', 'serviceV2ReserveCallable'];
+          if (!required.every((name) => invariants[name] === true)) throw new Error('Read-only baseline invariants did not pass.');
+          const migrationList = fs.readFileSync('private-artifacts/migration-list.json');
+          const lockdownMigrationAlias = { sourceVersion: '20260727000000', remoteVersion: '20260727025134', remoteName: 'backend_stabilization_lockdown' };
+          const evidence = {
+            schemaVersion: 1,
+            target: 'production',
+            operation: 'read-only-baseline-attestation',
+            commit: process.env.GITHUB_SHA,
+            baselineSourceSha: process.env.BASELINE_SOURCE_SHA,
+            projectRefHash: crypto.createHash('sha256').update(process.env.PROJECT_REF).digest('hex'),
+            migrationListHash: crypto.createHash('sha256').update(migrationList).digest('hex'),
+            migrationRowsFingerprint: migration.migration_rows_fingerprint,
+            missingMigrationCount: 0,
+            lockdownMigrationAlias,
+            lockdownMigrationAliasHash: crypto.createHash('sha256').update(JSON.stringify(lockdownMigrationAlias)).digest('hex'),
+            releaseStateFingerprint: release.release_state_fingerprint,
+            invariants: Object.fromEntries(required.map((name) => [name, true])),
+            allPassed: true,
+            attestedAt: new Date().toISOString(),
+          };
+          fs.writeFileSync('artifacts/database-baseline-evidence.json', `${JSON.stringify(evidence, null, 2)}\n`);
+          NODE
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ success() }}
+        with:
+          name: database-baseline-evidence-production-${{ github.run_id }}
+          path: artifacts/database-baseline-evidence.json
+          if-no-files-found: error

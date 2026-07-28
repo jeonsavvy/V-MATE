@@ -13,6 +13,7 @@ const readUtf8 = async (relativePath) =>
 test('github ci is read-only and Worker release requires a manual zero-traffic gate', async () => {
   const ci = await readUtf8('.github/workflows/ci.yml');
   const release = await readUtf8('.github/workflows/release-worker.yml');
+  const baseline = await readUtf8('.github/workflows/release-database-baseline-attestation.yml');
   const smoke = await readUtf8('scripts/smoke-release.mjs');
 
   assert.doesNotMatch(ci, /CLOUDFLARE_API_TOKEN|versions deploy|cf:deploy/);
@@ -52,7 +53,22 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(release, /wrangler triggers deploy --env "" --name "\$WORKER_NAME" --dry-run/);
   assert.match(release, /wrangler triggers deploy --env "" --name "\$WORKER_NAME"\n/);
   assert.match(release, /release_allowed_origins="\$APPROVED_ORIGIN,\$LEGACY_ORIGIN"/);
+  assert.match(release, /baseline_evidence_run_id/);
+  assert.match(release, /exactly one expand_evidence_run_id or baseline_evidence_run_id is required/);
+  assert.match(release, /baseline evidence change scope is not allowlisted/);
+  assert.match(release, /AUTHORIZED_DOMAIN_RELEASE_SHA/);
+  assert.match(release, /actions\/runs\/\$BASELINE_EVIDENCE_RUN_ID/);
+  assert.match(release, /release-database-baseline-attestation\.yml@/);
   assert.match(release, /wrangler versions upload[\s\S]*--var "ALLOWED_ORIGINS:\$release_allowed_origins"/);
+  assert.match(baseline, /environment: production-db-baseline-attestation/);
+  assert.match(baseline, /READ_ONLY_BASELINE_APPROVED/);
+  assert.match(baseline, /AUTHORIZED_DOMAIN_RELEASE_SHA/);
+  assert.match(baseline, /if: \$\{\{ success\(\) \}\}/);
+  assert.match(baseline, /database-baseline-evidence-production-/);
+  assert.match(baseline, /20260727000000/);
+  assert.match(baseline, /20260727025134/);
+  assert.match(baseline, /lockdownMigrationAliasHash/);
+  assert.doesNotMatch(baseline, /supabase db push|confirm-remote-writes|^\s*(?:insert|update|delete)\s+/im);
   assert.match(smoke, /\/auth\/recovery/);
 });
 

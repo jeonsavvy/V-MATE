@@ -7,6 +7,7 @@ const scriptDirectory = path.dirname(fileURLToPath(import.meta.url))
 const workflowDirectory = path.resolve(scriptDirectory, '..', '.github', 'workflows')
 const expectedReleaseWorkflows = new Set([
   'release-backup-readiness.yml',
+  'release-database-baseline-attestation.yml',
   'release-database.yml',
   'release-post-lockdown-observation.yml',
   'release-post-lockdown-privilege-smoke.yml',
@@ -119,10 +120,40 @@ const validateWorkflow = (file, source) => {
       'release_allowed_origins="$APPROVED_ORIGIN,$LEGACY_ORIGIN"',
       '--var "ALLOWED_ORIGINS:$release_allowed_origins"',
       'wrangler triggers deploy --env "" --name "$WORKER_NAME" --dry-run',
+      'baseline_evidence_run_id:',
+      'exactly one expand_evidence_run_id or baseline_evidence_run_id is required',
+      'baseline evidence change scope is not allowlisted',
+      'AUTHORIZED_DOMAIN_RELEASE_SHA',
+      'authorized domain release SHA guard mismatch',
+      'actions/runs/$BASELINE_EVIDENCE_RUN_ID',
+      'release-database-baseline-attestation.yml@',
       'wrangler versions upload',
     ]) {
       if (!source.includes(required)) fail(file, `missing approved-origin Worker upload guard: ${required}`)
     }
+  }
+  if (file === 'release-database-baseline-attestation.yml') {
+    for (const required of [
+      'production-db-baseline-attestation',
+      'READ_ONLY_BASELINE_APPROVED',
+      'AUTHORIZED_DOMAIN_RELEASE_SHA',
+      'authorized domain release SHA guard mismatch',
+      'if: ${{ success() }}',
+      '5adce9d2128bc7452e30bae9a2c8fca7790baa49',
+      '20260727000000',
+      '20260727025134',
+      'backend_stabilization_lockdown',
+      'lockdownMigrationAliasHash',
+      'database-baseline-evidence-production-',
+      'supabase db query',
+      'read-only-baseline-attestation',
+    ]) {
+      if (!source.includes(required)) fail(file, `missing read-only baseline attestation guard: ${required}`)
+    }
+    for (const forbidden of ['supabase db push', 'confirm-remote-writes']) {
+      if (source.toLowerCase().includes(forbidden)) fail(file, `read-only baseline attestation includes forbidden write surface: ${forbidden}`)
+    }
+    if (/^\s*(?:insert|update|delete)\s+/im.test(source)) fail(file, 'read-only baseline attestation includes a SQL DML statement')
   }
 }
 
