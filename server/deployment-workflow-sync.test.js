@@ -75,6 +75,9 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(baseline, /20260727025134/);
   assert.match(baseline, /lockdownMigrationAliasHash/);
   assert.match(baseline, /run-supabase-read-only-query\.mjs/);
+  assert.match(baseline, /scripts\/create-dist-manifest\.mjs/);
+  assert.match(baseline, /scripts\/smoke-release\.mjs/);
+  assert.match(baseline, /server\/smoke-release\.test\.js/);
   assert.match(baseline, /queryMode: 'supabase_read_only_user'/);
   assert.match(baseline, /Record sanitized read-only baseline evidence[\s\S]*trap 'rm -rf private-artifacts' EXIT/);
   assert.doesNotMatch(baseline, /!\s+git diff --quiet/);

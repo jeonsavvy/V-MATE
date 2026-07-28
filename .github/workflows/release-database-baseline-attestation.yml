@@ -61,9 +61,12 @@ jobs:
           index.html
           scripts/capture-migration-state.sql
           scripts/capture-release-state.sql
+          scripts/create-dist-manifest.mjs
           scripts/run-supabase-read-only-query.mjs
+          scripts/smoke-release.mjs
           scripts/validate-github-workflows.mjs
           server/deployment-workflow-sync.test.js
+          server/smoke-release.test.js
           worker.test.js
           wrangler.jsonc
           EOF
