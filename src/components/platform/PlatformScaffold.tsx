@@ -92,7 +92,7 @@ function AccountPanel({ user, authStatus, userAvatarInitial, onAuthRequest, onOp
   }
   return <button type="button" onClick={(event) => onOpenAccount(event.currentTarget)} aria-label={compact ? '모바일 계정 메뉴 열기' : undefined} aria-haspopup="dialog" className="flex w-full items-center justify-center gap-2.5 rounded-lg p-2 text-left transition hover:bg-[#f3f3f3]">
     <Avatar fallback={userAvatarInitial} className="size-9 rounded-full bg-[#eeeeee] text-[#3c3432]" />
-    {compact ? null : <><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-[#171717]">{user.user_metadata?.name || '사용자'}</p><p className="truncate text-[11px] text-[#7a7a7a]">{maskEmailAddress(user.email) || '이메일 비공개'}</p></div><ChevronRight className="size-4 text-[#909090]" /></>}
+    {compact ? null : <><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-[#171717]">{user.user_metadata?.name || '사용자'}</p><p className="truncate text-xs text-[#666]">{maskEmailAddress(user.email) || '이메일 비공개'}</p></div><ChevronRight className="size-4 text-[#909090]" /></>}
   </button>
 }
 
@@ -182,7 +182,7 @@ function SelectionSlot({ item, type, onClear, onNavigate }: { item: EntitySummar
         <>
           <img src={imageUrl} alt="" decoding="async" className="size-10 shrink-0 rounded-md object-cover" />
           <div className="min-w-0 flex-1">
-            <p className="text-[10px] font-semibold text-[#666]">{type === 'character' ? '캐릭터' : '월드 · 선택 사항'}</p>
+            <p className="text-xs font-semibold text-[#666]">{type === 'character' ? '캐릭터' : '월드 · 선택 사항'}</p>
             <p className="truncate text-sm font-bold text-[#171717]">{item.name}</p>
           </div>
           <button type="button" onClick={onClear} aria-label={`${item.name} 선택 해제`} className="flex size-10 shrink-0 items-center justify-center rounded-md text-[#888888] transition hover:bg-[#f3f3f3] hover:text-[#171717]"><X className="size-4" /></button>
@@ -190,7 +190,7 @@ function SelectionSlot({ item, type, onClear, onNavigate }: { item: EntitySummar
       ) : (
         <button type="button" onClick={() => onNavigate('/')} className="flex w-full items-center gap-2.5 text-left">
           <span className="flex size-10 shrink-0 items-center justify-center rounded-md border border-dashed border-[#cfcfcf] bg-white text-[#ff5148]">+</span>
-          <span><span className="block text-[10px] font-semibold text-[#666]">{type === 'character' ? '필수' : '선택 사항'}</span><span className="block text-sm font-bold text-[#4d4d4d]">{type === 'character' ? '캐릭터 선택' : '월드 선택'}</span></span>
+          <span><span className="block text-xs font-semibold text-[#666]">{type === 'character' ? '필수' : '선택 사항'}</span><span className="block text-sm font-bold text-[#4d4d4d]">{type === 'character' ? '캐릭터 선택' : '월드 선택'}</span></span>
         </button>
       )}
     </div>
@@ -287,7 +287,7 @@ export function PlatformShell({
 
       <aside className="fixed bottom-0 left-0 top-16 z-40 hidden w-[232px] border-r border-[#e7e7e7] bg-[#fafafa] lg:flex lg:flex-col">
         <div className="px-4 pb-3 pt-5">
-          <p className="px-2 text-[11px] font-bold tracking-[-0.01em] text-[#777]">대화 기록</p>
+          <p className="px-2 text-xs font-bold tracking-[-0.01em] text-[#666]">대화 기록</p>
           <div className="mt-3 space-y-1">
             <NavigationLink path="/recent" onNavigate={onNavigate} className={cn('flex min-h-10 w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm font-semibold transition', isNavActive('/recent') ? 'bg-white text-[#171717] shadow-[inset_0_0_0_1px_#e5e5e5]' : 'text-[#5f5f5f] hover:bg-white hover:text-[#171717]')}><MessageSquareMore className="size-4" />최근 대화</NavigationLink>
             <NavigationLink path="/library" onNavigate={onNavigate} className={cn('flex min-h-10 w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm font-semibold transition', isNavActive('/library') ? 'bg-white text-[#171717] shadow-[inset_0_0_0_1px_#e5e5e5]' : 'text-[#5f5f5f] hover:bg-white hover:text-[#171717]')}><BookMarked className="size-4" />보관함</NavigationLink>
@@ -311,7 +311,7 @@ export function PlatformShell({
 
       <nav className="fixed inset-x-0 bottom-0 z-50 grid h-[calc(66px+env(safe-area-inset-bottom))] grid-cols-5 border-t border-[#dedede] bg-white pb-[env(safe-area-inset-bottom)] lg:hidden">
         {navItems.map(({ label, path, icon: Icon }) => (
-          <NavigationLink key={path} path={path} onNavigate={onNavigate} className={cn('flex min-h-11 flex-col items-center justify-center gap-1 text-[10px] font-semibold', isNavActive(path) ? 'text-[#c9342f]' : 'text-[#6b6b6b]')}><Icon className="size-[19px]" />{label}</NavigationLink>
+          <NavigationLink key={path} path={path} onNavigate={onNavigate} className={cn('flex min-h-11 flex-col items-center justify-center gap-1 text-xs font-semibold', isNavActive(path) ? 'text-[#c9342f]' : 'text-[#6b6b6b]')}><Icon className="size-[19px]" />{label}</NavigationLink>
         ))}
         <div className="flex items-center justify-center px-1"><div className="w-full [&_button]:p-1"><AccountPanel user={user} authStatus={authStatus} userAvatarInitial={userAvatarInitial} onAuthRequest={onAuthRequest} onOpenAccount={openAccount} compact /></div></div>
       </nav>
@@ -404,12 +404,12 @@ export function EntityCard({ item, meta, href, onNavigate, onClick, onSelect, ct
     <article className="group flex h-full min-w-0 flex-col bg-white">
       <EntityNavigationTarget href={href} onNavigate={onNavigate} onClick={onClick} className={cn('relative block w-full overflow-hidden rounded-lg bg-[#f1f1f1] text-left ring-offset-2 transition', selected && 'ring-2 ring-[#ff5148]')}>
         <ArtworkFrame src={artwork.src} srcSet={artwork.srcSet} sizes="(min-width: 1024px) 520px, 50vw" alt={item.name} aspectClassName={item.entityType === 'world' ? 'aspect-[16/9]' : 'aspect-[4/5]'} imageClassName="transition duration-500 group-hover:scale-[1.02]" priority={priority} />
-        <span className="absolute left-2.5 top-2.5 rounded bg-black/68 px-2 py-1 text-[10px] font-bold text-white backdrop-blur-sm">{item.entityType === 'character' ? '캐릭터' : '월드'}</span>
+        <span className="absolute left-2.5 top-2.5 rounded bg-black/68 px-2 py-1 text-xs font-bold text-white backdrop-blur-sm">{item.entityType === 'character' ? '캐릭터' : '월드'}</span>
       </EntityNavigationTarget>
       <div className="flex flex-1 flex-col pt-3">
         <EntityNavigationTarget href={href} onNavigate={onNavigate} onClick={onClick} className="text-left"><h3 className="line-clamp-1 text-[1.02rem] font-bold tracking-[-0.025em] text-[#171717]">{item.name}</h3><p className="mt-1 line-clamp-2 min-h-10 text-sm leading-5 text-[#666]">{item.headline || item.summary}</p></EntityNavigationTarget>
-        <div className="mt-2 flex flex-wrap gap-x-2 gap-y-1">{item.tags.slice(0, 3).map((tag) => <span key={tag} className="text-[11px] font-medium text-[#666]">#{tag}</span>)}</div>
-        <div className="mt-auto flex items-center justify-between gap-2 pt-3"><span className="truncate text-[11px] text-[#707070]">{meta || `제작자 ${item.creator.name}`}</span>{onSelect ? <Button size="sm" variant={selected ? 'default' : 'outline'} onClick={onSelect} className={cn('h-11 rounded-md px-3 text-xs shadow-none', selected ? 'bg-[#d43a34] hover:bg-[#c9342f]' : 'border-[#d8d8d8] bg-white hover:border-[#ff5148] hover:bg-white hover:text-[#c9342f]')}>{selected ? '선택됨' : '선택'}</Button> : <span className="text-xs font-bold text-[#c9342f]">{cta}</span>}</div>
+        <div className="mt-2 flex flex-wrap gap-x-2 gap-y-1">{item.tags.slice(0, 3).map((tag) => <span key={tag} className="text-xs font-medium text-[#666]">#{tag}</span>)}</div>
+        <div className="mt-auto flex items-center justify-between gap-2 pt-3"><span className="min-w-0 flex-1 truncate text-xs text-[#707070]">{meta || `제작자 ${item.creator.name}`}</span>{onSelect ? <Button size="sm" variant={selected ? 'default' : 'outline'} onClick={onSelect} className={cn('h-11 rounded-md px-3 text-xs shadow-none', selected ? 'bg-[#d43a34] hover:bg-[#c9342f]' : 'border-[#d8d8d8] bg-white hover:border-[#ff5148] hover:bg-white hover:text-[#c9342f]')}>{selected ? '선택됨' : '선택'}</Button> : <span className="text-xs font-bold text-[#c9342f]">{cta}</span>}</div>
       </div>
     </article>
   )

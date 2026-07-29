@@ -127,7 +127,7 @@ const ReportDialog = ({ open, onOpenChange, entityType, entityId, entityName }: 
       .catch((error) => toast.error(safeActionError(error, '신고를 접수하지 못했습니다. 입력한 내용은 유지됩니다. 다시 시도해 주세요.')))
       .finally(() => setIsSubmitting(false))
   }
-  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="rounded-xl border-[#e7e7e7] bg-white sm:max-w-md"><DialogHeader><DialogTitle>{entityName} 신고</DialogTitle><DialogDescription>신고 사유를 선택해 주세요. 같은 콘텐츠는 한 번만 신고할 수 있습니다.</DialogDescription></DialogHeader><label className="space-y-2 text-sm font-semibold text-[#555]" htmlFor="report-reason"><span>신고 사유</span><select id="report-reason" name="report-reason" value={reason} onChange={(event) => setReason(event.target.value)} className="h-11 w-full rounded-lg border border-[#d8d8d8] bg-white px-3 text-sm font-normal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2"><option value="sexual_content">노골적인 성적 콘텐츠</option><option value="minor_safety">미성년자 안전</option><option value="hate_or_harassment">혐오·괴롭힘</option><option value="copyright">저작권·권리 침해</option><option value="spam">스팸·기만</option><option value="other">기타</option></select></label><label className="space-y-2 text-sm font-semibold text-[#555]" htmlFor="report-details"><span>상세 내용 <span className="font-normal text-[#888]">(선택)</span></span><textarea id="report-details" name="report-details" value={details} onChange={(event) => setDetails(event.target.value)} placeholder="검토에 필요한 내용을 적어 주세요." className="min-h-28 w-full rounded-lg border border-[#d8d8d8] bg-white px-4 py-3 text-sm font-normal text-[#171717] placeholder:text-[#707070] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2" maxLength={1000} /></label><DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>취소</Button><Button onClick={submit} disabled={isSubmitting} className="bg-[#d43a34] text-white hover:bg-[#c9342f]">{isSubmitting ? <Loader2 className="size-4 animate-spin" /> : <Flag className="size-4" />}{isSubmitting ? '접수 중…' : '신고 접수'}</Button></DialogFooter></DialogContent></Dialog>
+  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="rounded-xl border-[#e7e7e7] bg-white sm:max-w-md"><DialogHeader><DialogTitle>{entityName} 신고</DialogTitle><DialogDescription>신고 사유를 선택해 주세요. 같은 콘텐츠는 한 번만 신고할 수 있습니다.</DialogDescription></DialogHeader><label className="space-y-2 text-sm font-semibold text-[#555]" htmlFor="report-reason"><span>신고 사유</span><select id="report-reason" name="report-reason" value={reason} onChange={(event) => setReason(event.target.value)} className="h-11 w-full rounded-lg border border-[#d8d8d8] bg-white px-3 text-sm font-normal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2"><option value="sexual_content">노골적인 성적 콘텐츠</option><option value="minor_safety">미성년자 안전</option><option value="hate_or_harassment">혐오·괴롭힘</option><option value="copyright">저작권·권리 침해</option><option value="spam">스팸·기만</option><option value="other">기타</option></select></label><label className="space-y-2 text-sm font-semibold text-[#555]" htmlFor="report-details"><span>상세 내용 <span className="font-normal text-[#666]">(선택)</span></span><textarea id="report-details" name="report-details" value={details} onChange={(event) => setDetails(event.target.value)} placeholder="검토에 필요한 내용을 적어 주세요." className="min-h-28 w-full rounded-lg border border-[#d8d8d8] bg-white px-4 py-3 text-sm font-normal text-[#171717] placeholder:text-[#707070] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2" maxLength={1000} /></label><DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>취소</Button><Button onClick={submit} disabled={isSubmitting} className="bg-[#d43a34] text-white hover:bg-[#c9342f]">{isSubmitting ? <Loader2 className="size-4 animate-spin" /> : <Flag className="size-4" />}{isSubmitting ? '접수 중…' : '신고 접수'}</Button></DialogFooter></DialogContent></Dialog>
 }
 
 // 상세 화면은 공개 조회와 새 방 진입을 함께 책임진다.
@@ -237,10 +237,10 @@ export function CharacterDetailPage({ chrome, slug }: { chrome: PlatformPageChro
         <ArtworkFrame src={characterArtwork.src} srcSet={characterArtwork.srcSet} sizes="(min-width: 1024px) 42vw, 100vw" alt={item.name} aspectClassName="aspect-[4/5] xl:max-h-[720px]" className="mx-auto w-full max-w-[28rem] rounded-lg lg:mx-0 lg:max-w-none" priority />
         <div className="space-y-6 py-1 lg:pl-4">
           <div className="border-b border-[#e7e7e7] pb-5">
-            <p className="text-[0.72rem] font-semibold uppercase tracking-[0.22em] text-[#8c8c8c]">캐릭터</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[#666]">캐릭터</p>
             <h1 className="mt-3 text-[clamp(2.2rem,4vw,3.6rem)] font-semibold tracking-[-0.04em] text-[#171717]">{item.name}</h1>
             <p className="mt-3 text-base leading-8 text-[#666666]">{item.summary}</p>
-            <p className="mt-4 text-xs font-semibold text-[#777]">제작자 {item.creator.name} · {item.sourceType === 'original' ? '오리지널' : '2차창작'}</p>
+            <p className="mt-4 text-xs font-semibold text-[#666]">제작자 {item.creator.name} · {item.sourceType === 'original' ? '오리지널' : '2차창작'}</p>
           </div>
 
           <div className="flex flex-wrap gap-2">
@@ -381,10 +381,10 @@ export function WorldDetailPage({ chrome, slug }: { chrome: PlatformPageChromePr
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1.02fr)_minmax(0,0.98fr)]">
           <div className="space-y-6 py-1 lg:pr-6">
             <div className="border-b border-[#e7e7e7] pb-5">
-              <p className="text-[0.72rem] font-semibold uppercase tracking-[0.22em] text-[#8c8c8c]">월드</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[#666]">월드</p>
               <h1 className="mt-3 text-[clamp(2.2rem,4vw,3.4rem)] font-semibold tracking-[-0.04em] text-[#171717]">{item.name}</h1>
               <p className="mt-3 text-base leading-8 text-[#666666]">{item.summary}</p>
-              <p className="mt-4 text-xs font-semibold text-[#777]">제작자 {item.creator.name} · {item.sourceType === 'original' ? '오리지널' : '2차창작'}</p>
+              <p className="mt-4 text-xs font-semibold text-[#666]">제작자 {item.creator.name} · {item.sourceType === 'original' ? '오리지널' : '2차창작'}</p>
             </div>
             <div className="flex flex-wrap gap-2">
               {item.imageSlots?.length ? (
@@ -422,7 +422,7 @@ const NarrativeMessage = ({ message }: { message: RoomSummary['messages'][number
   const payload = message.content as Extract<RoomSummary['messages'][number]['content'], object>
   return (
     <div className="space-y-3 border-b border-[#eeeeee] py-4 last:border-b-0">
-      {payload.narration ? <p className="whitespace-pre-wrap break-words text-sm italic leading-7 text-[#777]">{payload.narration}</p> : null}
+      {payload.narration ? <p className="whitespace-pre-wrap break-words text-sm italic leading-7 text-[#666]">{payload.narration}</p> : null}
       <p className="whitespace-pre-wrap break-words text-base leading-8 text-[#171717]">{payload.response}</p>
       {payload.inner_heart ? <details className="rounded-md bg-[#f7f7f7] px-3 py-2 text-sm text-[#666]"><summary className="cursor-pointer font-semibold text-[#555]">속마음 보기</summary><p className="mt-2 whitespace-pre-wrap break-words leading-6">{payload.inner_heart}</p></details> : null}
     </div>
@@ -618,7 +618,7 @@ export function RoomPage({ chrome, roomId }: { chrome: PlatformPageChromeProps; 
           <div className="flex items-start justify-between gap-4 border-b border-[#e7e7e7] pb-5">
               <div>
                 <h1 className="text-2xl font-bold tracking-[-0.04em] text-[#171717]">{room.title}</h1>
-                <p className="mt-1 text-sm text-[#777]">{room.userAlias} · {room.character.name}{room.world ? ` · ${room.world.name}` : ''}</p>
+                <p className="mt-1 text-sm text-[#666]">{room.userAlias} · {room.character.name}{room.world ? ` · ${room.world.name}` : ''}</p>
               </div>
               <Button variant="ghost" className="shrink-0 text-[#666]" onClick={() => chrome.onNavigate(room.world ? `/worlds/${room.world.slug}` : `/characters/${room.character.slug}`)}>
                 <ArrowLeft className="h-4 w-4" />{room.world ? '월드 보기' : '캐릭터 보기'}
@@ -634,13 +634,13 @@ export function RoomPage({ chrome, roomId }: { chrome: PlatformPageChromeProps; 
                 <ArtworkFrame src={activeCharacterImage} alt="" aspectClassName="aspect-square" className="size-16 shrink-0 rounded-md lg:hidden" />
                 <div className="min-w-0">
                   <p className="truncate text-sm font-bold text-[#171717]">{room.character.name}</p>
-                  {room.world ? <p className="mt-0.5 truncate text-xs text-[#777]">{room.world.name}</p> : null}
-                  <p className="mt-1 text-xs leading-5 text-[#777]">{room.state.currentSituation}</p>
+                  {room.world ? <p className="mt-0.5 truncate text-xs text-[#666]">{room.world.name}</p> : null}
+                  <p className="mt-1 text-xs leading-5 text-[#666]">{room.state.currentSituation}</p>
                 </div>
               </div>
               {room.world && activeWorldImage ? (
                 <div className="mt-3 hidden border-t border-[#eeeeee] pt-3 lg:block">
-                  <p className="mb-2 text-[11px] font-semibold text-[#777]">월드 · {room.world.name}</p>
+                  <p className="mb-2 text-xs font-semibold text-[#666]">월드 · {room.world.name}</p>
                   <ArtworkFrame src={activeWorldImage} alt={`${room.world.name} 월드 배경`} aspectClassName="aspect-[16/9]" className="rounded-md" />
                 </div>
               ) : null}
@@ -649,11 +649,11 @@ export function RoomPage({ chrome, roomId }: { chrome: PlatformPageChromeProps; 
             <div className="min-w-0">
               <section aria-label="대화 메시지" className="min-h-[240px] space-y-4 py-1">
                   {room.messages.map((message) => <NarrativeMessage key={message.id} message={message} />)}
-                  {isLoading ? <div role="status" className="text-sm text-[#777]"><Loader2 className="mr-2 inline h-4 w-4 animate-spin" />응답 작성 중…</div> : null}
+                  {isLoading ? <div role="status" className="text-sm text-[#666]"><Loader2 className="mr-2 inline h-4 w-4 animate-spin" />응답 작성 중…</div> : null}
               </section>
 
               <div className="sticky bottom-[calc(66px+env(safe-area-inset-bottom))] z-20 bg-white pb-2 lg:bottom-0">
-                {quotaError ? <p role="status" className="mb-2 text-xs text-[#777]">{quotaError} <button type="button" className="underline" onClick={() => { setQuotaError(''); void platformApi.fetchChatQuota().then(({ quota }) => setQuota(quota)).catch(() => setQuotaError('사용량을 다시 불러오지 못했습니다.')) }}>다시 시도</button></p> : null}
+                {quotaError ? <p role="status" className="mb-2 text-xs text-[#666]">{quotaError} <button type="button" className="underline" onClick={() => { setQuotaError(''); void platformApi.fetchChatQuota().then(({ quota }) => setQuota(quota)).catch(() => setQuotaError('사용량을 다시 불러오지 못했습니다.')) }}>다시 시도</button></p> : null}
                 <ChatComposer
                   value={input}
                   onChange={(value) => {
@@ -735,7 +735,7 @@ const FileUploadCard = ({
           <ImagePlus className="h-4 w-4" />
           {isProcessing ? '이미지 처리 중…' : actionLabel}
         </label>
-        <span className="text-xs leading-6 text-[#7a7a7a]">{hint}</span>
+        <span className="text-xs leading-6 text-[#666]">{hint}</span>
       </div>
     </div>
   </div>
@@ -1284,7 +1284,7 @@ const SituationImageSlotsEditor = ({
             <label htmlFor={`${inputPrefix}-${slot.id}-image-upload-input`} className={`inline-flex h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-[#d8d8d8] px-5 text-sm font-semibold tracking-[-0.015em] transition peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-[#ff5148]/40 peer-focus-visible:ring-offset-2 ${isProcessing ? 'pointer-events-none cursor-not-allowed bg-[#f3f3f3] text-[#171717]/48' : 'bg-white text-[#111317] hover:border-[#ff5148] hover:text-[#c9342f]'}`}>
               <ImagePlus className="h-4 w-4" />{processingSlotIds.has(slot.id) ? '이미지 처리 중…' : '이미지 선택'}
             </label>
-            <p className="text-xs leading-6 text-[#7a7a7a]">현재 원본 {slot.sourceSize || '미선택'} · 이미지를 올리면 이 슬롯을 사용할 수 있습니다.</p>
+            <p className="text-xs leading-6 text-[#666]">현재 원본 {slot.sourceSize || '미선택'} · 이미지를 올리면 이 슬롯을 사용할 수 있습니다.</p>
           </div>
 
           <div className="grid min-w-0 gap-4">
@@ -2105,8 +2105,8 @@ export function RecentRoomsPage({ chrome }: { chrome: PlatformPageChromeProps })
             {items.map((room) => (
               <NavigationLink key={room.id} path={`/rooms/${room.id}`} onNavigate={chrome.onNavigate} className="block w-full rounded-xl border border-[#e7e7e7] bg-[#ffffff] p-4 text-left transition hover:border-[#c6c6c6] hover:bg-[#fafafa]">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className={`rounded-lg px-2.5 py-1 text-[11px] font-semibold ${room.world ? 'bg-[#eef5ff] text-[#335a82]' : 'bg-[#f4f1f8] text-[#624c78]'}`}>{room.world ? '월드 포함' : '캐릭터 대화'}</span>
-                  <span className="text-xs text-[#777]">{room.character.name}{room.world ? ` · ${room.world.name}` : ''}</span>
+                  <span className={`rounded-lg px-2.5 py-1 text-xs font-semibold ${room.world ? 'bg-[#eef5ff] text-[#335a82]' : 'bg-[#f4f1f8] text-[#624c78]'}`}>{room.world ? '월드 포함' : '캐릭터 대화'}</span>
+                  <span className="text-xs text-[#666]">{room.character.name}{room.world ? ` · ${room.world.name}` : ''}</span>
                 </div>
                 <p className="mt-3 text-lg font-semibold text-[#171717]">{room.title}</p>
                 <p className="mt-2 text-sm font-semibold text-[#171717]/70">마지막 장면</p>

@@ -62,7 +62,7 @@ export function ChatComposer({
       ) : null}
       <div className="flex flex-wrap items-center justify-between gap-3">
         {quota ? (
-          <p className={`text-xs ${quota.remaining === 0 ? 'font-semibold text-[#b22f2a]' : 'text-[#777]'}`}>
+          <p className={`text-xs ${quota.remaining === 0 ? 'font-semibold text-[#b22f2a]' : 'text-[#666]'}`}>
             {quota.remaining === 0
               ? `오늘 보낼 수 있는 메시지를 모두 사용했습니다. ${formatResetTime(quota.resetAt)} 초기화`
               : `남은 메시지 ${quota.remaining}/${quota.limit} · ${formatResetTime(quota.resetAt)} 초기화`}

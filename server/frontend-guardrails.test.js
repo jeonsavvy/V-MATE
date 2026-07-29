@@ -9,6 +9,38 @@ const repoRoot = path.resolve(dirname, '..');
 const srcRoot = path.join(repoRoot, 'src');
 const toRepoPath = (filePath) => path.relative(repoRoot, filePath).split(path.sep).join('/');
 
+const readHeadAttribute = (source, selectorName, selectorValue, valueName) => {
+  const tags = source.match(/<(?:link|meta)\b[^>]*>/gi) || [];
+  const selector = new RegExp(`\\b${selectorName}=["']${selectorValue}["']`, 'i');
+  const matches = tags.filter((tag) => selector.test(tag));
+  assert.equal(matches.length, 1, `expected one ${selectorName}="${selectorValue}" tag`);
+
+  const value = matches[0].match(new RegExp(`\\b${valueName}=["']([^"']*)["']`, 'i'))?.[1];
+  assert.ok(value, `${selectorName}="${selectorValue}" is missing ${valueName}`);
+  return value;
+};
+
+test('document head exposes canonical social sharing metadata', async () => {
+  const source = await readFile(path.join(repoRoot, 'index.html'), 'utf8');
+  const head = source.match(/<head\b[^>]*>([\s\S]*?)<\/head>/i)?.[1];
+  assert.ok(head, 'document is missing a head element');
+  const description = '캐릭터와 월드를 조합해 대화하고, 장면과 기억을 이어가는 캐릭터챗 플랫폼';
+
+  const titles = [...head.matchAll(/<title\b[^>]*>([\s\S]*?)<\/title>/gi)];
+  assert.equal(titles.length, 1);
+  assert.equal(titles[0][1].trim(), 'V-MATE');
+  assert.equal(readHeadAttribute(head, 'name', 'description', 'content'), description);
+  assert.equal(readHeadAttribute(head, 'rel', 'canonical', 'href'), 'https://v-mate.satinode.com/');
+  assert.equal(readHeadAttribute(head, 'property', 'og:type', 'content'), 'website');
+  assert.equal(readHeadAttribute(head, 'property', 'og:title', 'content'), 'V-MATE');
+  assert.equal(readHeadAttribute(head, 'property', 'og:site_name', 'content'), 'V-MATE');
+  assert.equal(readHeadAttribute(head, 'property', 'og:description', 'content'), description);
+  assert.equal(readHeadAttribute(head, 'property', 'og:url', 'content'), 'https://v-mate.satinode.com/');
+  assert.equal(readHeadAttribute(head, 'name', 'twitter:card', 'content'), 'summary');
+  assert.equal(readHeadAttribute(head, 'name', 'twitter:title', 'content'), 'V-MATE');
+  assert.equal(readHeadAttribute(head, 'name', 'twitter:description', 'content'), description);
+});
+
 test('versioned frontend assets use immutable browser caching and bounded image payloads', async () => {
   const headers = await readFile(path.join(repoRoot, 'public', '_headers'), 'utf8');
   assert.match(headers, /\/assets\/\*/);
@@ -59,6 +91,19 @@ const walkFiles = async (rootDir) => {
   );
   return files.flat();
 };
+
+test('frontend text utilities keep a readable 12px minimum', async () => {
+  const files = (await walkFiles(srcRoot)).filter((filePath) => filePath.endsWith('.tsx'));
+
+  for (const filePath of files) {
+    const content = await readFile(filePath, 'utf8');
+    assert.doesNotMatch(
+      content,
+      /text-\[(?:[1-9]|10|11)px\]|text-\[0\.72rem\]/,
+      `${toRepoPath(filePath)} uses text smaller than 12px`,
+    );
+  }
+});
 
 test('frontend localStorage access is centralized in browserStorage module', async () => {
   const files = await walkFiles(srcRoot);
