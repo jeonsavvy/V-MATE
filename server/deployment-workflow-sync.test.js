@@ -511,14 +511,16 @@ test('backup readiness and staging synthetic smoke are approval-gated and target
   assert.match(synthetic, /if: \$\{\{ always\(\) \}\}/);
 });
 
-test('post-lockdown privilege and delayed observation remain evidence-bound without grant restoration', async () => {
+test('post-lockdown privilege and immediate one-shot verification remain evidence-bound without grant restoration', async () => {
   const privilege = await readUtf8('.github/workflows/release-post-lockdown-privilege-smoke.yml');
   const privilegeWorkflow = parseDocument(privilege, { uniqueKeys: true, version: '1.2' }).toJS();
   const privilegeJob = privilegeWorkflow.jobs.smoke;
   const httpProbe = privilegeJob.steps.find(
     (step) => step.name === 'Verify actual remote anon and authenticated HTTP privilege boundaries',
   );
-  const observation = await readUtf8('.github/workflows/release-post-lockdown-observation.yml');
+  const verification = await readUtf8('.github/workflows/release-post-lockdown-observation.yml');
+  const verificationWorkflow = parseDocument(verification, { uniqueKeys: true, version: '1.2' }).toJS();
+  const verificationJob = verificationWorkflow.jobs.verify;
 
   assert.match(privilege, /apply-lockdown/);
   assert.match(privilege, /value\.releaseTrack/);
@@ -559,13 +561,124 @@ test('post-lockdown privilege and delayed observation remain evidence-bound with
   assert.doesNotMatch(privilege, /\bgrant\s+(?:all|insert|update|delete|execute)/i);
   assert.doesNotMatch(privilege, /\brevoke\s+/i);
 
-  assert.match(observation, /elapsed<24\*60\*60\*1000/);
-  assert.match(observation, /post-lockdown-privilege-evidence/);
-  assert.match(observation, /smoke\.releaseTrack === lock\.releaseTrack/);
-  assert.match(observation, /lock\.migration === expectedMigration/);
-  assert.match(observation, /lock\.workerVersionId === process\.env\.WORKER_VERSION_ID/);
-  assert.match(observation, /previousStableWorkerVersionId/);
-  assert.match(observation, /check-worker-observability\.mjs/);
+  assert.equal(verificationWorkflow.name, 'release-post-lockdown-verification');
+  assert.deepEqual(Object.keys(verificationWorkflow.on.workflow_dispatch.inputs).sort(), [
+    'base_url',
+    'lockdown_evidence_run_id',
+    'privilege_evidence_run_id',
+    'target',
+    'worker_name',
+    'wrangler_env',
+  ]);
+  assert.equal(verificationJob['timeout-minutes'], 15);
+  assert.equal(verificationJob.env.DEFAULT_BRANCH, '${{ github.event.repository.default_branch }}');
+  assert.doesNotMatch(verification, /lockdown_completed_at|check-worker-observability\.mjs|CLOUDFLARE_OBSERVABILITY_TOKEN|elapsed<24\*60\*60\*1000|24 \* 60 \* 60 \* 1000|\bsleep\s+/);
+
+  const evidenceBinding = verificationJob.steps.find(
+    (step) => step.name === 'Verify fresh lockdown and privilege evidence binding',
+  );
+  assert.deepEqual(evidenceBinding.env, { GH_TOKEN: '${{ github.token }}' });
+  for (const pattern of [
+    /mktemp -d "\$RUNNER_TEMP\/vmate-post-lockdown-evidence-/,
+    /trap 'rm -rf -- "\$VERIFY_DIR"' EXIT/,
+    /actions\/runs\/\$LOCKDOWN_EVIDENCE_RUN_ID/,
+    /actions\/workflows\/release-database\.yml/,
+    /actions\/runs\/\$PRIVILEGE_EVIDENCE_RUN_ID/,
+    /actions\/workflows\/release-post-lockdown-privilege-smoke\.yml/,
+    /run\.conclusion === 'success'/,
+    /run\.status === 'completed'/,
+    /run\.event === 'workflow_dispatch'/,
+    /run\.head_sha === process\.env\.GITHUB_SHA/,
+    /run\.head_branch === process\.env\.DEFAULT_BRANCH/,
+    /run\.path === workflowPath/,
+    /workflow\.path === workflowPath/,
+    /run\.workflow_id === workflow\.id/,
+    /lock\.operation === 'apply-lockdown'/,
+    /lock\.migration === expectedMigration/,
+    /smoke\.lockdownEvidenceRunId === process\.env\.LOCKDOWN_EVIDENCE_RUN_ID/,
+    /smoke\.workerVersionId === lock\.workerVersionId/,
+    /appliedAt <= privilegeCompletedAt/,
+    /privilegeCompletedAt <= now/,
+    /now - appliedAt <= 6 \* 60 \* 60 \* 1000/,
+    /now - privilegeCompletedAt <= 30 \* 60 \* 1000/,
+    /WORKER_VERSION_ID=\$\{lock\.workerVersionId\}/,
+    /BASELINE_WORKER_VERSION_ID=\$\{lock\.previousStableWorkerVersionId\}/,
+  ]) assert.match(evidenceBinding.run, pattern);
+
+  const deploymentBinding = verificationJob.steps.find(
+    (step) => step.name === 'Verify v2 Worker is the only serving version',
+  );
+  assert.deepEqual(deploymentBinding.env, {
+    CLOUDFLARE_API_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}',
+    CLOUDFLARE_ACCOUNT_ID: '${{ secrets.CLOUDFLARE_ACCOUNT_ID }}',
+  });
+  assert.match(deploymentBinding.run, /mktemp "\$RUNNER_TEMP\/vmate-post-lockdown-deployment-/);
+  assert.match(deploymentBinding.run, /trap 'rm -f -- "\$DEPLOYMENT_STATUS_FILE"' EXIT/);
+  assert.match(deploymentBinding.run, /wrangler deployments status/);
+  assert.match(deploymentBinding.run, /!Array\.isArray\(source\.versions\)/);
+  assert.match(deploymentBinding.run, /typeof entry\.percentage !== 'number'/);
+  assert.match(deploymentBinding.run, /entry\.percentage < 0 \|\| entry\.percentage > 100/);
+  assert.match(deploymentBinding.run, /ids\.size !== entries\.length/);
+  assert.match(deploymentBinding.run, /Math\.abs\(total - 100\) > 1e-9/);
+  assert.match(deploymentBinding.run, /entries\.length !== 1/);
+  assert.match(deploymentBinding.run, /entries\[0\]\.id !== process\.env\.WORKER_VERSION_ID/);
+  assert.match(deploymentBinding.run, /entries\[0\]\.percentage !== 100/);
+
+  const deploymentNodeMatch = deploymentBinding.run.match(/node <<'NODE'\n([\s\S]*?)\nNODE/);
+  assert.ok(deploymentNodeMatch, 'deployment status validator must remain executable as one Node heredoc');
+  const evaluateDeployment = (status) => runInNewContext(deploymentNodeMatch[1], {
+    require(specifier) {
+      assert.equal(specifier, 'node:fs');
+      return { readFileSync: () => JSON.stringify(status) };
+    },
+    process: {
+      env: { DEPLOYMENT_STATUS_FILE: 'private-status.json', WORKER_VERSION_ID: 'approved-v2' },
+      exit(code) {
+        throw new Error(`process.exit(${code})`);
+      },
+    },
+  });
+  assert.doesNotThrow(() => evaluateDeployment({
+    versions: [{ version_id: 'approved-v2', percentage: 100 }],
+  }));
+  for (const invalid of [
+    null,
+    [],
+    {},
+    { versions: {} },
+    { versions: [] },
+    { versions: [null] },
+    { versions: [{ version_id: 'approved-v2', percentage: '100' }] },
+    { versions: [{ version_id: 'bad version', percentage: 100 }] },
+    { versions: [{ version_id: 'approved-v2', percentage: -1 }] },
+    { versions: [{ version_id: 'approved-v2', percentage: 101 }] },
+    { versions: [{ version_id: 'approved-v2', percentage: 99 }] },
+    { versions: [{ version_id: 'unapproved-v2', percentage: 100 }] },
+    { versions: [{ version_id: 'approved-v2', percentage: 100 }, {}] },
+    { versions: [{ version_id: 'approved-v2', percentage: 50 }, { version_id: 'approved-v2', percentage: 50 }] },
+    { versions: [{ version_id: 'approved-v2', percentage: 100 }, { version_id: 'old-v2', percentage: 0 }] },
+    { versions: [{ version_id: 'approved-v2', percentage: 50 }, { version_id: 'old-v2', percentage: 50 }] },
+    { versions: [], nested: { version_id: 'approved-v2', percentage: 100 } },
+  ]) assert.throws(() => evaluateDeployment(invalid), /process\.exit\(1\)/);
+
+  const smokeStep = verificationJob.steps.find((step) => step.name === 'Run one immediate live smoke');
+  assert.equal((verification.match(/node scripts\/smoke-release\.mjs\b/g) || []).length, 1);
+  assert.match(smokeStep.run, /node scripts\/smoke-release\.mjs --base-url "\$BASE_URL"/);
+  assert.doesNotMatch(smokeStep.run, /--(?:worker-name|version-id)\b/);
+
+  const evidenceRecord = verificationJob.steps.find((step) => step.name === 'Record single verification evidence');
+  assert.match(evidenceRecord.run, /schemaVersion: 2/);
+  assert.match(evidenceRecord.run, /operation: 'post-lockdown-verification'/);
+  assert.match(evidenceRecord.run, /verificationMode: 'single-immediate-live-smoke'/);
+  assert.match(evidenceRecord.run, /servingVersionVerified: true/);
+  assert.match(evidenceRecord.run, /liveSmokePassed: true/);
+  assert.doesNotMatch(evidenceRecord.run, /\b(?:baseUrl|workerName|projectRef)\s*:/);
+
+  const uploads = verificationJob.steps.filter((step) => step.uses === 'actions/upload-artifact@v4');
+  assert.equal(uploads.length, 1);
+  assert.equal(uploads[0].if, '${{ success() }}');
+  assert.equal(uploads[0].with.path, 'artifacts/post-lockdown-verification-evidence.json');
+  assert.equal(uploads[0].with['if-no-files-found'], 'error');
 });
 
 test('Supabase project API key selection is exact and fail-closed', () => {
@@ -664,6 +777,9 @@ test('operations documentation records manual approved release, runtime prerequi
   assert.match(operationsDoc, /vmate_private\.prompt_lockdown_backup_manifest_20260729/);
   assert.match(operationsDoc, /original과 renewal run ID/);
   assert.match(operationsDoc, /current catalog·row-count·보호 데이터 HMAC/);
+  assert.match(operationsDoc, /24시간을 기다리지 않습니다/);
+  assert.match(operationsDoc, /privilege smoke evidence는 30분 이내/);
+  assert.match(operationsDoc, /version override 없이 공개 origin에 live smoke를 한 번 실행/);
   assert.match(operationsDoc, /baseline-backed cutover evidence/);
   assert.match(operationsDoc, /lockdown_evidence_run_id.*비워/);
 });

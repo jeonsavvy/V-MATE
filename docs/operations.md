@@ -92,6 +92,7 @@ SQL 파일별 적용 대상, immutable migration 규칙, fresh/upgrade test 경�
 2. v2 Worker shadow/smoke/cutover 검증
 3. 별도 lockdown 승인과 적용
 4. post-lockdown privilege 검증
+5. 현재 serving version과 공개 origin을 즉시 1회 검증
 
 lockdown 이후에는 직접 browser write 권한을 복구하지 않고 v2-compatible Worker 복원 또는 forward migration을 사용합니다.
 
@@ -122,7 +123,8 @@ flowchart TD
   T --> C["Worker cutover"]
   C --> L{"Separate lockdown approval"}
   L --> D["DB dry-run-lockdown / apply-lockdown"]
-  D --> P["Post-lockdown privilege smoke + observation"]
+  D --> P["Post-lockdown privilege smoke"]
+  P --> V["Current serving version + one live smoke"]
 ```
 
 주요 workflow:
@@ -135,18 +137,20 @@ flowchart TD
 | `release-worker.yml` | Worker shadow, smoke, cutover, evidence-bound rollback |
 | `release-staging-synthetic-smoke.yml` | staging v2 A/B 시나리오 검증 |
 | `release-post-lockdown-privilege-smoke.yml` | SQL role과 실제 HTTP 쓰기 경계 검증 |
-| `release-post-lockdown-observation.yml` | lockdown 이후 관찰 evidence |
+| `release-post-lockdown-observation.yml` | lockdown 직후 현재 serving version과 공개 origin을 1회 검증 |
 | `release-database-baseline-attestation.yml` | 제한된 production read-only baseline 경로 |
 
 Worker release는 확장 migration evidence가 기본입니다. DB/schema/data 변경이 없는 allowlisted domain/canonical 변경만 별도 승인된 read-only baseline attestation을 사용할 수 있습니다. 이 경로는 `db push`나 원격 DML을 실행하지 않으며 `AUTHORIZED_DOMAIN_RELEASE_SHA`가 현재 40자리 release commit SHA와 일치해야 합니다.
 
-DB와 Worker workflow의 `release_track`/`database_release_track`은 같은 값을 사용합니다. `backend-stabilization`과 `prompt-privacy` evidence는 서로 대체할 수 없으며, post-lockdown smoke와 observation은 선택값을 수동 입력받지 않고 적용된 lockdown evidence에서 이어받습니다.
+DB와 Worker workflow의 `release_track`/`database_release_track`은 같은 값을 사용합니다. `backend-stabilization`과 `prompt-privacy` evidence는 서로 대체할 수 없으며, post-lockdown privilege smoke와 즉시 검증은 version과 release track을 수동 입력받지 않고 적용된 lockdown evidence에서 이어받습니다.
 
 Prelaunch direct 경로는 production에 보존 대상 사용자 데이터가 없고 별도 staging 검증이 불가능한 최초 `prompt-privacy` 전환에서만 사용할 수 있습니다. `production-db-preflight` 승인 환경에서 `release-prelaunch-attestation.yml`에 `PRELAUNCH_DIRECT_APPROVED`를 입력하면 원격 write 없이 production project guard와 동일 default-branch commit의 CI를 확인합니다. 읽기 전용 SQL은 catalog, `auth.users`와 `storage.objects`를 포함한 row count, 계정·prompt·방 상태/version·첫 인사·Storage key/metadata의 ordered fingerprint를 계산합니다. Artifact에는 실제 count나 사용자·prompt·Storage 데이터 대신 `SUPABASE_ACCESS_TOKEN`으로 keyed HMAC만 기록합니다.
 
 `production:prompt-privacy:apply-expand`는 staging post-lockdown privilege evidence와 6시간 이내 prelaunch evidence 중 정확히 하나만 받습니다. Prelaunch expand는 additive migration이므로 이 경로에서만 physical backup/PITR evidence를 생략할 수 있습니다. Apply 직전 같은 네 가지 읽기 전용 query를 다시 실행하며 current catalog·row-count·보호 데이터 HMAC이 attestation과 다르면 write 전에 중단합니다. Worker workflow는 받은 expand run이 성공한 동일 SHA·default-branch의 `release-database.yml` dispatch인지 확인합니다.
 
 Worker shadow/smoke/cutover 동안 최초 attestation의 6시간 기한이 지나면 `apply-lockdown` 전에 attestation을 갱신합니다. 갱신 run은 같은 SHA·project·track이어야 하며, original expand evidence와 keyed row-count·보호 데이터 HMAC이 같아야 합니다. Catalog HMAC은 expand 전후에 달라질 수 있으므로 original과 renewal 사이에서 비교하지 않고 각 attestation과 그 직후 current DB 사이에서만 비교합니다. Database artifact는 original과 renewal run ID 및 keyed hashes를 별도 필드로 보존합니다. 다른 target, track, operation과 staging 기반 production 전환은 기존 backup/PITR 및 staging evidence gate를 그대로 사용합니다.
+
+Prelaunch direct의 최종 post-lockdown gate는 24시간을 기다리지 않습니다. `apply-lockdown` evidence는 6시간 이내, privilege smoke evidence는 30분 이내여야 합니다. 해당 Worker version이 유일하게 100% traffic을 제공하는지 확인한 뒤 version override 없이 공개 origin에 live smoke를 한 번 실행합니다.
 
 승인 환경이 보관하는 배포 자격 증명:
 

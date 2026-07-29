@@ -356,6 +356,133 @@ const validateWorkflow = (file, source) => {
       fail(file, 'remote HTTP privilege probe persists a credential outside its step')
     }
   }
+  if (file === 'release-post-lockdown-observation.yml') {
+    if (root.name !== 'release-post-lockdown-verification') {
+      fail(file, 'post-lockdown workflow must be an immediate verification')
+    }
+    const actualInputs = Object.keys(root.on?.workflow_dispatch?.inputs || {}).sort()
+    const expectedInputs = [
+      'base_url',
+      'lockdown_evidence_run_id',
+      'privilege_evidence_run_id',
+      'target',
+      'worker_name',
+      'wrangler_env',
+    ].sort()
+    if (JSON.stringify(actualInputs) !== JSON.stringify(expectedInputs)) {
+      fail(file, 'post-lockdown verification inputs must not accept versions or a delayed-start timestamp')
+    }
+    for (const forbidden of [
+      'lockdown_completed_at',
+      'check-worker-observability.mjs',
+      'CLOUDFLARE_OBSERVABILITY_TOKEN',
+      'elapsed<24*60*60*1000',
+      '24 * 60 * 60 * 1000',
+      '24 hours',
+    ]) {
+      if (source.includes(forbidden)) fail(file, `post-lockdown verification retains delayed observation logic: ${forbidden}`)
+    }
+    if (/\bsleep\s+/.test(source)) fail(file, 'post-lockdown verification must not wait before its one live smoke')
+
+    const verificationJob = root.jobs?.verify
+    if (!verificationJob) fail(file, 'post-lockdown verification job is absent')
+    if (verificationJob['timeout-minutes'] !== 15) fail(file, 'post-lockdown verification timeout must remain 15 minutes')
+    if (verificationJob.env?.DEFAULT_BRANCH !== '${{ github.event.repository.default_branch }}') {
+      fail(file, 'post-lockdown verification does not bind the repository default branch')
+    }
+
+    const evidenceStep = verificationJob.steps?.find((step) => step?.name === 'Verify fresh lockdown and privilege evidence binding')
+    if (!evidenceStep) fail(file, 'post-lockdown evidence binding step is absent')
+    if (evidenceStep.env?.GH_TOKEN !== '${{ github.token }}') {
+      fail(file, 'post-lockdown evidence binding lacks a step-scoped GitHub token')
+    }
+    for (const required of [
+      'mktemp -d "$RUNNER_TEMP/vmate-post-lockdown-evidence-',
+      'trap \'rm -rf -- "$VERIFY_DIR"\' EXIT',
+      'actions/runs/$LOCKDOWN_EVIDENCE_RUN_ID',
+      'actions/workflows/release-database.yml',
+      'actions/runs/$PRIVILEGE_EVIDENCE_RUN_ID',
+      'actions/workflows/release-post-lockdown-privilege-smoke.yml',
+      'gh run download "$LOCKDOWN_EVIDENCE_RUN_ID"',
+      'gh run download "$PRIVILEGE_EVIDENCE_RUN_ID"',
+      "run.conclusion === 'success'",
+      "run.status === 'completed'",
+      "run.event === 'workflow_dispatch'",
+      'run.head_sha === process.env.GITHUB_SHA',
+      'run.head_branch === process.env.DEFAULT_BRANCH',
+      'run.path === workflowPath',
+      'workflow.path === workflowPath',
+      'run.workflow_id === workflow.id',
+      "lock.operation === 'apply-lockdown'",
+      'lock.migration === expectedMigration',
+      'smoke.lockdownEvidenceRunId === process.env.LOCKDOWN_EVIDENCE_RUN_ID',
+      'smoke.workerVersionId === lock.workerVersionId',
+      'appliedAt <= privilegeCompletedAt',
+      'privilegeCompletedAt <= now',
+      'now - appliedAt <= 6 * 60 * 60 * 1000',
+      'now - privilegeCompletedAt <= 30 * 60 * 1000',
+      'WORKER_VERSION_ID=${lock.workerVersionId}',
+      'BASELINE_WORKER_VERSION_ID=${lock.previousStableWorkerVersionId}',
+    ]) {
+      if (!String(evidenceStep.run).includes(required)) fail(file, `post-lockdown evidence binding is missing: ${required}`)
+    }
+
+    const deploymentStep = verificationJob.steps?.find((step) => step?.name === 'Verify v2 Worker is the only serving version')
+    if (!deploymentStep) fail(file, 'current Worker deployment verification step is absent')
+    if (deploymentStep.env?.CLOUDFLARE_API_TOKEN !== '${{ secrets.CLOUDFLARE_API_TOKEN }}'
+      || deploymentStep.env?.CLOUDFLARE_ACCOUNT_ID !== '${{ secrets.CLOUDFLARE_ACCOUNT_ID }}') {
+      fail(file, 'current Worker deployment verification lacks step-scoped Cloudflare credentials')
+    }
+    for (const required of [
+      'mktemp "$RUNNER_TEMP/vmate-post-lockdown-deployment-',
+      'trap \'rm -f -- "$DEPLOYMENT_STATUS_FILE"\' EXIT',
+      'wrangler deployments status',
+      '!Array.isArray(source.versions)',
+      'source.versions.length === 0',
+      "typeof entry.version_id !== 'string'",
+      "typeof entry.percentage !== 'number'",
+      '!Number.isFinite(entry.percentage)',
+      'entry.percentage < 0 || entry.percentage > 100',
+      'ids.size !== entries.length',
+      'Math.abs(total - 100) > 1e-9',
+      'entries.length !== 1',
+      'entries[0].id !== process.env.WORKER_VERSION_ID',
+      'entries[0].percentage !== 100',
+    ]) {
+      if (!String(deploymentStep.run).includes(required)) fail(file, `current Worker deployment verification is missing: ${required}`)
+    }
+
+    const smokeInvocations = source.match(/node scripts\/smoke-release\.mjs\b/g) || []
+    const smokeStep = verificationJob.steps?.find((step) => step?.name === 'Run one immediate live smoke')
+    if (smokeInvocations.length !== 1 || !smokeStep || !String(smokeStep.run).includes('node scripts/smoke-release.mjs --base-url "$BASE_URL"')) {
+      fail(file, 'post-lockdown verification must run exactly one immediate live smoke')
+    }
+    if (/--(?:worker-name|version-id)\b/.test(String(smokeStep.run))) {
+      fail(file, 'post-lockdown live smoke must exercise normal production routing without a version override')
+    }
+
+    const evidenceRecordStep = verificationJob.steps?.find((step) => step?.name === 'Record single verification evidence')
+    for (const required of [
+      'schemaVersion: 2',
+      "operation: 'post-lockdown-verification'",
+      "verificationMode: 'single-immediate-live-smoke'",
+      'servingVersionVerified: true',
+      'liveSmokePassed: true',
+    ]) {
+      if (!String(evidenceRecordStep?.run).includes(required)) fail(file, `sanitized post-lockdown evidence is missing: ${required}`)
+    }
+    if (/\b(?:baseUrl|workerName|projectRef)\s*:/.test(String(evidenceRecordStep?.run))) {
+      fail(file, 'sanitized post-lockdown evidence contains a raw deployment identifier')
+    }
+
+    const uploads = verificationJob.steps?.filter((step) => step?.uses === 'actions/upload-artifact@v4') || []
+    if (uploads.length !== 1
+      || uploads[0].if !== '${{ success() }}'
+      || uploads[0].with?.path !== 'artifacts/post-lockdown-verification-evidence.json'
+      || uploads[0].with?.['if-no-files-found'] !== 'error') {
+      fail(file, 'post-lockdown artifact upload must contain only successful sanitized verification evidence')
+    }
+  }
 }
 
 const workflowFiles = (await readdir(workflowDirectory))
