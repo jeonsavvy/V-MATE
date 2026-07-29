@@ -39,7 +39,11 @@ on:
         required: false
         type: string
       expand_evidence_run_id:
-        description: Mutually exclusive with baseline_evidence_run_id; apply-expand evidence for the selected database track, target, and commit
+        description: Mutually exclusive with baseline_evidence_run_id; apply-expand evidence for the selected database track and target
+        required: false
+        type: string
+      expand_bridge_prelaunch_evidence_run_id:
+        description: Current-commit prelaunch attestation required only for the fixed production prompt-privacy expand evidence bridge
         required: false
         type: string
       baseline_evidence_run_id:
@@ -88,6 +92,7 @@ jobs:
       PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_WORKER_BASE_URL }}
       PRODUCTION_WORKER_NAME: ${{ vars.PRODUCTION_WORKER_NAME }}
       EXPAND_EVIDENCE_RUN_ID: ${{ inputs.expand_evidence_run_id }}
+      EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID: ${{ inputs.expand_bridge_prelaunch_evidence_run_id }}
       BASELINE_EVIDENCE_RUN_ID: ${{ inputs.baseline_evidence_run_id }}
       EXPECTED_SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
       ROLLBACK_MODE: ${{ inputs.rollback_mode }}
@@ -148,12 +153,14 @@ jobs:
           if [[ '${{ inputs.operation }}' != 'rollback' ]]; then
             [[ "$DATABASE_RELEASE_TRACK" == 'backend-stabilization' || "$DATABASE_RELEASE_TRACK" == 'prompt-privacy' ]] || { echo '::error::database_release_track is invalid'; exit 1; }
             [[ -z "$EXPAND_EVIDENCE_RUN_ID" || "$EXPAND_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::expand_evidence_run_id must be canonical'; exit 1; }
+            [[ -z "$EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID" || "$EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::expand_bridge_prelaunch_evidence_run_id must be canonical'; exit 1; }
             [[ -z "$BASELINE_EVIDENCE_RUN_ID" || "$BASELINE_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::baseline_evidence_run_id must be canonical'; exit 1; }
             expand_set=false; baseline_set=false
             [[ "$EXPAND_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] && expand_set=true
             [[ "$BASELINE_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] && baseline_set=true
             [[ "$expand_set" != "$baseline_set" ]] || { echo '::error::exactly one expand_evidence_run_id or baseline_evidence_run_id is required'; exit 1; }
             if [[ "$baseline_set" == true ]]; then
+              [[ -z "$EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID" ]] || { echo '::error::expand bridge attestation requires expand evidence'; exit 1; }
               [[ "$DATABASE_RELEASE_TRACK" == 'backend-stabilization' ]] || { echo '::error::baseline evidence cannot satisfy the prompt-privacy track'; exit 1; }
               [[ '${{ inputs.target }}' == 'production' ]] || { echo '::error::baseline evidence is production-only'; exit 1; }
               [[ -n "$DEFAULT_BRANCH" && "$GITHUB_REF" == "refs/heads/$DEFAULT_BRANCH" ]] || { echo '::error::baseline release must run from the default branch'; exit 1; }
@@ -164,6 +171,11 @@ jobs:
               [[ -z "$unexpected" ]] || { echo '::error::baseline evidence change scope is not allowlisted'; exit 1; }
               git diff --quiet 5adce9d2128bc7452e30bae9a2c8fca7790baa49 "$GITHUB_SHA" -- supabase server/platform server/chat-handler.js worker.js || { echo '::error::database or mutation runtime surface changed'; exit 1; }
             fi
+            if [[ -n "$EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID" ]]; then
+              [[ '${{ inputs.target }}' == 'production' && "$DATABASE_RELEASE_TRACK" == 'prompt-privacy' && "$expand_set" == true ]] || { echo '::error::expand bridge attestation is limited to production prompt-privacy expand evidence'; exit 1; }
+            fi
+          else
+            [[ -z "$EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID" ]] || { echo '::error::expand bridge attestation is not valid for rollback'; exit 1; }
           fi
           [[ "$EXPECTED_SUPABASE_PROJECT_REF" =~ ^[a-z0-9]{8,32}$ ]] || { echo '::error::approved Supabase project ref is missing or invalid'; exit 1; }
           if [[ '${{ inputs.operation }}' == 'rollback' ]]; then
@@ -180,6 +192,7 @@ jobs:
         if: ${{ inputs.operation != 'rollback' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
@@ -217,17 +230,42 @@ jobs:
           const run = JSON.parse(fs.readFileSync(path.join(process.env.DATABASE_VERIFY_DIR, 'expand-run.json'), 'utf8'));
           const workflow = JSON.parse(fs.readFileSync(path.join(process.env.DATABASE_VERIFY_DIR, 'expand-workflow.json'), 'utf8'));
           const expectedPath = '.github/workflows/release-database.yml';
+          const fixedBridge = '${{ inputs.target }}' === 'production'
+            && process.env.DATABASE_RELEASE_TRACK === 'prompt-privacy'
+            && process.env.EXPAND_EVIDENCE_RUN_ID === '30461795102'
+            && run.head_sha === 'd839befb167ca1024258ac01198ec96c3d3b3837';
           const valid = run.id === Number(process.env.EXPAND_EVIDENCE_RUN_ID)
             && run.conclusion === 'success'
             && run.status === 'completed'
             && run.event === 'workflow_dispatch'
-            && run.head_sha === process.env.GITHUB_SHA
+            && (run.head_sha === process.env.GITHUB_SHA || fixedBridge)
             && run.head_branch === process.env.DEFAULT_BRANCH
             && run.path === expectedPath
             && workflow.path === expectedPath
             && run.workflow_id === workflow.id;
-          if (!valid) throw new Error('Expand evidence run metadata does not bind to release-database on this default-branch commit.');
+          if (!valid) throw new Error('Expand evidence run metadata does not bind to the current commit or the fixed release-only bridge.');
           NODE
+            export EXPAND_EVIDENCE_COMMIT
+            EXPAND_EVIDENCE_COMMIT=$(node -e "const fs=require('node:fs'); process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1], 'utf8')).head_sha)" "$DATABASE_VERIFY_DIR/expand-run.json")
+            if [[ "$EXPAND_EVIDENCE_COMMIT" != "$GITHUB_SHA" ]]; then
+              [[ "$EXPAND_EVIDENCE_RUN_ID" == '30461795102' && "$EXPAND_EVIDENCE_COMMIT" == 'd839befb167ca1024258ac01198ec96c3d3b3837' ]] || { echo '::error::expand evidence is not the fixed bridge source'; exit 1; }
+              [[ "$EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::current-commit prelaunch attestation is required for the expand evidence bridge'; exit 1; }
+              [[ -n "$DEFAULT_BRANCH" && "$GITHUB_REF" == "refs/heads/$DEFAULT_BRANCH" ]] || { echo '::error::expand evidence bridge must run from the default branch'; exit 1; }
+              [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ && "$GITHUB_SHA" == "$AUTHORIZED_DOMAIN_RELEASE_SHA" ]] || { echo '::error::authorized domain release SHA guard mismatch'; exit 1; }
+              git merge-base --is-ancestor "$EXPAND_EVIDENCE_COMMIT" "$GITHUB_SHA" || { echo '::error::expand bridge source is not an ancestor of this commit'; exit 1; }
+              bridge_allowed_files=$'.github/workflows/release-database.yml\n.github/workflows/release-worker.yml\nscripts/smoke-release.mjs\nscripts/validate-github-workflows.mjs\nserver/deployment-workflow-sync.test.js\nserver/smoke-release.test.js'
+              expected_bridge_files=$(printf '%s\n' "$bridge_allowed_files" | sort -u)
+              actual_bridge_files=$(git diff --name-only "$EXPAND_EVIDENCE_COMMIT" "$GITHUB_SHA" | sort -u)
+              [[ "$actual_bridge_files" == "$expected_bridge_files" ]] || { echo '::error::expand bridge change scope is not the exact release-only set'; exit 1; }
+              unexpected_bridge_status=$(git diff --name-status "$EXPAND_EVIDENCE_COMMIT" "$GITHUB_SHA" | awk '$1 != "M" { print }')
+              [[ -z "$unexpected_bridge_status" ]] || { echo '::error::expand bridge files must be in-place modifications'; exit 1; }
+              mkdir -p "$DATABASE_VERIFY_DIR/bridge-prelaunch"
+              gh api "repos/$GITHUB_REPOSITORY/actions/runs/$EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID" > "$DATABASE_VERIFY_DIR/bridge-prelaunch/run.json"
+              gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release-prelaunch-attestation.yml" > "$DATABASE_VERIFY_DIR/bridge-prelaunch/workflow.json"
+              gh run download "$EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "prelaunch-attestation-evidence-production-$EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID" --dir "$DATABASE_VERIFY_DIR/bridge-prelaunch/artifact"
+            else
+              [[ -z "$EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID" ]] || { echo '::error::expand bridge attestation must be empty for current-commit evidence'; exit 1; }
+            fi
             gh run download "$EXPAND_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "database-release-evidence-${{ inputs.target }}-$EXPAND_EVIDENCE_RUN_ID" --dir "$DATABASE_VERIFY_DIR/artifact"
           fi
           node <<'NODE'
@@ -246,6 +284,7 @@ jobs:
           if (!/^[a-z0-9]{8,32}$/.test(projectRef || '')) process.exit(1);
           const refHash = crypto.createHash('sha256').update(projectRef).digest('hex');
           const baseline = /^[0-9]+$/.test(String(process.env.BASELINE_EVIDENCE_RUN_ID || ''));
+          const bridged = !baseline && process.env.EXPAND_EVIDENCE_COMMIT !== process.env.GITHUB_SHA;
           const expectedExpandMigration = {
             'backend-stabilization': '20260726190559_backend_stabilization_expand.sql',
             'prompt-privacy': '20260729000000_prompt_read_views_expand.sql',
@@ -268,12 +307,83 @@ jobs:
               && evidence.target === '${{ inputs.target }}'
               && evidence.operation === 'apply-expand'
               && evidence.releaseTrack === process.env.DATABASE_RELEASE_TRACK
-              && evidence.commit === process.env.GITHUB_SHA
+              && evidence.commit === process.env.EXPAND_EVIDENCE_COMMIT
               && evidence.migration === expectedExpandMigration
               && evidence.projectRefHash === refHash
               && Number.isFinite(Date.parse(evidence.appliedAt || ''));
           if (!valid) process.exit(1);
-          fs.appendFileSync(process.env.GITHUB_ENV, `DATABASE_EVIDENCE_MODE=${baseline ? 'baseline' : 'expand'}\nEXPAND_PROJECT_REF_HASH=${baseline ? '' : refHash}\nEXPAND_APPLIED_AT=${baseline ? '' : evidence.appliedAt}\nEXPAND_MIGRATION=${baseline ? '' : evidence.migration}\n`);
+          if (bridged) {
+            if (!process.env.SUPABASE_ACCESS_TOKEN
+              || !/^[a-f0-9]{32}$/.test(String(evidence.remoteStateFingerprint || ''))
+              || !/^[a-f0-9]{32}$/.test(String(evidence.migrationRowsFingerprint || ''))) process.exit(1);
+            const expectedCatalogStateHash = crypto.createHmac('sha256', process.env.SUPABASE_ACCESS_TOKEN)
+              .update(JSON.stringify([evidence.remoteStateFingerprint, evidence.migrationRowsFingerprint]))
+              .digest('hex');
+            const bridgeDirectory = path.join(process.env.DATABASE_VERIFY_DIR, 'bridge-prelaunch');
+            const prelaunchFiles = [];
+            const walkPrelaunch = (directory) => fs.readdirSync(directory, { withFileTypes: true }).forEach((entry) => {
+              const item = path.join(directory, entry.name);
+              if (entry.isDirectory()) walkPrelaunch(item); else if (entry.name === 'prelaunch-attestation-evidence.json') prelaunchFiles.push(item);
+            });
+            walkPrelaunch(path.join(bridgeDirectory, 'artifact'));
+            if (prelaunchFiles.length !== 1) process.exit(1);
+            const prelaunch = JSON.parse(fs.readFileSync(prelaunchFiles[0], 'utf8'));
+            const prelaunchRun = JSON.parse(fs.readFileSync(path.join(bridgeDirectory, 'run.json'), 'utf8'));
+            const prelaunchWorkflow = JSON.parse(fs.readFileSync(path.join(bridgeDirectory, 'workflow.json'), 'utf8'));
+            const expectedPath = '.github/workflows/release-prelaunch-attestation.yml';
+            const expectedKeys = [
+              'allPassed', 'attestedAt', 'catalogStateCaptured', 'catalogStateHash',
+              'commit', 'defaultBranchCiPassed', 'operation',
+              'prelaunchDirectApproved', 'productionProjectGuardPassed', 'projectRefHash',
+              'protectedStateCaptured', 'protectedStateHash', 'queryMode', 'releaseTrack',
+              'rowCountHash', 'rowCountSnapshotCaptured', 'schemaVersion', 'target',
+            ];
+            const attestedAt = Date.parse(prelaunch.attestedAt || '');
+            const appliedAt = Date.parse(evidence.appliedAt || '');
+            const fresh = Number.isFinite(attestedAt)
+              && Number.isFinite(appliedAt)
+              && attestedAt >= appliedAt
+              && Date.now() >= attestedAt
+              && Date.now() - attestedAt <= 6 * 60 * 60 * 1000;
+            const runBound = prelaunchRun.id === Number(process.env.EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID)
+              && prelaunchRun.conclusion === 'success'
+              && prelaunchRun.status === 'completed'
+              && prelaunchRun.event === 'workflow_dispatch'
+              && prelaunchRun.head_sha === process.env.GITHUB_SHA
+              && prelaunchRun.head_branch === process.env.DEFAULT_BRANCH
+              && prelaunchRun.path === expectedPath
+              && prelaunchWorkflow.path === expectedPath
+              && prelaunchRun.workflow_id === prelaunchWorkflow.id;
+            const prelaunchValid = JSON.stringify(Object.keys(prelaunch).sort()) === JSON.stringify(expectedKeys.sort())
+              && runBound
+              && prelaunch.schemaVersion === 2
+              && prelaunch.target === 'production'
+              && prelaunch.operation === 'prelaunch-direct-attestation'
+              && prelaunch.queryMode === 'supabase_read_only_user'
+              && prelaunch.releaseTrack === 'prompt-privacy'
+              && prelaunch.commit === process.env.GITHUB_SHA
+              && prelaunch.projectRefHash === refHash
+              && prelaunch.catalogStateHash === expectedCatalogStateHash
+              && /^[a-f0-9]{64}$/.test(String(prelaunch.rowCountHash || ''))
+              && /^[a-f0-9]{64}$/.test(String(prelaunch.protectedStateHash || ''))
+              && prelaunch.rowCountHash === evidence.prelaunchOriginalRowCountHash
+              && prelaunch.protectedStateHash === evidence.prelaunchOriginalProtectedStateHash
+              && prelaunch.catalogStateCaptured === true
+              && prelaunch.rowCountSnapshotCaptured === true
+              && prelaunch.protectedStateCaptured === true
+              && prelaunch.prelaunchDirectApproved === true
+              && prelaunch.productionProjectGuardPassed === true
+              && prelaunch.defaultBranchCiPassed === true
+              && prelaunch.allPassed === true
+              && /^[0-9]+$/.test(String(evidence.prelaunchOriginalEvidenceRunId || ''))
+              && /^[a-f0-9]{64}$/.test(String(evidence.prelaunchOriginalCatalogStateHash || ''))
+              && evidence.prelaunchRenewalEvidenceRunId === null
+              && evidence.prelaunchDriftVerified === true
+              && evidence.backupEvidenceRunId === null
+              && fresh;
+            if (!prelaunchValid) process.exit(1);
+          }
+          fs.appendFileSync(process.env.GITHUB_ENV, `DATABASE_EVIDENCE_MODE=${baseline ? 'baseline' : 'expand'}\nEXPAND_PROJECT_REF_HASH=${baseline ? '' : refHash}\nEXPAND_APPLIED_AT=${baseline ? '' : evidence.appliedAt}\nEXPAND_MIGRATION=${baseline ? '' : evidence.migration}\nEXPAND_EVIDENCE_COMMIT=${baseline ? '' : evidence.commit}\nEXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID=${bridged ? process.env.EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID : ''}\n`);
           NODE
 
       - name: Verify current-commit shadow upload and immutable version metadata
@@ -314,6 +424,9 @@ jobs:
             'backend-stabilization': '20260726190559_backend_stabilization_expand.sql',
             'prompt-privacy': '20260729000000_prompt_read_views_expand.sql',
           }[process.env.DATABASE_RELEASE_TRACK];
+          const expectedBridgePrelaunchRunId = /^[0-9]+$/.test(String(process.env.EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID || ''))
+            ? process.env.EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID
+            : null;
           const runBound = run.id === Number(process.env.SHADOW_EVIDENCE_RUN_ID)
             && run.conclusion === 'success'
             && run.status === 'completed'
@@ -330,12 +443,16 @@ jobs:
                 && shadow.baselineEvidenceRunId === null
                 && shadow.expandMigration === expectedExpandMigration
                 && shadow.expandProjectRefHash === refHash
+                && shadow.expandEvidenceCommit === process.env.EXPAND_EVIDENCE_COMMIT
+                && shadow.expandBridgePrelaunchEvidenceRunId === expectedBridgePrelaunchRunId
               : process.env.DATABASE_EVIDENCE_MODE === 'baseline'
                 && shadow.baselineEvidenceRunId === process.env.BASELINE_EVIDENCE_RUN_ID
                 && !shadow.expandEvidenceRunId
                 && shadow.expandMigration === null
+                && shadow.expandEvidenceCommit === null
+                && shadow.expandBridgePrelaunchEvidenceRunId === null
               : false);
-          const evidenceBound = shadow.schemaVersion === 3
+          const evidenceBound = shadow.schemaVersion === 4
             && shadow.target === '${{ inputs.target }}'
             && shadow.operation === 'shadow'
             && shadow.commit === process.env.GITHUB_SHA
@@ -457,7 +574,7 @@ jobs:
             && /^[a-f0-9]{64}$/.test(String(release.versionMetadataHash || ''));
           const successfulCutover = runBound
             && immutableVersionBound
-            && release.schemaVersion === 3
+            && release.schemaVersion === 4
             && release.target === '${{ inputs.target }}'
             && release.operation === 'cutover'
             && release.commit === process.env.GITHUB_SHA
@@ -741,7 +858,13 @@ jobs:
         run: npm run verify && npm run test:db
 
       - name: Build release assets and record hashes
-        run: npm run build && npm run release:manifest
+        if: ${{ inputs.operation != 'rollback' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run build
+          printf '%s\n' "$GITHUB_SHA" > dist/release-version.txt
+          npm run release:manifest
 
       - name: Capture deployment before operation
         env:
@@ -856,8 +979,7 @@ jobs:
           node scripts/smoke-release.mjs \
             --base-url "$BASE_URL" \
             --worker-name "$WORKER_NAME" \
-            --version-id "$INPUT_VERSION_ID" \
-            --dist-manifest artifacts/dist-manifest.json | tee artifacts/rollback-preflight-smoke.log
+            --version-id "$INPUT_VERSION_ID" | tee artifacts/rollback-preflight-smoke.log
 
       - name: Cut over atomically to selected version
         if: ${{ inputs.operation == 'cutover' }}
@@ -919,7 +1041,7 @@ jobs:
           }
           NODE
 
-      - name: Smoke selected Worker version and immutable assets
+      - name: Smoke selected Worker version and applicable assets
         shell: bash
         env:
           SHADOW_VERSION_ID: ${{ steps.shadow.outputs.version_id }}
@@ -927,7 +1049,11 @@ jobs:
           set -euo pipefail
           version_id="$INPUT_VERSION_ID"
           if [[ '${{ inputs.operation }}' == 'shadow' ]]; then version_id="$SHADOW_VERSION_ID"; fi
-          node scripts/smoke-release.mjs --base-url "$BASE_URL" --worker-name "$WORKER_NAME" --version-id "$version_id" --dist-manifest artifacts/dist-manifest.json | tee artifacts/smoke.log
+          if [[ '${{ inputs.operation }}' == 'rollback' ]]; then
+            node scripts/smoke-release.mjs --base-url "$BASE_URL" --worker-name "$WORKER_NAME" --version-id "$version_id" | tee artifacts/smoke.log
+          else
+            node scripts/smoke-release.mjs --base-url "$BASE_URL" --worker-name "$WORKER_NAME" --version-id "$version_id" --dist-manifest artifacts/dist-manifest.json | tee artifacts/smoke.log
+          fi
 
       - name: Smoke preserved legacy Workers.dev hostname
         if: ${{ inputs.target == 'production' }}
@@ -1005,7 +1131,7 @@ jobs:
             ? JSON.parse(fs.readFileSync('artifacts/observability.json', 'utf8'))
             : null;
           const evidence = {
-            schemaVersion: 3,
+            schemaVersion: 4,
             target: '${{ inputs.target }}',
             operation,
             commit: process.env.GITHUB_SHA,
@@ -1032,6 +1158,10 @@ jobs:
             baselineEvidenceRunId: operation === 'rollback' ? null : (/^[0-9]+$/.test(String(process.env.BASELINE_EVIDENCE_RUN_ID || '')) ? process.env.BASELINE_EVIDENCE_RUN_ID : null),
             v2Compatible: operation === 'cutover' && (process.env.DATABASE_EVIDENCE_MODE === 'expand' || process.env.DATABASE_EVIDENCE_MODE === 'baseline'),
             expandEvidenceRunId: operation === 'rollback' ? null : process.env.EXPAND_EVIDENCE_RUN_ID,
+            expandEvidenceCommit: operation === 'rollback' ? null : process.env.EXPAND_EVIDENCE_COMMIT || null,
+            expandBridgePrelaunchEvidenceRunId: operation === 'rollback'
+              ? null
+              : (/^[0-9]+$/.test(String(process.env.EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID || '')) ? process.env.EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID : null),
             expandProjectRefHash: operation === 'rollback' ? null : process.env.EXPAND_PROJECT_REF_HASH,
             expandAppliedAt: operation === 'rollback' ? null : process.env.EXPAND_APPLIED_AT,
             expandMigration: operation === 'rollback' ? null : process.env.EXPAND_MIGRATION || null,

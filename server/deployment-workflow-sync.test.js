@@ -72,7 +72,17 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   const releaseEvidenceUpload = releaseWorkflow.jobs.release.steps.find(
     (step) => step.name === 'Upload release evidence',
   );
+  const buildReleaseAssetsStep = releaseWorkflow.jobs.release.steps.find(
+    (step) => step.name === 'Build release assets and record hashes',
+  );
+  const rollbackPreflightStep = releaseWorkflow.jobs.release.steps.find(
+    (step) => step.name === 'Preflight evidence-bound rollback version with zero-traffic override',
+  );
+  const selectedVersionSmokeStep = releaseWorkflow.jobs.release.steps.find(
+    (step) => step.name === 'Smoke selected Worker version and applicable assets',
+  );
   const baseline = await readUtf8('.github/workflows/release-database-baseline-attestation.yml');
+  const database = await readUtf8('.github/workflows/release-database.yml');
   const smoke = await readUtf8('scripts/smoke-release.mjs');
   const baselineAllowlist = baseline
     .match(/allowed-baseline-files\.txt" <<'EOF'\r?\n([\s\S]*?)\r?\n\s+EOF/)?.[1]
@@ -82,6 +92,16 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   const releaseAllowlist = release
     .match(/allowed_files=\$'([^']+)'/)?.[1]
     .split('\\n');
+  const expectedExpandBridgeFiles = [
+    '.github/workflows/release-database.yml',
+    '.github/workflows/release-worker.yml',
+    'scripts/smoke-release.mjs',
+    'scripts/validate-github-workflows.mjs',
+    'server/deployment-workflow-sync.test.js',
+    'server/smoke-release.test.js',
+  ];
+  const releaseBridgeAllowlist = release.match(/bridge_allowed_files=\$'([^']+)'/)?.[1].split('\\n');
+  const databaseBridgeAllowlist = database.match(/bridge_allowed_files=\$'([^']+)'/)?.[1].split('\\n');
 
   assert.doesNotMatch(ci, /CLOUDFLARE_API_TOKEN|versions deploy|cf:deploy/);
   assert.match(ci, /npm run verify/);
@@ -113,7 +133,7 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(release, /workers\/tag/);
   assert.match(release, /workers\/message/);
   assert.match(release, /versionMetadataHash/);
-  assert.match(release, /shadow\.schemaVersion === 3/);
+  assert.match(release, /shadow\.schemaVersion === 4/);
   assert.match(release, /database_release_track/);
   assert.match(release, /options: \[backend-stabilization, prompt-privacy\]/);
   assert.match(release, /20260729000000_prompt_read_views_expand\.sql/);
@@ -175,6 +195,51 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(release, /actions\/workflows\/release-database-baseline-attestation\.yml/);
   assert.match(release, /actions\/runs\/\$EXPAND_EVIDENCE_RUN_ID/);
   assert.match(release, /actions\/workflows\/release-database\.yml/);
+  assert.deepEqual(releaseBridgeAllowlist, expectedExpandBridgeFiles);
+  assert.deepEqual(databaseBridgeAllowlist, expectedExpandBridgeFiles);
+  assert.match(release, /expand_bridge_prelaunch_evidence_run_id/);
+  assert.match(release, /EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID/);
+  assert.match(release, /EXPAND_EVIDENCE_RUN_ID === '30461795102'/);
+  assert.match(release, /run\.head_sha === 'd839befb167ca1024258ac01198ec96c3d3b3837'/);
+  assert.match(release, /expand evidence bridge must run from the default branch/);
+  assert.match(release, /expand bridge change scope is not the exact release-only set/);
+  assert.match(release, /expand bridge files must be in-place modifications/);
+  assert.match(release, /expand bridge attestation must be empty for current-commit evidence/);
+  assert.match(release, /prelaunchRun\.head_sha === process\.env\.GITHUB_SHA/);
+  assert.match(release, /prelaunchRun\.head_branch === process\.env\.DEFAULT_BRANCH/);
+  assert.match(release, /prelaunch\.rowCountHash === evidence\.prelaunchOriginalRowCountHash/);
+  assert.match(release, /prelaunch\.protectedStateHash === evidence\.prelaunchOriginalProtectedStateHash/);
+  assert.match(release, /prelaunch\.catalogStateHash === expectedCatalogStateHash/);
+  assert.match(release, /createHmac\('sha256', process\.env\.SUPABASE_ACCESS_TOKEN\)/);
+  assert.match(release, /attestedAt >= appliedAt/);
+  assert.match(release, /schemaVersion: 4/);
+  assert.match(release, /expandEvidenceCommit:/);
+  assert.match(release, /expandBridgePrelaunchEvidenceRunId:/);
+  assert.match(database, /fetch-depth: 0/);
+  assert.match(database, /LOCKDOWN_EXPAND_EVIDENCE_COMMIT/);
+  assert.match(database, /LOCKDOWN_EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID/);
+  assert.match(database, /evidence\.expandEvidenceRunId === '30461795102'/);
+  assert.match(database, /evidence\.expandEvidenceCommit === 'd839befb167ca1024258ac01198ec96c3d3b3837'/);
+  assert.match(database, /evidence\.expandBridgePrelaunchEvidenceRunId[\s\S]*process\.env\.PRELAUNCH_EVIDENCE_RUN_ID/);
+  assert.match(database, /run\.head_sha === process\.env\.LOCKDOWN_EXPAND_EVIDENCE_COMMIT/);
+  assert.match(database, /evidence\.commit === process\.env\.LOCKDOWN_EXPAND_EVIDENCE_COMMIT/);
+  assert.match(database, /PRELAUNCH_CURRENT_CATALOG_STATE_HASH === expectedCatalogStateHash/);
+  assert.match(database, /createHmac\('sha256', process\.env\.SUPABASE_ACCESS_TOKEN\)/);
+  assert.match(database, /process\.env\.PRELAUNCH_EVIDENCE_RUN_ID/);
+  assert.match(release, /dist\/release-version\.txt/);
+  assert.match(smoke, /manifestPaths\.has\('release-version\.txt'\)/);
+  assert.match(smoke, /performance\.now\(\)/);
+  assert.match(smoke, /maximumAssetBytes/);
+  assert.match(smoke, /maximumManifestBytes/);
+  assert.match(smoke, /digestBoundedAsset/);
+  assert.match(smoke, /response\.body\.getReader\(\)/);
+  assert.doesNotMatch(smoke, /Buffer\.from\(await response\.arrayBuffer\(\)\)/);
+  assert.equal(buildReleaseAssetsStep.if, "${{ inputs.operation != 'rollback' }}");
+  assert.doesNotMatch(rollbackPreflightStep.run, /--dist-manifest/);
+  const rollbackSmokeBranch = selectedVersionSmokeStep.run.match(/if \[\[ '\$\{\{ inputs\.operation \}\}' == 'rollback' \]\]; then([\s\S]*?)else/)?.[1] || '';
+  assert.match(rollbackSmokeBranch, /smoke-release\.mjs/);
+  assert.doesNotMatch(rollbackSmokeBranch, /--dist-manifest/);
+  assert.equal((selectedVersionSmokeStep.run.match(/--dist-manifest/g) || []).length, 1);
   assert.equal(releaseWorkflow.jobs.release.env.DEFAULT_BRANCH, '${{ github.event.repository.default_branch }}');
   for (const binding of [
     /run\.id === Number\(process\.env\.SHADOW_EVIDENCE_RUN_ID\)/,
@@ -372,7 +437,7 @@ test('database release stages expand and lockdown separately behind evidence gat
   assert.match(release, /evidence\.expandMigration === expectedExpandMigration/);
   assert.match(release, /SYNTHETIC_EXPAND_EVIDENCE_RUN_ID/);
   assert.match(release, /evidence\.expandEvidenceRunId === process\.env\.SYNTHETIC_EXPAND_EVIDENCE_RUN_ID/);
-  assert.match(release, /evidence\.schemaVersion === 3/);
+  assert.match(release, /evidence\.schemaVersion === 4/);
   assert.match(release, /immutableVersionBound/);
   assert.match(release, /actions\/runs\/\$WORKER_EVIDENCE_RUN_ID/);
   assert.match(release, /Verify complete service-only v2 RPC contract after apply/);

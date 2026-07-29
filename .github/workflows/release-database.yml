@@ -74,10 +74,13 @@ jobs:
       STAGING_PRIVILEGE_EVIDENCE_RUN_ID: ${{ inputs.staging_privilege_evidence_run_id }}
       PRELAUNCH_EVIDENCE_RUN_ID: ${{ inputs.prelaunch_evidence_run_id }}
       RELEASE_TRACK: ${{ inputs.release_track }}
+      AUTHORIZED_DOMAIN_RELEASE_SHA: ${{ vars.AUTHORIZED_DOMAIN_RELEASE_SHA }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -440,9 +443,18 @@ jobs:
             && evidence.versionMessage === process.env.GITHUB_SHA
             && Number.isFinite(Date.parse(evidence.versionCreatedAt || ''))
             && /^[a-f0-9]{64}$/.test(String(evidence.versionMetadataHash || ''));
+          const expandCommitBound = evidence.expandEvidenceCommit === process.env.GITHUB_SHA
+            ? evidence.expandBridgePrelaunchEvidenceRunId === null
+            : '${{ inputs.target }}' === 'production'
+              && process.env.RELEASE_TRACK === 'prompt-privacy'
+              && evidence.expandEvidenceRunId === '30461795102'
+              && evidence.expandEvidenceCommit === 'd839befb167ca1024258ac01198ec96c3d3b3837'
+              && /^[0-9]+$/.test(String(evidence.expandBridgePrelaunchEvidenceRunId || ''))
+              && /^[0-9]+$/.test(String(process.env.PRELAUNCH_EVIDENCE_RUN_ID || ''));
           const valid = runBound
             && immutableVersionBound
-            && evidence.schemaVersion === 3
+            && expandCommitBound
+            && evidence.schemaVersion === 4
             && evidence.target === '${{ inputs.target }}'
             && evidence.operation === 'cutover'
             && evidence.commit === process.env.GITHUB_SHA
@@ -467,7 +479,7 @@ jobs:
           if (!valid) process.exit(1);
           fs.appendFileSync(
             process.env.GITHUB_ENV,
-            `LOCKDOWN_EXPAND_EVIDENCE_RUN_ID=${evidence.expandEvidenceRunId}\nLOCKDOWN_PREVIOUS_STABLE_VERSION_ID=${evidence.previousStableVersionId}\n`,
+            `LOCKDOWN_EXPAND_EVIDENCE_RUN_ID=${evidence.expandEvidenceRunId}\nLOCKDOWN_EXPAND_EVIDENCE_COMMIT=${evidence.expandEvidenceCommit}\nLOCKDOWN_EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID=${evidence.expandBridgePrelaunchEvidenceRunId || ''}\nLOCKDOWN_PREVIOUS_STABLE_VERSION_ID=${evidence.previousStableVersionId}\n`,
           );
           NODE
 
@@ -476,10 +488,25 @@ jobs:
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           GH_TOKEN: ${{ github.token }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p artifacts/prelaunch-expand
+          if [[ "$LOCKDOWN_EXPAND_EVIDENCE_COMMIT" != "$GITHUB_SHA" ]]; then
+            [[ "$LOCKDOWN_EXPAND_EVIDENCE_RUN_ID" == '30461795102' && "$LOCKDOWN_EXPAND_EVIDENCE_COMMIT" == 'd839befb167ca1024258ac01198ec96c3d3b3837' ]] || { echo '::error::lockdown expand evidence is not the fixed bridge source'; exit 1; }
+            [[ "$LOCKDOWN_EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::cutover evidence is missing its current-commit bridge attestation'; exit 1; }
+            [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ && "$GITHUB_SHA" == "$AUTHORIZED_DOMAIN_RELEASE_SHA" ]] || { echo '::error::authorized domain release SHA guard mismatch'; exit 1; }
+            git merge-base --is-ancestor "$LOCKDOWN_EXPAND_EVIDENCE_COMMIT" "$GITHUB_SHA" || { echo '::error::lockdown expand bridge source is not an ancestor of this commit'; exit 1; }
+            bridge_allowed_files=$'.github/workflows/release-database.yml\n.github/workflows/release-worker.yml\nscripts/smoke-release.mjs\nscripts/validate-github-workflows.mjs\nserver/deployment-workflow-sync.test.js\nserver/smoke-release.test.js'
+            expected_bridge_files=$(printf '%s\n' "$bridge_allowed_files" | sort -u)
+            actual_bridge_files=$(git diff --name-only "$LOCKDOWN_EXPAND_EVIDENCE_COMMIT" "$GITHUB_SHA" | sort -u)
+            [[ "$actual_bridge_files" == "$expected_bridge_files" ]] || { echo '::error::lockdown expand bridge change scope is not the exact release-only set'; exit 1; }
+            unexpected_bridge_status=$(git diff --name-status "$LOCKDOWN_EXPAND_EVIDENCE_COMMIT" "$GITHUB_SHA" | awk '$1 != "M" { print }')
+            [[ -z "$unexpected_bridge_status" ]] || { echo '::error::lockdown expand bridge files must be in-place modifications'; exit 1; }
+          else
+            [[ -z "$LOCKDOWN_EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID" ]] || { echo '::error::current-commit expand evidence must not carry a bridge attestation'; exit 1; }
+          fi
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$LOCKDOWN_EXPAND_EVIDENCE_RUN_ID" > artifacts/prelaunch-expand/run.json
           gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release-database.yml" > artifacts/prelaunch-expand/workflow.json
           node <<'NODE'
@@ -491,7 +518,7 @@ jobs:
             && run.conclusion === 'success'
             && run.status === 'completed'
             && run.event === 'workflow_dispatch'
-            && run.head_sha === process.env.GITHUB_SHA
+            && run.head_sha === process.env.LOCKDOWN_EXPAND_EVIDENCE_COMMIT
             && run.head_branch === process.env.DEFAULT_BRANCH
             && run.path === expectedPath
             && workflow.path === expectedPath
@@ -512,16 +539,23 @@ jobs:
           if (files.length !== 1) process.exit(1);
           const evidence = JSON.parse(fs.readFileSync(files[0], 'utf8'));
           const refHash = crypto.createHash('sha256').update(process.env.PROJECT_REF).digest('hex');
+          if (!process.env.SUPABASE_ACCESS_TOKEN
+            || !/^[a-f0-9]{32}$/.test(String(evidence.remoteStateFingerprint || ''))
+            || !/^[a-f0-9]{32}$/.test(String(evidence.migrationRowsFingerprint || ''))) process.exit(1);
+          const expectedCatalogStateHash = crypto.createHmac('sha256', process.env.SUPABASE_ACCESS_TOKEN)
+            .update(JSON.stringify([evidence.remoteStateFingerprint, evidence.migrationRowsFingerprint]))
+            .digest('hex');
           const valid = evidence.schemaVersion === 3
             && evidence.target === 'production'
             && evidence.operation === 'apply-expand'
             && evidence.releaseTrack === 'prompt-privacy'
             && evidence.migration === '20260729000000_prompt_read_views_expand.sql'
-            && evidence.commit === process.env.GITHUB_SHA
+            && evidence.commit === process.env.LOCKDOWN_EXPAND_EVIDENCE_COMMIT
             && evidence.projectRefHash === refHash
             && /^[0-9]+$/.test(String(evidence.prelaunchOriginalEvidenceRunId || ''))
             && evidence.prelaunchRenewalEvidenceRunId === null
             && /^[a-f0-9]{64}$/.test(String(evidence.prelaunchOriginalCatalogStateHash || ''))
+            && process.env.PRELAUNCH_CURRENT_CATALOG_STATE_HASH === expectedCatalogStateHash
             && evidence.prelaunchOriginalRowCountHash === process.env.PRELAUNCH_CURRENT_ROW_COUNT_HASH
             && evidence.prelaunchOriginalProtectedStateHash === process.env.PRELAUNCH_CURRENT_PROTECTED_STATE_HASH
             && evidence.backupEvidenceRunId === null

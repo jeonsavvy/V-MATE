@@ -17,6 +17,14 @@ const expectedReleaseWorkflows = new Set([
 ])
 const credentialContextPattern = /\$\{\{[\s\S]*?(?:\bsecrets(?:\.|\[)|\bgithub\.token\b)[\s\S]*?\}\}/i
 const credentialEnvironmentNamePattern = /(?:^|_)(?:TOKEN|SECRET|PASSWORD|CREDENTIALS?|KEY)(?:$|_)|^(?:SUPABASE_URL|CLOUDFLARE_ACCOUNT_ID)$/i
+const expectedExpandBridgeFiles = [
+  '.github/workflows/release-database.yml',
+  '.github/workflows/release-worker.yml',
+  'scripts/smoke-release.mjs',
+  'scripts/validate-github-workflows.mjs',
+  'server/deployment-workflow-sync.test.js',
+  'server/smoke-release.test.js',
+]
 
 const fail = (file, message) => {
   throw new Error(`${file}: ${message}`)
@@ -166,6 +174,20 @@ const validateWorkflow = (file, source) => {
       'actions/runs/$LOCKDOWN_EXPAND_EVIDENCE_RUN_ID',
       'actions/workflows/release-database.yml',
       'run.head_branch === process.env.DEFAULT_BRANCH',
+      'fetch-depth: 0',
+      'AUTHORIZED_DOMAIN_RELEASE_SHA',
+      'LOCKDOWN_EXPAND_EVIDENCE_COMMIT',
+      'LOCKDOWN_EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID',
+      "evidence.schemaVersion === 4",
+      "evidence.expandEvidenceRunId === '30461795102'",
+      "evidence.expandEvidenceCommit === 'd839befb167ca1024258ac01198ec96c3d3b3837'",
+      "process.env.PRELAUNCH_EVIDENCE_RUN_ID || ''",
+      "run.head_sha === process.env.LOCKDOWN_EXPAND_EVIDENCE_COMMIT",
+      "evidence.commit === process.env.LOCKDOWN_EXPAND_EVIDENCE_COMMIT",
+      'PRELAUNCH_CURRENT_CATALOG_STATE_HASH === expectedCatalogStateHash',
+      "createHmac('sha256', process.env.SUPABASE_ACCESS_TOKEN)",
+      'expand bridge change scope is not the exact release-only set',
+      'lockdown expand bridge files must be in-place modifications',
       'Verify prompt privacy logical backup source contract',
       'vmate_private.prompt_lockdown_room_state_backup_20260729',
       'vmate_private.prompt_lockdown_greeting_backup_20260729',
@@ -187,6 +209,10 @@ const validateWorkflow = (file, source) => {
     }
     if (!String(cutoverEvidenceStep.run).includes('run.head_branch === process.env.DEFAULT_BRANCH')) {
       fail(file, 'Worker cutover evidence run does not require the repository default branch')
+    }
+    const bridgeAllowlists = [...source.matchAll(/bridge_allowed_files=\$'([^']+)'/g)]
+    if (bridgeAllowlists.length !== 1 || JSON.stringify(bridgeAllowlists[0][1].split('\\n')) !== JSON.stringify(expectedExpandBridgeFiles)) {
+      fail(file, 'database release expand bridge allowlist is not the exact release-only set')
     }
     for (const required of [
       'run.id === Number(process.env.WORKER_EVIDENCE_RUN_ID)',
@@ -220,6 +246,27 @@ const validateWorkflow = (file, source) => {
       'actions/workflows/release-database.yml',
       'run.head_branch === process.env.DEFAULT_BRANCH',
       'run.workflow_id === workflow.id',
+      'expand_bridge_prelaunch_evidence_run_id:',
+      'EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID:',
+      "EXPAND_EVIDENCE_RUN_ID === '30461795102'",
+      "run.head_sha === 'd839befb167ca1024258ac01198ec96c3d3b3837'",
+      'expand evidence bridge must run from the default branch',
+      'expand bridge change scope is not the exact release-only set',
+      'expand bridge files must be in-place modifications',
+      'expand bridge attestation must be empty for current-commit evidence',
+      'prelaunch-attestation-evidence-production-',
+      'prelaunchRun.head_sha === process.env.GITHUB_SHA',
+      'prelaunchRun.head_branch === process.env.DEFAULT_BRANCH',
+      'prelaunch.rowCountHash === evidence.prelaunchOriginalRowCountHash',
+      'prelaunch.protectedStateHash === evidence.prelaunchOriginalProtectedStateHash',
+      'prelaunch.catalogStateHash === expectedCatalogStateHash',
+      "createHmac('sha256', process.env.SUPABASE_ACCESS_TOKEN)",
+      'attestedAt >= appliedAt',
+      'shadow.schemaVersion === 4',
+      'schemaVersion: 4',
+      'expandEvidenceCommit:',
+      'expandBridgePrelaunchEvidenceRunId:',
+      'dist/release-version.txt',
       'wrangler versions upload',
     ]) {
       if (!source.includes(required)) fail(file, `missing approved-origin Worker upload guard: ${required}`)
@@ -231,6 +278,23 @@ const validateWorkflow = (file, source) => {
     }
     if (!String(shadowEvidenceStep.run).includes('run.head_branch === process.env.DEFAULT_BRANCH')) {
       fail(file, 'shadow evidence run does not require the repository default branch')
+    }
+    const buildReleaseAssetsStep = root.jobs?.release?.steps?.find((step) => step?.name === 'Build release assets and record hashes')
+    if (buildReleaseAssetsStep?.if !== "${{ inputs.operation != 'rollback' }}") {
+      fail(file, 'rollback must not build a current-commit asset manifest')
+    }
+    const rollbackPreflightStep = root.jobs?.release?.steps?.find((step) => step?.name === 'Preflight evidence-bound rollback version with zero-traffic override')
+    if (!rollbackPreflightStep || /--dist-manifest/.test(String(rollbackPreflightStep.run))) {
+      fail(file, 'historical rollback preflight must use functional smoke without the current manifest')
+    }
+    const selectedVersionSmokeStep = root.jobs?.release?.steps?.find((step) => step?.name === 'Smoke selected Worker version and applicable assets')
+    const rollbackSmokeBranch = String(selectedVersionSmokeStep?.run || '').match(/if \[\[ '\$\{\{ inputs\.operation \}\}' == 'rollback' \]\]; then([\s\S]*?)else/)?.[1] || ''
+    if (!rollbackSmokeBranch.includes('smoke-release.mjs') || /--dist-manifest/.test(rollbackSmokeBranch)) {
+      fail(file, 'historical rollback smoke must not compare the current asset manifest')
+    }
+    const bridgeAllowlists = [...source.matchAll(/bridge_allowed_files=\$'([^']+)'/g)]
+    if (bridgeAllowlists.length !== 1 || JSON.stringify(bridgeAllowlists[0][1].split('\\n')) !== JSON.stringify(expectedExpandBridgeFiles)) {
+      fail(file, 'Worker release expand bridge allowlist is not the exact release-only set')
     }
     for (const required of [
       'run.id === Number(process.env.SHADOW_EVIDENCE_RUN_ID)',
@@ -535,6 +599,22 @@ for (const required of [
   'as protected_state_fingerprint',
 ]) {
   if (!prelaunchProtectedState.includes(required)) fail('scripts/capture-prelaunch-protected-state.sql', `missing protected-state digest input: ${required}`)
+}
+
+const releaseSmoke = await readFile(path.resolve(scriptDirectory, 'smoke-release.mjs'), 'utf8')
+for (const required of [
+  'performance.now()',
+  "manifestPaths.has('release-version.txt')",
+  'maximumAssetBytes',
+  'maximumManifestBytes',
+  'digestBoundedAsset',
+  'response.body.getReader()',
+  'propagationMode ? propagationFetchTimeout() : 20_000',
+]) {
+  if (!releaseSmoke.includes(required)) fail('scripts/smoke-release.mjs', `missing bounded candidate smoke contract: ${required}`)
+}
+if (releaseSmoke.includes('Buffer.from(await response.arrayBuffer())')) {
+  fail('scripts/smoke-release.mjs', 'release asset verification must not buffer an unbounded response')
 }
 
 process.stdout.write(`Validated ${workflowFiles.length} GitHub Actions workflow structures.\n`)
