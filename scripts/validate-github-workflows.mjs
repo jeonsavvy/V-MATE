@@ -1,4 +1,5 @@
 import { readdir, readFile } from 'node:fs/promises'
+import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseDocument } from 'yaml'
@@ -44,6 +45,18 @@ const validateWorkflow = (file, source) => {
   if (document.errors.length) {
     fail(file, `invalid YAML: ${document.errors.map((error) => error.message).join('; ')}`)
   }
+
+  const nodeHeredocs = [...source.matchAll(/\bnode([^\r\n]*?)\s+<<'NODE'\r?\n([\s\S]*?)\r?\n\s*NODE(?=\r?\n|$)/g)]
+  nodeHeredocs.forEach((match, index) => {
+    const result = spawnSync(
+      process.execPath,
+      match[1].includes('--input-type=module') ? ['--check', '--input-type=module'] : ['--check'],
+      { input: match[2], encoding: 'utf8' },
+    )
+    if (result.error || result.status !== 0) {
+      fail(file, `invalid Node heredoc ${index + 1}`)
+    }
+  })
   const root = document.toJS()
   if (!root || Array.isArray(root) || typeof root !== 'object') {
     fail(file, 'workflow root must be a mapping')

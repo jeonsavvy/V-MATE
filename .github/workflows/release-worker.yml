@@ -446,11 +446,11 @@ jobs:
                 && shadow.expandEvidenceCommit === process.env.EXPAND_EVIDENCE_COMMIT
                 && shadow.expandBridgePrelaunchEvidenceRunId === expectedBridgePrelaunchRunId
               : process.env.DATABASE_EVIDENCE_MODE === 'baseline'
-                && shadow.baselineEvidenceRunId === process.env.BASELINE_EVIDENCE_RUN_ID
-                && !shadow.expandEvidenceRunId
-                && shadow.expandMigration === null
-                && shadow.expandEvidenceCommit === null
-                && shadow.expandBridgePrelaunchEvidenceRunId === null
+                ? shadow.baselineEvidenceRunId === process.env.BASELINE_EVIDENCE_RUN_ID
+                  && !shadow.expandEvidenceRunId
+                  && shadow.expandMigration === null
+                  && shadow.expandEvidenceCommit === null
+                  && shadow.expandBridgePrelaunchEvidenceRunId === null
               : false);
           const evidenceBound = shadow.schemaVersion === 4
             && shadow.target === '${{ inputs.target }}'
@@ -550,10 +550,10 @@ jobs:
                 && /^[0-9]+$/.test(String(release.expandEvidenceRunId || ''))
                 && release.baselineEvidenceRunId === null
               : baselineBacked
-                && process.env.DATABASE_RELEASE_TRACK === 'backend-stabilization'
-                && release.expandMigration === null
-                && !release.expandEvidenceRunId
-                && /^[0-9]+$/.test(String(release.baselineEvidenceRunId || ''))
+                ? process.env.DATABASE_RELEASE_TRACK === 'backend-stabilization'
+                  && release.expandMigration === null
+                  && !release.expandEvidenceRunId
+                  && /^[0-9]+$/.test(String(release.baselineEvidenceRunId || ''))
               : false);
           const expectedWorkflowPath = '.github/workflows/release-worker.yml';
           const runBound = run.id === Number(process.env.ROLLBACK_EVIDENCE_RUN_ID)

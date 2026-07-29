@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { runInNewContext } from 'node:vm';
+import { Script, runInNewContext } from 'node:vm';
 import { parseDocument } from 'yaml';
 import { runSupabaseReadOnlyQuery } from '../scripts/run-supabase-read-only-query.mjs';
 import { selectSupabaseProjectApiKeys } from '../scripts/select-supabase-project-api-keys.mjs';
@@ -84,6 +84,11 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   const baseline = await readUtf8('.github/workflows/release-database-baseline-attestation.yml');
   const database = await readUtf8('.github/workflows/release-database.yml');
   const smoke = await readUtf8('scripts/smoke-release.mjs');
+  const commonJsHeredocs = [...release.matchAll(/\bnode([^\r\n]*?)\s+<<'NODE'\r?\n([\s\S]*?)\r?\n\s*NODE(?=\r?\n|$)/g)];
+  assert.ok(commonJsHeredocs.length > 0);
+  for (const [index, match] of commonJsHeredocs.entries()) {
+    assert.doesNotThrow(() => new Script(match[2], { filename: `release-worker.yml:node-heredoc-${index + 1}` }));
+  }
   const baselineAllowlist = baseline
     .match(/allowed-baseline-files\.txt" <<'EOF'\r?\n([\s\S]*?)\r?\n\s+EOF/)?.[1]
     .split(/\r?\n/)
