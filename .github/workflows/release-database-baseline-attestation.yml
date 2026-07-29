@@ -8,7 +8,24 @@ on:
         required: true
         type: string
       baseline_approved:
-        description: Type READ_ONLY_BASELINE_APPROVED after reviewing the protected-environment request
+        description: Type READ_ONLY_BASELINE_APPROVED after reviewing the protected non-database release
+        required: true
+        type: string
+      release_track:
+        description: Post-lockdown database contract for the non-database release
+        required: true
+        type: choice
+        options: [prompt-privacy]
+      lockdown_evidence_run_id:
+        description: Successful production prompt-privacy lockdown run for the serving Worker
+        required: true
+        type: string
+      privilege_evidence_run_id:
+        description: Successful post-lockdown privilege smoke chained to the lockdown run
+        required: true
+        type: string
+      verification_evidence_run_id:
+        description: Successful immediate live verification chained to the privilege smoke
         required: true
         type: string
 
@@ -30,8 +47,14 @@ jobs:
       EXPECTED_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
       PRODUCTION_PROJECT_REF: ${{ vars.PRODUCTION_SUPABASE_PROJECT_REF }}
       BASELINE_APPROVED: ${{ inputs.baseline_approved }}
-      BASELINE_SOURCE_SHA: 5adce9d2128bc7452e30bae9a2c8fca7790baa49
-      AUTHORIZED_DOMAIN_RELEASE_SHA: ${{ vars.AUTHORIZED_DOMAIN_RELEASE_SHA }}
+      RELEASE_TRACK: ${{ inputs.release_track }}
+      LOCKDOWN_EVIDENCE_RUN_ID: ${{ inputs.lockdown_evidence_run_id }}
+      PRIVILEGE_EVIDENCE_RUN_ID: ${{ inputs.privilege_evidence_run_id }}
+      VERIFICATION_EVIDENCE_RUN_ID: ${{ inputs.verification_evidence_run_id }}
+      BASELINE_SOURCE_SHA: 084b38123a37e70d3fa51093fe44b39098a36bc2
+      POST_LOCKDOWN_EVIDENCE_SHA: b2b997f6c0eec183509cf2bc4241fc29eb2f6b7e
+      AUTHORIZED_BASELINE_RELEASE_SHA: ${{ vars.AUTHORIZED_BASELINE_RELEASE_SHA }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
 
     steps:
       - uses: actions/checkout@v6
@@ -49,34 +72,38 @@ jobs:
           set -euo pipefail
           [[ "$PROJECT_REF" =~ ^[a-z0-9]{8,32}$ && "$PROJECT_REF" == "$EXPECTED_PROJECT_REF" && "$PROJECT_REF" == "$PRODUCTION_PROJECT_REF" ]] || { echo '::error::production project guard mismatch'; exit 1; }
           [[ "$BASELINE_APPROVED" == 'READ_ONLY_BASELINE_APPROVED' ]] || { echo '::error::read-only baseline approval is required'; exit 1; }
-          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ && "$AUTHORIZED_DOMAIN_RELEASE_SHA" =~ ^[0-9a-f]{40}$ && "$GITHUB_SHA" == "$AUTHORIZED_DOMAIN_RELEASE_SHA" ]] || { echo '::error::authorized domain release SHA guard mismatch'; exit 1; }
+          [[ "$RELEASE_TRACK" == 'prompt-privacy' ]] || { echo '::error::post-lockdown baseline requires the prompt-privacy track'; exit 1; }
+          [[ "$LOCKDOWN_EVIDENCE_RUN_ID" =~ ^[0-9]+$ && "$PRIVILEGE_EVIDENCE_RUN_ID" =~ ^[0-9]+$ && "$VERIFICATION_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::post-lockdown evidence run IDs must be canonical'; exit 1; }
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ && "$AUTHORIZED_BASELINE_RELEASE_SHA" =~ ^[0-9a-f]{40}$ && "$GITHUB_SHA" == "$AUTHORIZED_BASELINE_RELEASE_SHA" ]] || { echo '::error::authorized baseline release SHA guard mismatch'; exit 1; }
           git merge-base --is-ancestor "$BASELINE_SOURCE_SHA" "$GITHUB_SHA" || { echo '::error::baseline source is not an ancestor of this commit'; exit 1; }
+          git merge-base --is-ancestor "$POST_LOCKDOWN_EVIDENCE_SHA" "$GITHUB_SHA" || { echo '::error::post-lockdown evidence source is not an ancestor of this commit'; exit 1; }
+          proof_files=$'.github/workflows/release-post-lockdown-observation.yml\n.github/workflows/release-post-lockdown-privilege-smoke.yml\nscripts/remote-privilege-smoke.mjs\nscripts/validate-github-workflows.mjs\nserver/deployment-workflow-sync.test.js\nserver/remote-privilege-smoke-contract.test.js'
+          actual_proof_files=$(git diff --name-only "$BASELINE_SOURCE_SHA" "$POST_LOCKDOWN_EVIDENCE_SHA" | sort -u)
+          [[ "$actual_proof_files" == "$(printf '%s\n' "$proof_files" | sort -u)" ]] || { echo '::error::post-lockdown proof source change scope is not the exact verified set'; exit 1; }
+          unexpected_proof_status=$(git diff --name-status "$BASELINE_SOURCE_SHA" "$POST_LOCKDOWN_EVIDENCE_SHA" | awk '$1 != "M" { print }')
+          [[ -z "$unexpected_proof_status" ]] || { echo '::error::post-lockdown proof files must be in-place modifications'; exit 1; }
           cat > "$RUNNER_TEMP/allowed-baseline-files.txt" <<'EOF'
           .github/workflows/release-database-baseline-attestation.yml
           .github/workflows/release-worker.yml
-          README.md
+          docs/operations.md
           index.html
-          scripts/capture-migration-state.sql
-          scripts/capture-release-state.sql
-          scripts/create-dist-manifest.mjs
-          scripts/run-supabase-read-only-query.mjs
-          scripts/smoke-release.mjs
           scripts/validate-github-workflows.mjs
           server/deployment-workflow-sync.test.js
-          server/smoke-release.test.js
+          server/frontend-guardrails.test.js
+          src/components/Home.tsx
+          src/components/PasswordRecoveryPage.tsx
+          src/components/platform/ChatComposer.tsx
+          src/components/platform/Pages.tsx
+          src/components/platform/PlatformScaffold.tsx
           worker.test.js
-          wrangler.jsonc
           EOF
-          git diff --name-only "$BASELINE_SOURCE_SHA" "$GITHUB_SHA" | sort -u > "$RUNNER_TEMP/changed-baseline-files.txt"
-          [[ -s "$RUNNER_TEMP/changed-baseline-files.txt" ]] || { echo '::error::baseline attestation requires an approved domain-only change'; exit 1; }
+          git diff --name-only "$POST_LOCKDOWN_EVIDENCE_SHA" "$GITHUB_SHA" | sort -u > "$RUNNER_TEMP/changed-baseline-files.txt"
+          [[ -s "$RUNNER_TEMP/changed-baseline-files.txt" ]] || { echo '::error::baseline attestation requires an approved non-database release'; exit 1; }
           comm -23 "$RUNNER_TEMP/changed-baseline-files.txt" <(sort -u "$RUNNER_TEMP/allowed-baseline-files.txt") | grep -q . && { echo '::error::baseline attestation change scope is not allowlisted'; exit 1; } || true
-          grep -Fxq '.github/workflows/release-worker.yml' "$RUNNER_TEMP/changed-baseline-files.txt" || { echo '::error::baseline release guard change is absent'; exit 1; }
-          grep -Fxq 'wrangler.jsonc' "$RUNNER_TEMP/changed-baseline-files.txt" || { echo '::error::Custom Domain configuration change is absent'; exit 1; }
           git diff --quiet "$BASELINE_SOURCE_SHA" "$GITHUB_SHA" -- supabase server/platform server/chat-handler.js worker.js || { echo '::error::database or mutation runtime surface changed'; exit 1; }
 
       - name: Require successful CI for this default-branch commit
         env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
@@ -94,6 +121,133 @@ jobs:
           const jobs = await jobsResponse.json();
           const conclusions = new Map((jobs.jobs || []).map((job) => [job.name, job.conclusion]));
           for (const required of ['quality', 'Database contracts (local Docker only)']) if (conclusions.get(required) !== 'success') throw new Error(`Required CI job did not pass: ${required}`);
+          NODE
+
+      - name: Verify deployed post-lockdown lineage
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LINEAGE_DIR
+          LINEAGE_DIR=$(mktemp -d "$RUNNER_TEMP/vmate-post-lockdown-lineage-XXXXXX")
+          trap 'rm -rf -- "$LINEAGE_DIR"' EXIT
+          for binding in \
+            "lockdown:$LOCKDOWN_EVIDENCE_RUN_ID:release-database.yml:database-release-evidence-production-$LOCKDOWN_EVIDENCE_RUN_ID" \
+            "privilege:$PRIVILEGE_EVIDENCE_RUN_ID:release-post-lockdown-privilege-smoke.yml:post-lockdown-privilege-evidence-production-$PRIVILEGE_EVIDENCE_RUN_ID" \
+            "verification:$VERIFICATION_EVIDENCE_RUN_ID:release-post-lockdown-observation.yml:post-lockdown-verification-evidence-production-$VERIFICATION_EVIDENCE_RUN_ID"
+          do
+            IFS=: read -r label run_id workflow_file artifact_name <<< "$binding"
+            mkdir -p "$LINEAGE_DIR/$label/artifact"
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" > "$LINEAGE_DIR/$label/run.json"
+            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow_file" > "$LINEAGE_DIR/$label/workflow.json"
+            gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name "$artifact_name" --dir "$LINEAGE_DIR/$label/artifact"
+          done
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const read = (...parts) => JSON.parse(fs.readFileSync(path.join(process.env.LINEAGE_DIR, ...parts), 'utf8'));
+          const binding = (label, runId, expectedPath, expectedSha) => {
+            const run = read(label, 'run.json');
+            const workflow = read(label, 'workflow.json');
+            const valid = run.id === Number(runId)
+              && run.conclusion === 'success'
+              && run.status === 'completed'
+              && run.event === 'workflow_dispatch'
+              && run.head_sha === expectedSha
+              && run.head_branch === process.env.DEFAULT_BRANCH
+              && run.path === expectedPath
+              && workflow.path === expectedPath
+              && run.workflow_id === workflow.id;
+            if (!valid) throw new Error(`${label} run is not bound to the approved workflow and commit.`);
+          };
+          binding('lockdown', process.env.LOCKDOWN_EVIDENCE_RUN_ID, '.github/workflows/release-database.yml', process.env.BASELINE_SOURCE_SHA);
+          binding('privilege', process.env.PRIVILEGE_EVIDENCE_RUN_ID, '.github/workflows/release-post-lockdown-privilege-smoke.yml', process.env.POST_LOCKDOWN_EVIDENCE_SHA);
+          binding('verification', process.env.VERIFICATION_EVIDENCE_RUN_ID, '.github/workflows/release-post-lockdown-observation.yml', process.env.POST_LOCKDOWN_EVIDENCE_SHA);
+
+          const lockdown = read('lockdown', 'artifact', 'database-release-evidence.json');
+          const privilege = read('privilege', 'artifact', 'post-lockdown-privilege-smoke-evidence.json');
+          const verification = read('verification', 'artifact', 'post-lockdown-verification-evidence.json');
+          const projectRefHash = crypto.createHash('sha256').update(process.env.PROJECT_REF).digest('hex');
+          const migration = '20260729010000_private_prompt_reads_lockdown.sql';
+          const canonicalVersion = (value) => typeof value === 'string' && /^[A-Za-z0-9_-]+$/.test(value);
+          const canonicalDate = (value) => Number.isFinite(Date.parse(value || ''));
+          const lockdownValid = lockdown.schemaVersion === 3
+            && lockdown.target === 'production'
+            && lockdown.operation === 'apply-lockdown'
+            && lockdown.releaseTrack === 'prompt-privacy'
+            && lockdown.commit === process.env.BASELINE_SOURCE_SHA
+            && lockdown.migration === migration
+            && lockdown.projectRefHash === projectRefHash
+            && /^[a-f0-9]{32}$/.test(lockdown.remoteStateFingerprint || '')
+            && /^[a-f0-9]{32}$/.test(lockdown.migrationRowsFingerprint || '')
+            && canonicalVersion(lockdown.workerVersionId)
+            && canonicalVersion(lockdown.previousStableWorkerVersionId)
+            && lockdown.workerEvidenceRunId === '30475207704'
+            && lockdown.expandEvidenceRunId === '30461795102'
+            && lockdown.prelaunchDriftVerified === true
+            && lockdown.immutablePromptBackupManifestVerified === true
+            && canonicalDate(lockdown.appliedAt);
+          const requiredGatewayScenarios = [
+            'ephemeralUserCreated', 'anonCharactersInsertDenied', 'authenticatedCharactersInsertDenied',
+            'anonRoomsInsertDenied', 'authenticatedRoomsInsertDenied', 'legacyQuotaMutationDenied',
+            'authenticatedStorageUploadDenied', 'authenticatedQuotaReadAllowed',
+            'serviceRoleV2RpcSurfaceAllowed', 'clientV2RpcSurfaceDenied',
+            'serviceRoleV2ReserveRefundAllowed', 'ephemeralUserCleanupSucceeded',
+          ];
+          const privilegeValid = privilege.schemaVersion === 1
+            && privilege.target === 'production'
+            && privilege.operation === 'post-lockdown-privilege-smoke'
+            && privilege.releaseTrack === 'prompt-privacy'
+            && privilege.commit === process.env.POST_LOCKDOWN_EVIDENCE_SHA
+            && privilege.lockdownCommit === process.env.BASELINE_SOURCE_SHA
+            && privilege.lockdownEvidenceRunId === process.env.LOCKDOWN_EVIDENCE_RUN_ID
+            && privilege.lockdownMigration === migration
+            && privilege.projectRefHash === projectRefHash
+            && privilege.workerVersionId === lockdown.workerVersionId
+            && privilege.previousStableWorkerVersionId === lockdown.previousStableWorkerVersionId
+            && privilege.lockdownAppliedAt === lockdown.appliedAt
+            && privilege.lockdownStateReattested === true
+            && privilege.sqlRoleProbePassed === true
+            && privilege.httpGatewayProbePassed === true
+            && privilege.allPassed === true
+            && privilege.gatewayScenarios
+            && Object.keys(privilege.gatewayScenarios).sort().join(',') === requiredGatewayScenarios.sort().join(',')
+            && requiredGatewayScenarios.every((name) => privilege.gatewayScenarios[name] === true)
+            && canonicalDate(privilege.lockdownStateAttestedAt)
+            && canonicalDate(privilege.completedAt);
+          const verificationValid = verification.schemaVersion === 2
+            && verification.target === 'production'
+            && verification.operation === 'post-lockdown-verification'
+            && verification.verificationMode === 'single-immediate-live-smoke'
+            && verification.releaseTrack === 'prompt-privacy'
+            && verification.commit === process.env.POST_LOCKDOWN_EVIDENCE_SHA
+            && verification.lockdownCommit === process.env.BASELINE_SOURCE_SHA
+            && verification.lockdownEvidenceRunId === process.env.LOCKDOWN_EVIDENCE_RUN_ID
+            && verification.privilegeEvidenceRunId === process.env.PRIVILEGE_EVIDENCE_RUN_ID
+            && verification.lockdownMigration === migration
+            && verification.projectRefHash === projectRefHash
+            && verification.workerVersionId === lockdown.workerVersionId
+            && verification.baselineWorkerVersionId === lockdown.previousStableWorkerVersionId
+            && verification.lockdownAppliedAt === lockdown.appliedAt
+            && verification.lockdownStateAttestedAt === privilege.lockdownStateAttestedAt
+            && verification.servingVersionVerified === true
+            && verification.liveSmokePassed === true
+            && canonicalDate(verification.completedAt);
+          const chronologyValid = Date.parse(lockdown.appliedAt) <= Date.parse(privilege.lockdownStateAttestedAt)
+            && Date.parse(privilege.lockdownStateAttestedAt) <= Date.parse(privilege.completedAt)
+            && Date.parse(privilege.completedAt) <= Date.parse(verification.completedAt);
+          if (!lockdownValid || !privilegeValid || !verificationValid || !chronologyValid) throw new Error('Post-lockdown release lineage is incomplete or inconsistent.');
+          fs.appendFileSync(process.env.GITHUB_ENV, [
+            `LOCKDOWN_REMOTE_STATE_FINGERPRINT=${lockdown.remoteStateFingerprint}`,
+            `LOCKDOWN_MIGRATION_ROWS_FINGERPRINT=${lockdown.migrationRowsFingerprint}`,
+            `LINEAGE_WORKER_VERSION_ID=${lockdown.workerVersionId}`,
+            `LINEAGE_PREVIOUS_STABLE_VERSION_ID=${lockdown.previousStableWorkerVersionId}`,
+            `LOCKDOWN_APPLIED_AT=${lockdown.appliedAt}`,
+            `LINEAGE_STATE_ATTESTED_AT=${privilege.lockdownStateAttestedAt}`,
+            '',
+          ].join('\n'));
           NODE
 
       - name: Install dependencies
@@ -182,6 +336,158 @@ jobs:
                 ('public.reconcile_expired_chat_reservations_v2(integer)')
               ) as functions(signature)
               where pg_catalog.has_function_privilege(role_name, signature, 'EXECUTE')
+            ),
+            'promptPrivacyMigrationsApplied', not exists (
+              select 1
+              from (values
+                ('20260729000000'),
+                ('20260729010000')
+              ) as expected(version)
+              where not exists (
+                select 1 from supabase_migrations.schema_migrations applied
+                where applied.version = expected.version
+              )
+            ),
+            'privatePromptSchemaBlocked', not exists (
+              select 1
+              from pg_catalog.pg_namespace namespace_record
+              cross join lateral pg_catalog.aclexplode(
+                coalesce(namespace_record.nspacl, pg_catalog.acldefault('n', namespace_record.nspowner))
+              ) privilege_record
+              left join pg_catalog.pg_roles role_record on role_record.oid = privilege_record.grantee
+              where namespace_record.nspname = 'vmate_private'
+                and privilege_record.privilege_type in ('USAGE', 'CREATE')
+                and (privilege_record.grantee = 0 or role_record.rolname in ('anon', 'authenticated', 'service_role'))
+            ) and not exists (
+              select 1
+              from pg_catalog.unnest(array['anon', 'authenticated', 'service_role']) as roles(role_name)
+              cross join pg_catalog.unnest(array['USAGE', 'CREATE']) as privileges(privilege_name)
+              where pg_catalog.has_schema_privilege(role_name, 'vmate_private', privilege_name)
+            ),
+            'privatePromptTablesBlocked', not exists (
+              select 1
+              from pg_catalog.unnest(array['anon', 'authenticated', 'service_role']) as roles(role_name)
+              cross join pg_catalog.unnest(array[
+                'vmate_private.prompt_lockdown_room_state_backup_20260729',
+                'vmate_private.prompt_lockdown_greeting_backup_20260729',
+                'vmate_private.prompt_lockdown_backup_manifest_20260729'
+              ]) as tables(table_name)
+              cross join pg_catalog.unnest(array['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER']) as privileges(privilege_name)
+              where pg_catalog.has_table_privilege(role_name, table_name, privilege_name)
+            ) and not exists (
+              select 1
+              from pg_catalog.pg_class relation_record
+              join pg_catalog.pg_namespace namespace_record on namespace_record.oid = relation_record.relnamespace
+              cross join lateral pg_catalog.aclexplode(
+                coalesce(relation_record.relacl, pg_catalog.acldefault('r', relation_record.relowner))
+              ) privilege_record
+              where namespace_record.nspname = 'vmate_private'
+                and relation_record.relname in (
+                  'prompt_lockdown_room_state_backup_20260729',
+                  'prompt_lockdown_greeting_backup_20260729',
+                  'prompt_lockdown_backup_manifest_20260729'
+                )
+                and privilege_record.grantee = 0
+                and privilege_record.privilege_type in ('SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER')
+            ),
+            'clientPromptColumnsBlocked', not exists (
+              select 1
+              from (values
+                ('anon', 'public.characters', 'profile_json'),
+                ('anon', 'public.characters', 'speech_style_json'),
+                ('anon', 'public.characters', 'prompt_profile_json'),
+                ('anon', 'public.worlds', 'world_rules_markdown'),
+                ('anon', 'public.worlds', 'prompt_profile_json'),
+                ('anon', 'public.rooms', 'resolved_prompt_snapshot_json'),
+                ('authenticated', 'public.characters', 'profile_json'),
+                ('authenticated', 'public.characters', 'speech_style_json'),
+                ('authenticated', 'public.characters', 'prompt_profile_json'),
+                ('authenticated', 'public.worlds', 'world_rules_markdown'),
+                ('authenticated', 'public.worlds', 'prompt_profile_json'),
+                ('authenticated', 'public.rooms', 'resolved_prompt_snapshot_json'),
+                ('authenticated', 'public.rooms', 'bridge_profile_json')
+              ) as protected(role_name, table_name, column_name)
+              where pg_catalog.has_column_privilege(role_name, table_name, column_name, 'SELECT')
+            ),
+            'requiredSafeViewsReadable', not exists (
+              select 1
+              from (values
+                ('anon', 'public.public_character_catalog'),
+                ('anon', 'public.public_world_catalog'),
+                ('authenticated', 'public.public_character_catalog'),
+                ('authenticated', 'public.public_world_catalog'),
+                ('authenticated', 'public.owned_character_details'),
+                ('authenticated', 'public.owned_world_details'),
+                ('authenticated', 'public.owned_room_summaries')
+              ) as required(role_name, table_name)
+              where not pg_catalog.has_table_privilege(role_name, table_name, 'SELECT')
+            ),
+            'ownerViewsAnonymousBlocked', not exists (
+              select 1
+              from (values
+                ('public.owned_character_details'),
+                ('public.owned_world_details'),
+                ('public.owned_room_summaries')
+              ) as owner_views(table_name)
+              where pg_catalog.has_table_privilege('anon', table_name, 'SELECT')
+            ),
+            'safeViewsExcludePromptColumns', not exists (
+              select 1
+              from information_schema.columns
+              where table_schema = 'public' and (
+                (table_name = 'public_character_catalog' and column_name in ('profile_json', 'speech_style_json', 'prompt_profile_json'))
+                or (table_name = 'public_world_catalog' and column_name in ('world_rules_markdown', 'prompt_profile_json'))
+                or (table_name = 'owned_room_summaries' and column_name in ('resolved_prompt_snapshot_json', 'bridge_profile_json'))
+              )
+            ),
+            'safeViewsUseSecurityBarrier', not exists (
+              select 1
+              from (values
+                ('public_character_catalog'),
+                ('public_world_catalog'),
+                ('owned_character_details'),
+                ('owned_world_details'),
+                ('owned_room_summaries')
+              ) as safe_views(view_name)
+              where not exists (
+                select 1 from pg_catalog.pg_class relation_record
+                join pg_catalog.pg_namespace namespace_record on namespace_record.oid = relation_record.relnamespace
+                where namespace_record.nspname = 'public'
+                  and relation_record.relname = safe_views.view_name
+                  and coalesce(relation_record.reloptions, array[]::text[]) @> array['security_barrier=true']
+              )
+            ),
+            'safeViewDefinitionsMatch', not exists (
+              select 1
+              -- The two star-expanded owner views retain the deployed relation's physical column order; these hashes intentionally pin production rather than a fresh-schema deparse.
+              from (values
+                ('owned_character_details', '71437e126b6b647e3f50ff91d98bd3f3f27a535e4be3df00f1a39d22b49f5533'),
+                ('owned_room_summaries', '47b2bcab5843cc366d8888074e1950ab1e71bf79708124b265e8f313ec6eaafa'),
+                ('owned_world_details', '2006d2f05a8b3ad0ab3039ef82e29802a5b720e3b7dcca48ef4d7636b6bfcf41'),
+                ('public_character_catalog', '169aa590d66bddec5a10e6428a548ada4cbba51f7c04a147652a8582d9609c74'),
+                ('public_world_catalog', 'd6600ea38a78da1ee3a4c4779dd459250f887908eb40b13bbd3f64adb1c9437c')
+              ) as expected(view_name, definition_hash)
+              left join pg_catalog.pg_namespace namespace_record
+                on namespace_record.nspname = 'public'
+              left join pg_catalog.pg_class relation_record
+                on relation_record.relnamespace = namespace_record.oid
+                and relation_record.relname = expected.view_name
+                and relation_record.relkind = 'v'
+              where relation_record.oid is null
+                or encode(extensions.digest(pg_catalog.pg_get_viewdef(relation_record.oid, true), 'sha256'), 'hex') is distinct from expected.definition_hash
+            ),
+            'servicePromptColumnsReadable', not exists (
+              select 1
+              from (values
+                ('public.characters', 'profile_json'),
+                ('public.characters', 'speech_style_json'),
+                ('public.characters', 'prompt_profile_json'),
+                ('public.worlds', 'world_rules_markdown'),
+                ('public.worlds', 'prompt_profile_json'),
+                ('public.rooms', 'resolved_prompt_snapshot_json'),
+                ('public.rooms', 'bridge_profile_json')
+              ) as protected(table_name, column_name)
+              where not pg_catalog.has_column_privilege('service_role', table_name, column_name, 'SELECT')
             )
           ) as invariants;
           SQL
@@ -211,24 +517,49 @@ jobs:
           const invariants = firstRow(readJson('private-artifacts/invariants.json'))?.invariants;
           if (!migration?.migration_rows_fingerprint || !release?.release_state_fingerprint || !migrationCoverage || !invariants || typeof invariants !== 'object') throw new Error('Read-only baseline query result is invalid.');
           if (!Array.isArray(migrationCoverage.missing_source_versions) || migrationCoverage.missing_source_versions.length !== 0) throw new Error('A source migration is not applied remotely.');
-          const required = ['expandApplied', 'lockdownAliasApplied', 'directTableWritesBlocked', 'legacyQuotaWritesBlocked', 'storageWritePoliciesAbsent', 'serviceV2MutationRpcsCallable', 'clientV2MutationRpcsBlocked'];
+          const required = [
+            'expandApplied', 'lockdownAliasApplied', 'directTableWritesBlocked',
+            'legacyQuotaWritesBlocked', 'storageWritePoliciesAbsent',
+            'serviceV2MutationRpcsCallable', 'clientV2MutationRpcsBlocked',
+            'promptPrivacyMigrationsApplied', 'privatePromptSchemaBlocked', 'privatePromptTablesBlocked',
+            'clientPromptColumnsBlocked', 'requiredSafeViewsReadable',
+            'ownerViewsAnonymousBlocked', 'safeViewsExcludePromptColumns',
+            'safeViewsUseSecurityBarrier', 'safeViewDefinitionsMatch',
+            'servicePromptColumnsReadable',
+          ];
           if (!required.every((name) => invariants[name] === true)) throw new Error('Read-only baseline invariants did not pass.');
+          if (migration.migration_rows_fingerprint !== process.env.LOCKDOWN_MIGRATION_ROWS_FINGERPRINT
+            || release.release_state_fingerprint !== process.env.LOCKDOWN_REMOTE_STATE_FINGERPRINT) {
+            throw new Error('Current database fingerprints do not match the applied lockdown evidence.');
+          }
           const migrationList = fs.readFileSync('private-artifacts/migration-list.json');
           const lockdownMigrationAlias = { sourceVersion: '20260727000000', remoteVersion: '20260727025134', remoteName: 'backend_stabilization_lockdown' };
           const evidence = {
-            schemaVersion: 1,
+            schemaVersion: 2,
             target: 'production',
-            operation: 'read-only-baseline-attestation',
+            operation: 'read-only-post-lockdown-baseline-attestation',
             queryMode: 'supabase_read_only_user',
+            releaseTrack: process.env.RELEASE_TRACK,
             commit: process.env.GITHUB_SHA,
             baselineSourceSha: process.env.BASELINE_SOURCE_SHA,
+            postLockdownSourceSha: process.env.POST_LOCKDOWN_EVIDENCE_SHA,
             projectRefHash: crypto.createHash('sha256').update(process.env.PROJECT_REF).digest('hex'),
+            lockdownEvidenceRunId: process.env.LOCKDOWN_EVIDENCE_RUN_ID,
+            privilegeEvidenceRunId: process.env.PRIVILEGE_EVIDENCE_RUN_ID,
+            verificationEvidenceRunId: process.env.VERIFICATION_EVIDENCE_RUN_ID,
+            lockdownCommit: process.env.BASELINE_SOURCE_SHA,
+            privilegeCommit: process.env.POST_LOCKDOWN_EVIDENCE_SHA,
+            verificationCommit: process.env.POST_LOCKDOWN_EVIDENCE_SHA,
+            workerVersionId: process.env.LINEAGE_WORKER_VERSION_ID,
+            previousStableWorkerVersionId: process.env.LINEAGE_PREVIOUS_STABLE_VERSION_ID,
+            lockdownAppliedAt: process.env.LOCKDOWN_APPLIED_AT,
+            lockdownStateAttestedAt: process.env.LINEAGE_STATE_ATTESTED_AT,
             migrationListHash: crypto.createHash('sha256').update(migrationList).digest('hex'),
             migrationRowsFingerprint: migration.migration_rows_fingerprint,
+            remoteStateFingerprint: release.release_state_fingerprint,
             missingMigrationCount: 0,
             lockdownMigrationAlias,
             lockdownMigrationAliasHash: crypto.createHash('sha256').update(JSON.stringify(lockdownMigrationAlias)).digest('hex'),
-            releaseStateFingerprint: release.release_state_fingerprint,
             invariants: Object.fromEntries(required.map((name) => [name, true])),
             allPassed: true,
             attestedAt: new Date().toISOString(),

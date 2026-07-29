@@ -165,12 +165,16 @@ test('declares the canonical production hostname while preserving Workers.dev an
   assert.match(workflow, /Smoke preserved legacy Workers\.dev hostname/);
   assert.match(workflow, /exactly one expand_evidence_run_id or baseline_evidence_run_id is required/);
   assert.match(workflow, /AUTHORIZED_DOMAIN_RELEASE_SHA/);
+  assert.match(workflow, /AUTHORIZED_BASELINE_RELEASE_SHA/);
   assert.match(workflow, /actions\/workflows\/release-database-baseline-attestation\.yml/);
   assert.match(workflow, /run\.workflow_id === workflow\.id/);
   assert.match(baselineWorkflow, /READ_ONLY_BASELINE_APPROVED/);
-  assert.match(baselineWorkflow, /AUTHORIZED_DOMAIN_RELEASE_SHA/);
+  assert.match(baselineWorkflow, /AUTHORIZED_BASELINE_RELEASE_SHA/);
   assert.match(baselineWorkflow, /if: \$\{\{ success\(\) \}\}/);
-  assert.match(baselineWorkflow, /5adce9d2128bc7452e30bae9a2c8fca7790baa49/);
+  assert.match(baselineWorkflow, /084b38123a37e70d3fa51093fe44b39098a36bc2/);
+  assert.match(baselineWorkflow, /b2b997f6c0eec183509cf2bc4241fc29eb2f6b7e/);
+  assert.match(baselineWorkflow, /read-only-post-lockdown-baseline-attestation/);
+  assert.match(baselineWorkflow, /Current database fingerprints do not match the applied lockdown evidence/);
   assert.match(baselineWorkflow, /20260727000000/);
   assert.match(baselineWorkflow, /20260727025134/);
   assert.match(baselineWorkflow, /backend_stabilization_lockdown/);

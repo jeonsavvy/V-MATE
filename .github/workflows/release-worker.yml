@@ -47,7 +47,7 @@ on:
         required: false
         type: string
       baseline_evidence_run_id:
-        description: Mutually exclusive with expand_evidence_run_id; read-only production baseline evidence for the allowlisted domain-only change
+        description: Mutually exclusive with expand_evidence_run_id; read-only post-lockdown evidence for an allowlisted non-database release
         required: false
         type: string
       rollback_mode:
@@ -100,6 +100,9 @@ jobs:
       LOCKDOWN_EVIDENCE_RUN_ID: ${{ inputs.lockdown_evidence_run_id }}
       DATABASE_RELEASE_TRACK: ${{ inputs.database_release_track }}
       AUTHORIZED_DOMAIN_RELEASE_SHA: ${{ vars.AUTHORIZED_DOMAIN_RELEASE_SHA }}
+      AUTHORIZED_BASELINE_RELEASE_SHA: ${{ vars.AUTHORIZED_BASELINE_RELEASE_SHA }}
+      BASELINE_SOURCE_SHA: 084b38123a37e70d3fa51093fe44b39098a36bc2
+      POST_LOCKDOWN_EVIDENCE_SHA: b2b997f6c0eec183509cf2bc4241fc29eb2f6b7e
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
 
     steps:
@@ -161,15 +164,21 @@ jobs:
             [[ "$expand_set" != "$baseline_set" ]] || { echo '::error::exactly one expand_evidence_run_id or baseline_evidence_run_id is required'; exit 1; }
             if [[ "$baseline_set" == true ]]; then
               [[ -z "$EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID" ]] || { echo '::error::expand bridge attestation requires expand evidence'; exit 1; }
-              [[ "$DATABASE_RELEASE_TRACK" == 'backend-stabilization' ]] || { echo '::error::baseline evidence cannot satisfy the prompt-privacy track'; exit 1; }
+              [[ "$DATABASE_RELEASE_TRACK" == 'prompt-privacy' ]] || { echo '::error::post-lockdown baseline requires the prompt-privacy track'; exit 1; }
               [[ '${{ inputs.target }}' == 'production' ]] || { echo '::error::baseline evidence is production-only'; exit 1; }
               [[ -n "$DEFAULT_BRANCH" && "$GITHUB_REF" == "refs/heads/$DEFAULT_BRANCH" ]] || { echo '::error::baseline release must run from the default branch'; exit 1; }
-              [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ && "$AUTHORIZED_DOMAIN_RELEASE_SHA" =~ ^[0-9a-f]{40}$ && "$GITHUB_SHA" == "$AUTHORIZED_DOMAIN_RELEASE_SHA" ]] || { echo '::error::authorized domain release SHA guard mismatch'; exit 1; }
-              git merge-base --is-ancestor 5adce9d2128bc7452e30bae9a2c8fca7790baa49 "$GITHUB_SHA" || { echo '::error::baseline source is not an ancestor of this commit'; exit 1; }
-              allowed_files=$'.github/workflows/release-database-baseline-attestation.yml\n.github/workflows/release-worker.yml\nREADME.md\nindex.html\nscripts/capture-migration-state.sql\nscripts/capture-release-state.sql\nscripts/create-dist-manifest.mjs\nscripts/run-supabase-read-only-query.mjs\nscripts/smoke-release.mjs\nscripts/validate-github-workflows.mjs\nserver/deployment-workflow-sync.test.js\nserver/smoke-release.test.js\nworker.test.js\nwrangler.jsonc'
-              unexpected=$(comm -23 <(git diff --name-only 5adce9d2128bc7452e30bae9a2c8fca7790baa49 "$GITHUB_SHA" | sort -u) <(printf '%s\n' "$allowed_files" | sort -u))
+              [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ && "$AUTHORIZED_BASELINE_RELEASE_SHA" =~ ^[0-9a-f]{40}$ && "$GITHUB_SHA" == "$AUTHORIZED_BASELINE_RELEASE_SHA" ]] || { echo '::error::authorized baseline release SHA guard mismatch'; exit 1; }
+              git merge-base --is-ancestor "$BASELINE_SOURCE_SHA" "$GITHUB_SHA" || { echo '::error::baseline source is not an ancestor of this commit'; exit 1; }
+              git merge-base --is-ancestor "$POST_LOCKDOWN_EVIDENCE_SHA" "$GITHUB_SHA" || { echo '::error::post-lockdown evidence source is not an ancestor of this commit'; exit 1; }
+              proof_files=$'.github/workflows/release-post-lockdown-observation.yml\n.github/workflows/release-post-lockdown-privilege-smoke.yml\nscripts/remote-privilege-smoke.mjs\nscripts/validate-github-workflows.mjs\nserver/deployment-workflow-sync.test.js\nserver/remote-privilege-smoke-contract.test.js'
+              actual_proof_files=$(git diff --name-only "$BASELINE_SOURCE_SHA" "$POST_LOCKDOWN_EVIDENCE_SHA" | sort -u)
+              [[ "$actual_proof_files" == "$(printf '%s\n' "$proof_files" | sort -u)" ]] || { echo '::error::post-lockdown proof source change scope is not the exact verified set'; exit 1; }
+              unexpected_proof_status=$(git diff --name-status "$BASELINE_SOURCE_SHA" "$POST_LOCKDOWN_EVIDENCE_SHA" | awk '$1 != "M" { print }')
+              [[ -z "$unexpected_proof_status" ]] || { echo '::error::post-lockdown proof files must be in-place modifications'; exit 1; }
+              allowed_files=$'.github/workflows/release-database-baseline-attestation.yml\n.github/workflows/release-worker.yml\ndocs/operations.md\nindex.html\nscripts/validate-github-workflows.mjs\nserver/deployment-workflow-sync.test.js\nserver/frontend-guardrails.test.js\nsrc/components/Home.tsx\nsrc/components/PasswordRecoveryPage.tsx\nsrc/components/platform/ChatComposer.tsx\nsrc/components/platform/Pages.tsx\nsrc/components/platform/PlatformScaffold.tsx\nworker.test.js'
+              unexpected=$(comm -23 <(git diff --name-only "$POST_LOCKDOWN_EVIDENCE_SHA" "$GITHUB_SHA" | sort -u) <(printf '%s\n' "$allowed_files" | sort -u))
               [[ -z "$unexpected" ]] || { echo '::error::baseline evidence change scope is not allowlisted'; exit 1; }
-              git diff --quiet 5adce9d2128bc7452e30bae9a2c8fca7790baa49 "$GITHUB_SHA" -- supabase server/platform server/chat-handler.js worker.js || { echo '::error::database or mutation runtime surface changed'; exit 1; }
+              git diff --quiet "$BASELINE_SOURCE_SHA" "$GITHUB_SHA" -- supabase server/platform server/chat-handler.js worker.js || { echo '::error::database or mutation runtime surface changed'; exit 1; }
             fi
             if [[ -n "$EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID" ]]; then
               [[ '${{ inputs.target }}' == 'production' && "$DATABASE_RELEASE_TRACK" == 'prompt-privacy' && "$expand_set" == true ]] || { echo '::error::expand bridge attestation is limited to production prompt-privacy expand evidence'; exit 1; }
@@ -291,18 +300,62 @@ jobs:
           }[process.env.DATABASE_RELEASE_TRACK];
           const lockdownMigrationAlias = { sourceVersion: '20260727000000', remoteVersion: '20260727025134', remoteName: 'backend_stabilization_lockdown' };
           const lockdownMigrationAliasHash = crypto.createHash('sha256').update(JSON.stringify(lockdownMigrationAlias)).digest('hex');
+          const baselineInvariantKeys = [
+            'expandApplied', 'lockdownAliasApplied', 'directTableWritesBlocked',
+            'legacyQuotaWritesBlocked', 'storageWritePoliciesAbsent',
+            'serviceV2MutationRpcsCallable', 'clientV2MutationRpcsBlocked',
+            'promptPrivacyMigrationsApplied', 'privatePromptSchemaBlocked', 'privatePromptTablesBlocked',
+            'clientPromptColumnsBlocked', 'requiredSafeViewsReadable',
+            'ownerViewsAnonymousBlocked', 'safeViewsExcludePromptColumns',
+            'safeViewsUseSecurityBarrier', 'safeViewDefinitionsMatch',
+            'servicePromptColumnsReadable',
+          ];
+          const baselineKeys = [
+            'allPassed', 'attestedAt', 'baselineSourceSha', 'commit', 'invariants',
+            'lockdownAppliedAt', 'lockdownCommit', 'lockdownEvidenceRunId',
+            'lockdownMigrationAlias', 'lockdownMigrationAliasHash', 'lockdownStateAttestedAt',
+            'migrationListHash', 'migrationRowsFingerprint', 'missingMigrationCount',
+            'operation', 'postLockdownSourceSha', 'previousStableWorkerVersionId',
+            'privilegeCommit', 'privilegeEvidenceRunId', 'projectRefHash', 'queryMode',
+            'releaseTrack', 'remoteStateFingerprint', 'schemaVersion', 'target',
+            'verificationCommit', 'verificationEvidenceRunId', 'workerVersionId',
+          ];
           const valid = baseline
-            ? evidence.schemaVersion === 1
+            ? JSON.stringify(Object.keys(evidence).sort()) === JSON.stringify(baselineKeys.sort())
+              && evidence.schemaVersion === 2
               && evidence.target === 'production'
-              && evidence.operation === 'read-only-baseline-attestation'
+              && evidence.operation === 'read-only-post-lockdown-baseline-attestation'
               && evidence.queryMode === 'supabase_read_only_user'
+              && evidence.releaseTrack === process.env.DATABASE_RELEASE_TRACK
               && evidence.commit === process.env.GITHUB_SHA
-              && evidence.baselineSourceSha === '5adce9d2128bc7452e30bae9a2c8fca7790baa49'
+              && evidence.baselineSourceSha === process.env.BASELINE_SOURCE_SHA
+              && evidence.postLockdownSourceSha === process.env.POST_LOCKDOWN_EVIDENCE_SHA
+              && evidence.lockdownCommit === process.env.BASELINE_SOURCE_SHA
+              && evidence.privilegeCommit === process.env.POST_LOCKDOWN_EVIDENCE_SHA
+              && evidence.verificationCommit === process.env.POST_LOCKDOWN_EVIDENCE_SHA
               && evidence.projectRefHash === refHash
+              && /^[0-9]+$/.test(String(evidence.lockdownEvidenceRunId || ''))
+              && /^[0-9]+$/.test(String(evidence.privilegeEvidenceRunId || ''))
+              && /^[0-9]+$/.test(String(evidence.verificationEvidenceRunId || ''))
+              && /^[A-Za-z0-9_-]+$/.test(String(evidence.workerVersionId || ''))
+              && /^[A-Za-z0-9_-]+$/.test(String(evidence.previousStableWorkerVersionId || ''))
+              && /^[a-f0-9]{64}$/.test(String(evidence.migrationListHash || ''))
+              && /^[a-f0-9]{32}$/.test(String(evidence.migrationRowsFingerprint || ''))
+              && /^[a-f0-9]{32}$/.test(String(evidence.remoteStateFingerprint || ''))
+              && evidence.missingMigrationCount === 0
               && JSON.stringify(evidence.lockdownMigrationAlias) === JSON.stringify(lockdownMigrationAlias)
               && evidence.lockdownMigrationAliasHash === lockdownMigrationAliasHash
+              && evidence.invariants
+              && JSON.stringify(Object.keys(evidence.invariants).sort()) === JSON.stringify(baselineInvariantKeys.sort())
+              && baselineInvariantKeys.every((name) => evidence.invariants[name] === true)
               && evidence.allPassed === true
+              && Number.isFinite(Date.parse(evidence.lockdownAppliedAt || ''))
+              && Number.isFinite(Date.parse(evidence.lockdownStateAttestedAt || ''))
               && Number.isFinite(Date.parse(evidence.attestedAt || ''))
+              && Date.parse(evidence.lockdownAppliedAt) <= Date.parse(evidence.lockdownStateAttestedAt)
+              && Date.parse(evidence.lockdownStateAttestedAt) <= Date.parse(evidence.attestedAt)
+              && Date.now() >= Date.parse(evidence.attestedAt)
+              && Date.now() - Date.parse(evidence.attestedAt) <= 6 * 60 * 60 * 1000
             : evidence.schemaVersion === 3
               && evidence.target === '${{ inputs.target }}'
               && evidence.operation === 'apply-expand'
@@ -383,7 +436,7 @@ jobs:
               && fresh;
             if (!prelaunchValid) process.exit(1);
           }
-          fs.appendFileSync(process.env.GITHUB_ENV, `DATABASE_EVIDENCE_MODE=${baseline ? 'baseline' : 'expand'}\nEXPAND_PROJECT_REF_HASH=${baseline ? '' : refHash}\nEXPAND_APPLIED_AT=${baseline ? '' : evidence.appliedAt}\nEXPAND_MIGRATION=${baseline ? '' : evidence.migration}\nEXPAND_EVIDENCE_COMMIT=${baseline ? '' : evidence.commit}\nEXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID=${bridged ? process.env.EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID : ''}\n`);
+          fs.appendFileSync(process.env.GITHUB_ENV, `DATABASE_EVIDENCE_MODE=${baseline ? 'baseline' : 'expand'}\nBASELINE_SERVING_VERSION_ID=${baseline ? evidence.workerVersionId : ''}\nBASELINE_PREVIOUS_STABLE_VERSION_ID=${baseline ? evidence.previousStableWorkerVersionId : ''}\nEXPAND_PROJECT_REF_HASH=${baseline ? '' : refHash}\nEXPAND_APPLIED_AT=${baseline ? '' : evidence.appliedAt}\nEXPAND_MIGRATION=${baseline ? '' : evidence.migration}\nEXPAND_EVIDENCE_COMMIT=${baseline ? '' : evidence.commit}\nEXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID=${bridged ? process.env.EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID : ''}\n`);
           NODE
 
       - name: Verify current-commit shadow upload and immutable version metadata
@@ -447,6 +500,8 @@ jobs:
                 && shadow.expandBridgePrelaunchEvidenceRunId === expectedBridgePrelaunchRunId
               : process.env.DATABASE_EVIDENCE_MODE === 'baseline'
                 ? shadow.baselineEvidenceRunId === process.env.BASELINE_EVIDENCE_RUN_ID
+                  && shadow.baselineServingVersionId === process.env.BASELINE_SERVING_VERSION_ID
+                  && shadow.previousStableVersionId === process.env.BASELINE_SERVING_VERSION_ID
                   && !shadow.expandEvidenceRunId
                   && shadow.expandMigration === null
                   && shadow.expandEvidenceCommit === null
@@ -550,10 +605,11 @@ jobs:
                 && /^[0-9]+$/.test(String(release.expandEvidenceRunId || ''))
                 && release.baselineEvidenceRunId === null
               : baselineBacked
-                ? process.env.DATABASE_RELEASE_TRACK === 'backend-stabilization'
-                  && release.expandMigration === null
+                ? release.expandMigration === null
                   && !release.expandEvidenceRunId
                   && /^[0-9]+$/.test(String(release.baselineEvidenceRunId || ''))
+                  && /^[A-Za-z0-9_-]+$/.test(String(release.baselineServingVersionId || ''))
+                  && release.baselineServingVersionId === release.previousStableVersionId
               : false);
           const expectedWorkflowPath = '.github/workflows/release-worker.yml';
           const runBound = run.id === Number(process.env.ROLLBACK_EVIDENCE_RUN_ID)
@@ -595,7 +651,9 @@ jobs:
           } else if (baselineBacked) {
             const validBaselineRollback = !process.env.LOCKDOWN_EVIDENCE_RUN_ID
               && release.v2Compatible === true
-              && release.versionId === process.env.INPUT_VERSION_ID;
+              && release.versionId !== process.env.INPUT_VERSION_ID
+              && release.previousStableVersionId === process.env.INPUT_VERSION_ID
+              && release.baselineServingVersionId === process.env.INPUT_VERSION_ID;
             if (!validBaselineRollback) process.exit(1);
           } else {
             if (!/^[0-9]+$/.test(String(process.env.LOCKDOWN_EVIDENCE_RUN_ID || ''))) process.exit(1);
@@ -613,7 +671,7 @@ jobs:
               && Number.isFinite(Date.parse(lockdown.appliedAt || ''));
             if (!validLockdown || release.v2Compatible !== true || release.versionId !== process.env.INPUT_VERSION_ID) process.exit(1);
           }
-          fs.appendFileSync(process.env.GITHUB_ENV, `ROLLBACK_SOURCE_VERSION_ID=${release.versionId}\nROLLBACK_SOURCE_EVIDENCE_RUN_ID=${process.env.ROLLBACK_EVIDENCE_RUN_ID}\n`);
+          fs.appendFileSync(process.env.GITHUB_ENV, `ROLLBACK_SOURCE_VERSION_ID=${process.env.INPUT_VERSION_ID}\nROLLBACK_SOURCE_EVIDENCE_RUN_ID=${process.env.ROLLBACK_EVIDENCE_RUN_ID}\n`);
           NODE
 
       - name: Prove live database rollback phase
@@ -901,6 +959,9 @@ jobs:
           NODE
           )
           [[ "$previous_stable_version_id" =~ ^[A-Za-z0-9_-]+$ ]] || { echo '::error::Could not determine the exact current stable Worker version'; exit 1; }
+          if [[ "${DATABASE_EVIDENCE_MODE:-}" == 'baseline' ]]; then
+            [[ "$BASELINE_SERVING_VERSION_ID" =~ ^[A-Za-z0-9_-]+$ && "$previous_stable_version_id" == "$BASELINE_SERVING_VERSION_ID" ]] || { echo '::error::serving Worker changed after the baseline attestation'; exit 1; }
+          fi
           echo "PREVIOUS_STABLE_VERSION_ID=$previous_stable_version_id" >> "$GITHUB_ENV"
 
       - name: Apply production Custom Domain trigger before shadow upload
@@ -1089,6 +1150,90 @@ jobs:
           node scripts/smoke-release.mjs \
             --base-url "$BASE_URL" | tee artifacts/live-rollback-smoke.log
 
+      - name: Record machine-readable release evidence
+        shell: bash
+        env:
+          SHADOW_VERSION_ID: ${{ steps.shadow.outputs.version_id }}
+          STABLE_VERSION_ID: ${{ steps.shadow.outputs.stable_version_id }}
+        run: |
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const operation = '${{ inputs.operation }}';
+          const versionId = operation === 'shadow' ? process.env.SHADOW_VERSION_ID : process.env.INPUT_VERSION_ID;
+          const previousStableVersionId = process.env.PREVIOUS_STABLE_VERSION_ID || process.env.STABLE_VERSION_ID || null;
+          const baselineServingVersionId = operation === 'rollback' || process.env.DATABASE_EVIDENCE_MODE !== 'baseline'
+            ? null
+            : process.env.BASELINE_SERVING_VERSION_ID || null;
+          const observability = null;
+          const evidence = {
+            schemaVersion: 4,
+            target: '${{ inputs.target }}',
+            operation,
+            commit: process.env.GITHUB_SHA,
+            workerName: process.env.WORKER_NAME,
+            baseUrl: new URL(process.env.BASE_URL).origin,
+            versionId,
+            shadowEvidenceRunId: operation === 'shadow'
+              ? process.env.GITHUB_RUN_ID
+              : operation === 'smoke' || operation === 'cutover'
+                ? process.env.SHADOW_EVIDENCE_RUN_ID
+                : null,
+            shadowRunAttempt: operation === 'shadow'
+              ? Number(process.env.GITHUB_RUN_ATTEMPT)
+              : operation === 'smoke' || operation === 'cutover'
+                ? Number(process.env.VERIFIED_SHADOW_RUN_ATTEMPT)
+                : null,
+            versionTag: operation === 'rollback' ? null : process.env.VERSION_TAG || null,
+            versionMessage: operation === 'rollback' ? null : process.env.VERSION_MESSAGE || null,
+            versionCreatedAt: operation === 'rollback' ? null : process.env.VERSION_CREATED_AT || null,
+            versionMetadataHash: operation === 'rollback' ? null : process.env.VERSION_METADATA_HASH || null,
+            projectRefHash: crypto.createHash('sha256').update(process.env.EXPECTED_SUPABASE_PROJECT_REF).digest('hex'),
+            databaseEvidenceMode: operation === 'rollback' ? null : process.env.DATABASE_EVIDENCE_MODE || null,
+            databaseReleaseTrack: process.env.DATABASE_RELEASE_TRACK,
+            baselineEvidenceRunId: operation === 'rollback' ? null : (/^[0-9]+$/.test(String(process.env.BASELINE_EVIDENCE_RUN_ID || '')) ? process.env.BASELINE_EVIDENCE_RUN_ID : null),
+            baselineServingVersionId,
+            v2Compatible: operation === 'cutover' && (process.env.DATABASE_EVIDENCE_MODE === 'expand' || process.env.DATABASE_EVIDENCE_MODE === 'baseline'),
+            expandEvidenceRunId: operation === 'rollback' ? null : process.env.EXPAND_EVIDENCE_RUN_ID,
+            expandEvidenceCommit: operation === 'rollback' ? null : process.env.EXPAND_EVIDENCE_COMMIT || null,
+            expandBridgePrelaunchEvidenceRunId: operation === 'rollback'
+              ? null
+              : (/^[0-9]+$/.test(String(process.env.EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID || '')) ? process.env.EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID : null),
+            expandProjectRefHash: operation === 'rollback' ? null : process.env.EXPAND_PROJECT_REF_HASH,
+            expandAppliedAt: operation === 'rollback' ? null : process.env.EXPAND_APPLIED_AT,
+            expandMigration: operation === 'rollback' ? null : process.env.EXPAND_MIGRATION || null,
+            previousStableVersionId,
+            rollbackMode: operation === 'rollback' ? process.env.ROLLBACK_MODE : null,
+            rollbackEvidenceRunId: operation === 'rollback' ? process.env.ROLLBACK_SOURCE_EVIDENCE_RUN_ID : null,
+            rollbackSourceVersionId: operation === 'rollback' ? process.env.ROLLBACK_SOURCE_VERSION_ID : null,
+            lockdownEvidenceRunId: operation === 'rollback' && process.env.ROLLBACK_MODE === 'post-lockdown' ? process.env.LOCKDOWN_EVIDENCE_RUN_ID : null,
+            completedAt: new Date().toISOString(),
+            smokePassed: true,
+            monitorChecks: operation === 'cutover' ? 1 : 0,
+            monitorMinutes: 0,
+            observabilityPassed: observability?.passed ?? null,
+            observabilityMetrics: observability?.metrics || null,
+            observabilityWindow: observability?.window || null,
+            baselineWindow: observability?.baselineWindow || null,
+          };
+          if (operation !== 'rollback') {
+            const immutableVersionBound = /^[0-9]+$/.test(String(evidence.shadowEvidenceRunId || ''))
+              && Number.isInteger(evidence.shadowRunAttempt)
+              && evidence.shadowRunAttempt >= 1
+              && evidence.versionTag === `github-${evidence.shadowEvidenceRunId}-${evidence.shadowRunAttempt}`
+              && evidence.versionMessage === process.env.GITHUB_SHA
+              && Number.isFinite(Date.parse(evidence.versionCreatedAt || ''))
+              && /^[a-f0-9]{64}$/.test(String(evidence.versionMetadataHash || ''));
+            if (!immutableVersionBound) throw new Error('Immutable Worker version evidence is incomplete.');
+            if (evidence.databaseEvidenceMode === 'baseline'
+              && (!/^[A-Za-z0-9_-]+$/.test(String(evidence.baselineServingVersionId || ''))
+                || evidence.previousStableVersionId !== evidence.baselineServingVersionId)) {
+              throw new Error('Baseline release is not anchored to the attested serving Worker version.');
+            }
+          }
+          fs.writeFileSync('artifacts/release-evidence.json', `${JSON.stringify(evidence, null, 2)}\n`);
+          NODE
+
       - name: Restore the previous stable version after a failed cutover gate
         if: ${{ failure() && inputs.operation == 'cutover' && env.CUTOVER_STARTED_AT != '' }}
         env:
@@ -1123,80 +1268,6 @@ jobs:
             failedVersionId: process.env.INPUT_VERSION_ID,
             completedAt: new Date().toISOString(),
           }, null, 2)}\n`);
-          NODE
-
-      - name: Record machine-readable release evidence
-        shell: bash
-        env:
-          SHADOW_VERSION_ID: ${{ steps.shadow.outputs.version_id }}
-          STABLE_VERSION_ID: ${{ steps.shadow.outputs.stable_version_id }}
-        run: |
-          node <<'NODE'
-          const crypto = require('node:crypto');
-          const fs = require('node:fs');
-          const operation = '${{ inputs.operation }}';
-          const versionId = operation === 'shadow' ? process.env.SHADOW_VERSION_ID : process.env.INPUT_VERSION_ID;
-          const observability = null;
-          const evidence = {
-            schemaVersion: 4,
-            target: '${{ inputs.target }}',
-            operation,
-            commit: process.env.GITHUB_SHA,
-            workerName: process.env.WORKER_NAME,
-            baseUrl: new URL(process.env.BASE_URL).origin,
-            versionId,
-            shadowEvidenceRunId: operation === 'shadow'
-              ? process.env.GITHUB_RUN_ID
-              : operation === 'smoke' || operation === 'cutover'
-                ? process.env.SHADOW_EVIDENCE_RUN_ID
-                : null,
-            shadowRunAttempt: operation === 'shadow'
-              ? Number(process.env.GITHUB_RUN_ATTEMPT)
-              : operation === 'smoke' || operation === 'cutover'
-                ? Number(process.env.VERIFIED_SHADOW_RUN_ATTEMPT)
-                : null,
-            versionTag: operation === 'rollback' ? null : process.env.VERSION_TAG || null,
-            versionMessage: operation === 'rollback' ? null : process.env.VERSION_MESSAGE || null,
-            versionCreatedAt: operation === 'rollback' ? null : process.env.VERSION_CREATED_AT || null,
-            versionMetadataHash: operation === 'rollback' ? null : process.env.VERSION_METADATA_HASH || null,
-            projectRefHash: crypto.createHash('sha256').update(process.env.EXPECTED_SUPABASE_PROJECT_REF).digest('hex'),
-            databaseEvidenceMode: operation === 'rollback' ? null : process.env.DATABASE_EVIDENCE_MODE || null,
-            databaseReleaseTrack: process.env.DATABASE_RELEASE_TRACK,
-            baselineEvidenceRunId: operation === 'rollback' ? null : (/^[0-9]+$/.test(String(process.env.BASELINE_EVIDENCE_RUN_ID || '')) ? process.env.BASELINE_EVIDENCE_RUN_ID : null),
-            v2Compatible: operation === 'cutover' && (process.env.DATABASE_EVIDENCE_MODE === 'expand' || process.env.DATABASE_EVIDENCE_MODE === 'baseline'),
-            expandEvidenceRunId: operation === 'rollback' ? null : process.env.EXPAND_EVIDENCE_RUN_ID,
-            expandEvidenceCommit: operation === 'rollback' ? null : process.env.EXPAND_EVIDENCE_COMMIT || null,
-            expandBridgePrelaunchEvidenceRunId: operation === 'rollback'
-              ? null
-              : (/^[0-9]+$/.test(String(process.env.EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID || '')) ? process.env.EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID : null),
-            expandProjectRefHash: operation === 'rollback' ? null : process.env.EXPAND_PROJECT_REF_HASH,
-            expandAppliedAt: operation === 'rollback' ? null : process.env.EXPAND_APPLIED_AT,
-            expandMigration: operation === 'rollback' ? null : process.env.EXPAND_MIGRATION || null,
-            previousStableVersionId: process.env.PREVIOUS_STABLE_VERSION_ID || process.env.STABLE_VERSION_ID || null,
-            rollbackMode: operation === 'rollback' ? process.env.ROLLBACK_MODE : null,
-            rollbackEvidenceRunId: operation === 'rollback' ? process.env.ROLLBACK_SOURCE_EVIDENCE_RUN_ID : null,
-            rollbackSourceVersionId: operation === 'rollback' ? process.env.ROLLBACK_SOURCE_VERSION_ID : null,
-            lockdownEvidenceRunId: operation === 'rollback' && process.env.ROLLBACK_MODE === 'post-lockdown' ? process.env.LOCKDOWN_EVIDENCE_RUN_ID : null,
-            completedAt: new Date().toISOString(),
-            smokePassed: true,
-            monitorChecks: operation === 'cutover' ? 1 : 0,
-            monitorMinutes: 0,
-            observabilityPassed: observability?.passed ?? null,
-            observabilityMetrics: observability?.metrics || null,
-            observabilityWindow: observability?.window || null,
-            baselineWindow: observability?.baselineWindow || null,
-          };
-          if (operation !== 'rollback') {
-            const immutableVersionBound = /^[0-9]+$/.test(String(evidence.shadowEvidenceRunId || ''))
-              && Number.isInteger(evidence.shadowRunAttempt)
-              && evidence.shadowRunAttempt >= 1
-              && evidence.versionTag === `github-${evidence.shadowEvidenceRunId}-${evidence.shadowRunAttempt}`
-              && evidence.versionMessage === process.env.GITHUB_SHA
-              && Number.isFinite(Date.parse(evidence.versionCreatedAt || ''))
-              && /^[a-f0-9]{64}$/.test(String(evidence.versionMetadataHash || ''));
-            if (!immutableVersionBound) throw new Error('Immutable Worker version evidence is incomplete.');
-          }
-          fs.writeFileSync('artifacts/release-evidence.json', `${JSON.stringify(evidence, null, 2)}\n`);
           NODE
 
       - name: Upload release evidence

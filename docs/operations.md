@@ -138,9 +138,9 @@ flowchart TD
 | `release-staging-synthetic-smoke.yml` | staging v2 A/B 시나리오 검증 |
 | `release-post-lockdown-privilege-smoke.yml` | SQL role과 실제 HTTP 쓰기 경계 검증 |
 | `release-post-lockdown-observation.yml` | lockdown 직후 현재 serving version과 공개 origin을 1회 검증 |
-| `release-database-baseline-attestation.yml` | 제한된 production read-only baseline 경로 |
+| `release-database-baseline-attestation.yml` | post-lockdown production의 비DB 변경을 위한 read-only baseline 증명 |
 
-Worker release는 확장 migration evidence가 기본입니다. DB/schema/data 변경이 없는 allowlisted domain/canonical 변경만 별도 승인된 read-only baseline attestation을 사용할 수 있습니다. 이 경로는 `db push`나 원격 DML을 실행하지 않으며 `AUTHORIZED_DOMAIN_RELEASE_SHA`가 현재 40자리 release commit SHA와 일치해야 합니다.
+Worker release는 확장 migration evidence가 기본입니다. `prompt-privacy` lockdown 이후 DB/schema/data와 mutation runtime을 바꾸지 않는 allowlisted frontend·canonical 변경은 별도 승인된 read-only baseline을 사용할 수 있습니다. 이 경로는 배포된 `084b38123a37e70d3fa51093fe44b39098a36bc2` Worker, lockdown run `30475814012`, privilege run `30479630582`, live verification run `30479760383`의 연결을 검증하고 현재 migration/release fingerprints와 prompt read 권한을 다시 읽습니다. Baseline evidence는 생성 후 6시간 동안만 shadow/smoke/cutover에 사용할 수 있습니다. `db push`, 원격 DML, 장시간 관찰은 실행하지 않습니다. `production-db-baseline-attestation`, `production-shadow`, `production-smoke`, `production-cutover`의 `AUTHORIZED_BASELINE_RELEASE_SHA`는 현재 40자리 release commit SHA와 일치해야 합니다.
 
 DB와 Worker workflow의 `release_track`/`database_release_track`은 같은 값을 사용합니다. `backend-stabilization`과 `prompt-privacy` evidence는 서로 대체할 수 없으며, post-lockdown privilege smoke와 즉시 검증은 version과 release track을 수동 입력받지 않고 적용된 lockdown evidence에서 이어받습니다.
 
@@ -179,7 +179,7 @@ Prelaunch direct의 최종 post-lockdown gate는 24시간을 기다리지 않습
 
 `prompt-privacy` lockdown은 과거 방의 초기 상황·위치·관계·월드 용어 캐시와 첫 assistant 인사 메시지도 안전한 기본값으로 교체합니다. 일반 경로의 `prompt-privacy:apply-lockdown`은 적용 시점부터 6시간 이내에 생성된 동일 commit·target·project의 승인된 physical backup evidence를 필수로 검증합니다. Prelaunch direct 경로만 같은 6시간 제한의 attestation으로 이 gate를 대체합니다. Migration은 scrub 전에 `vmate_private.prompt_lockdown_room_state_backup_20260729`와 `vmate_private.prompt_lockdown_greeting_backup_20260729`를 만들고, `vmate_private.prompt_lockdown_backup_manifest_20260729`에 두 backup의 count, ordered key+room-version hash, payload hash를 고정합니다. Source parity는 같은 transaction에서 scrub 전에 검증합니다. 적용 후 source는 의도적으로 달라지므로 workflow는 source parity를 다시 요구하지 않고 immutable manifest와 backup count/hash, `PUBLIC`·`anon`·`authenticated`·`service_role`의 schema/table 권한 부재만 검증합니다. 이 logical backup은 database owner용 복구 자료이며 자동 rollback이나 physical backup을 대체하는 일반 경로가 아닙니다. 복구가 필요하면 database owner 세션에서 manifest parity를 먼저 확인하고, migration 하단의 conditional forward-restore transaction을 사용해 scrub sentinel과 `room_version_before + 1` 상태가 그대로인 행만 복원한 뒤 version fence가 `room_version_before + 2`인지 검증합니다.
 
-`backend-stabilization` read-only baseline으로 cutover한 version은 이미 post-lockdown DB에서 검증된 복원 대상입니다. 이 version을 복원할 때는 `rollback_mode: post-lockdown`과 baseline-backed cutover evidence를 사용하고 `lockdown_evidence_run_id`는 비워 둡니다. Expand-backed cutover의 post-lockdown 복원은 기존처럼 그 cutover에 결속된 lockdown evidence가 필요합니다.
+`prompt-privacy` read-only baseline cutover가 실패하면 workflow가 직전 serving version을 자동 복원하고 공개 origin smoke를 실행합니다. 성공 후 수동 복원은 새 baseline-backed cutover evidence의 `previousStableVersionId`를 대상으로 `rollback_mode: post-lockdown`을 사용하고 `lockdown_evidence_run_id`는 비워 둡니다. Expand-backed cutover의 post-lockdown 복원은 그 cutover에 결속된 lockdown evidence가 필요합니다.
 
 lockdown 후 `anon`/`authenticated`의 직접 table/Storage 쓰기 권한을 복구 수단으로 되살리지 않습니다.
 

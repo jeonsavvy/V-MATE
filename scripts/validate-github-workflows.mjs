@@ -259,6 +259,12 @@ const validateWorkflow = (file, source) => {
       'baseline evidence change scope is not allowlisted',
       'AUTHORIZED_DOMAIN_RELEASE_SHA',
       'authorized domain release SHA guard mismatch',
+      'AUTHORIZED_BASELINE_RELEASE_SHA',
+      'authorized baseline release SHA guard mismatch',
+      '084b38123a37e70d3fa51093fe44b39098a36bc2',
+      'b2b997f6c0eec183509cf2bc4241fc29eb2f6b7e',
+      'post-lockdown proof source change scope is not the exact verified set',
+      'Date.now() - Date.parse(evidence.attestedAt) <= 6 * 60 * 60 * 1000',
       'actions/runs/$BASELINE_EVIDENCE_RUN_ID',
       'actions/workflows/release-database-baseline-attestation.yml',
       'actions/runs/$EXPAND_EVIDENCE_RUN_ID',
@@ -283,6 +289,10 @@ const validateWorkflow = (file, source) => {
       'attestedAt >= appliedAt',
       'shadow.schemaVersion === 4',
       'schemaVersion: 4',
+      'baselineServingVersionId',
+      'serving Worker changed after the baseline attestation',
+      'release.previousStableVersionId === process.env.INPUT_VERSION_ID',
+      'ROLLBACK_SOURCE_VERSION_ID=${process.env.INPUT_VERSION_ID}',
       'expandEvidenceCommit:',
       'expandBridgePrelaunchEvidenceRunId:',
       'dist/release-version.txt',
@@ -346,6 +356,7 @@ const validateWorkflow = (file, source) => {
       if (!deploymentAfter.includes(required)) fail(file, `deployment verification is not strict at the root versions list: ${required}`)
     }
     const automaticRollbackStep = root.jobs?.release?.steps?.find((step) => step?.name === 'Restore the previous stable version after a failed cutover gate')
+    const recordReleaseEvidenceStep = root.jobs?.release?.steps?.find((step) => step?.name === 'Record machine-readable release evidence')
     const automaticRollback = String(automaticRollbackStep?.run || '')
     const statusIndex = automaticRollback.indexOf('wrangler deployments status')
     const strictIndex = automaticRollback.indexOf('source.versions.length !== 1')
@@ -354,6 +365,10 @@ const validateWorkflow = (file, source) => {
     if (statusIndex < 0 || strictIndex <= statusIndex || smokeIndex <= strictIndex || artifactIndex <= smokeIndex
       || /--worker-name|--version-id|--dist-manifest/.test(automaticRollback)) {
       fail(file, 'automatic rollback must verify exact root deployment state and the public origin before recording evidence')
+    }
+    if (!recordReleaseEvidenceStep
+      || root.jobs.release.steps.indexOf(recordReleaseEvidenceStep) >= root.jobs.release.steps.indexOf(automaticRollbackStep)) {
+      fail(file, 'release evidence must be recorded before the final automatic rollback gate')
     }
     const bridgeAllowlists = [...source.matchAll(/bridge_allowed_files=\$'([^']+)'/g)]
     if (bridgeAllowlists.length !== 1 || JSON.stringify(bridgeAllowlists[0][1].split('\\n')) !== JSON.stringify(expectedExpandBridgeFiles)) {
@@ -393,10 +408,16 @@ const validateWorkflow = (file, source) => {
     for (const required of [
       'production-db-baseline-attestation',
       'READ_ONLY_BASELINE_APPROVED',
-      'AUTHORIZED_DOMAIN_RELEASE_SHA',
-      'authorized domain release SHA guard mismatch',
+      'AUTHORIZED_BASELINE_RELEASE_SHA',
+      'authorized baseline release SHA guard mismatch',
       'if: ${{ success() }}',
-      '5adce9d2128bc7452e30bae9a2c8fca7790baa49',
+      '084b38123a37e70d3fa51093fe44b39098a36bc2',
+      'b2b997f6c0eec183509cf2bc4241fc29eb2f6b7e',
+      'release_track:',
+      'lockdown_evidence_run_id:',
+      'privilege_evidence_run_id:',
+      'verification_evidence_run_id:',
+      'Verify deployed post-lockdown lineage',
       '20260727000000',
       '20260727025134',
       'backend_stabilization_lockdown',
@@ -405,7 +426,17 @@ const validateWorkflow = (file, source) => {
       'run-supabase-read-only-query.mjs',
       "queryMode: 'supabase_read_only_user'",
       "trap 'rm -rf private-artifacts' EXIT",
-      'read-only-baseline-attestation',
+      'read-only-post-lockdown-baseline-attestation',
+      'promptPrivacyMigrationsApplied',
+      'privatePromptSchemaBlocked',
+      'privatePromptTablesBlocked',
+      'clientPromptColumnsBlocked',
+      'safeViewDefinitionsMatch',
+      'pg_get_viewdef',
+      'is distinct from expected.definition_hash',
+      '71437e126b6b647e3f50ff91d98bd3f3f27a535e4be3df00f1a39d22b49f5533',
+      'd6600ea38a78da1ee3a4c4779dd459250f887908eb40b13bbd3f64adb1c9437c',
+      'Current database fingerprints do not match the applied lockdown evidence.',
     ]) {
       if (!source.includes(required)) fail(file, `missing read-only baseline attestation guard: ${required}`)
     }

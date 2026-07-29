@@ -90,6 +90,9 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   const automaticRollbackStep = releaseWorkflow.jobs.release.steps.find(
     (step) => step.name === 'Restore the previous stable version after a failed cutover gate',
   );
+  const recordReleaseEvidenceStep = releaseWorkflow.jobs.release.steps.find(
+    (step) => step.name === 'Record machine-readable release evidence',
+  );
   const baseline = await readUtf8('.github/workflows/release-database-baseline-attestation.yml');
   const database = await readUtf8('.github/workflows/release-database.yml');
   const smoke = await readUtf8('scripts/smoke-release.mjs');
@@ -97,6 +100,11 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.ok(commonJsHeredocs.length > 0);
   for (const [index, match] of commonJsHeredocs.entries()) {
     assert.doesNotThrow(() => new Script(match[2], { filename: `release-worker.yml:node-heredoc-${index + 1}` }));
+  }
+  const baselineCommonJsHeredocs = [...baseline.matchAll(/\bnode([^\r\n]*?)\s+<<'NODE'\r?\n([\s\S]*?)\r?\n\s*NODE(?=\r?\n|$)/g)];
+  assert.ok(baselineCommonJsHeredocs.length > 0);
+  for (const [index, match] of baselineCommonJsHeredocs.entries()) {
+    assert.doesNotThrow(() => new Script(`(async () => {\n${match[2]}\n})()`, { filename: `release-database-baseline-attestation.yml:node-heredoc-${index + 1}` }));
   }
   const baselineAllowlist = baseline
     .match(/allowed-baseline-files\.txt" <<'EOF'\r?\n([\s\S]*?)\r?\n\s+EOF/)?.[1]
@@ -159,6 +167,7 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.ok(automaticStrictIndex > automaticStatusIndex);
   assert.ok(automaticSmokeIndex > automaticStrictIndex);
   assert.ok(automaticArtifactIndex > automaticSmokeIndex);
+  assert.ok(releaseWorkflow.jobs.release.steps.indexOf(recordReleaseEvidenceStep) < releaseWorkflow.jobs.release.steps.indexOf(automaticRollbackStep));
   assert.doesNotMatch(automaticRollbackStep.run, /--worker-name|--version-id|--dist-manifest/);
   assert.match(release, /monitorChecks: operation === 'cutover' \? 1 : 0/);
   assert.match(release, /monitorMinutes: 0/);
@@ -223,14 +232,17 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(release, /baseline_evidence_run_id/);
   assert.match(release, /exactly one expand_evidence_run_id or baseline_evidence_run_id is required/);
   assert.match(release, /baseline evidence change scope is not allowlisted/);
-  for (const releaseSmokePath of [
-    'scripts/create-dist-manifest.mjs',
-    'scripts/smoke-release.mjs',
-    'server/smoke-release.test.js',
+  for (const releaseSurfacePath of [
+    'index.html',
+    'server/frontend-guardrails.test.js',
+    'src/components/platform/Pages.tsx',
   ]) {
-    assert.ok(release.includes(releaseSmokePath), `release allowlist is missing ${releaseSmokePath}`);
+    assert.ok(release.includes(releaseSurfacePath), `release allowlist is missing ${releaseSurfacePath}`);
   }
   assert.match(release, /AUTHORIZED_DOMAIN_RELEASE_SHA/);
+  assert.match(release, /AUTHORIZED_BASELINE_RELEASE_SHA/);
+  assert.match(release, /post-lockdown proof source change scope is not the exact verified set/);
+  assert.match(release, /Date\.now\(\) - Date\.parse\(evidence\.attestedAt\) <= 6 \* 60 \* 60 \* 1000/);
   assert.match(release, /actions\/runs\/\$BASELINE_EVIDENCE_RUN_ID/);
   assert.match(release, /actions\/workflows\/release-database-baseline-attestation\.yml/);
   assert.match(release, /actions\/runs\/\$EXPAND_EVIDENCE_RUN_ID/);
@@ -253,6 +265,11 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(release, /createHmac\('sha256', process\.env\.SUPABASE_ACCESS_TOKEN\)/);
   assert.match(release, /attestedAt >= appliedAt/);
   assert.match(release, /schemaVersion: 4/);
+  assert.match(release, /baselineServingVersionId/);
+  assert.match(release, /serving Worker changed after the baseline attestation/);
+  assert.match(captureBeforeStep.run, /previous_stable_version_id" == "\$BASELINE_SERVING_VERSION_ID/);
+  assert.match(release, /release\.previousStableVersionId === process\.env\.INPUT_VERSION_ID/);
+  assert.match(release, /ROLLBACK_SOURCE_VERSION_ID=\$\{process\.env\.INPUT_VERSION_ID\}/);
   assert.match(release, /expandEvidenceCommit:/);
   assert.match(release, /expandBridgePrelaunchEvidenceRunId:/);
   assert.match(database, /fetch-depth: 0/);
@@ -318,19 +335,43 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   );
   assert.match(baseline, /environment: production-db-baseline-attestation/);
   assert.match(baseline, /READ_ONLY_BASELINE_APPROVED/);
-  assert.match(baseline, /AUTHORIZED_DOMAIN_RELEASE_SHA/);
+  assert.match(baseline, /AUTHORIZED_BASELINE_RELEASE_SHA/);
+  assert.match(baseline, /release_track:/);
+  assert.match(baseline, /lockdown_evidence_run_id:/);
+  assert.match(baseline, /privilege_evidence_run_id:/);
+  assert.match(baseline, /verification_evidence_run_id:/);
+  assert.match(baseline, /Verify deployed post-lockdown lineage/);
+  assert.match(baseline, /084b38123a37e70d3fa51093fe44b39098a36bc2/);
+  assert.match(baseline, /b2b997f6c0eec183509cf2bc4241fc29eb2f6b7e/);
   assert.match(baseline, /if: \$\{\{ success\(\) \}\}/);
   assert.match(baseline, /database-baseline-evidence-production-/);
   assert.match(baseline, /20260727000000/);
   assert.match(baseline, /20260727025134/);
   assert.match(baseline, /lockdownMigrationAliasHash/);
   assert.match(baseline, /run-supabase-read-only-query\.mjs/);
-  assert.match(baseline, /scripts\/create-dist-manifest\.mjs/);
-  assert.match(baseline, /scripts\/smoke-release\.mjs/);
-  assert.match(baseline, /server\/smoke-release\.test\.js/);
+  assert.match(baseline, /src\/components\/platform\/Pages\.tsx/);
+  assert.match(baseline, /server\/frontend-guardrails\.test\.js/);
   assert.match(baseline, /queryMode: 'supabase_read_only_user'/);
   assert.match(baseline, /serviceV2MutationRpcsCallable/);
   assert.match(baseline, /clientV2MutationRpcsBlocked/);
+  assert.match(baseline, /promptPrivacyMigrationsApplied/);
+  assert.match(baseline, /privatePromptSchemaBlocked/);
+  assert.match(baseline, /privatePromptTablesBlocked/);
+  assert.match(baseline, /clientPromptColumnsBlocked/);
+  assert.match(baseline, /safeViewDefinitionsMatch/);
+  assert.match(baseline, /pg_get_viewdef/);
+  assert.match(baseline, /is distinct from expected\.definition_hash/);
+  for (const definitionHash of [
+    '71437e126b6b647e3f50ff91d98bd3f3f27a535e4be3df00f1a39d22b49f5533',
+    '47b2bcab5843cc366d8888074e1950ab1e71bf79708124b265e8f313ec6eaafa',
+    '2006d2f05a8b3ad0ab3039ef82e29802a5b720e3b7dcca48ef4d7636b6bfcf41',
+    '169aa590d66bddec5a10e6428a548ada4cbba51f7c04a147652a8582d9609c74',
+    'd6600ea38a78da1ee3a4c4779dd459250f887908eb40b13bbd3f64adb1c9437c',
+  ]) {
+    assert.match(baseline, new RegExp(definitionHash));
+  }
+  assert.match(release, /safeViewDefinitionsMatch/);
+  assert.match(baseline, /Current database fingerprints do not match the applied lockdown evidence/);
   assert.match(baseline, /complete_legacy_chat_message_v2\(uuid,text,text,jsonb\)/);
   assert.match(baseline, /commit_room_turn_v2\(uuid,uuid,text,text,bigint,jsonb,jsonb,jsonb,jsonb,jsonb\)/);
   assert.match(baseline, /Record sanitized read-only baseline evidence[\s\S]*trap 'rm -rf private-artifacts' EXIT/);
