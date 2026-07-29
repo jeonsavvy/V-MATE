@@ -3,14 +3,14 @@ import { readFile } from 'node:fs/promises'
 
 const argumentsByName = new Map()
 if (process.argv.includes('--help')) {
-  process.stdout.write('Usage: node scripts/smoke-release.mjs --base-url <https-url> [--worker-name <name> --version-id <id>] [--dist-manifest <file>] [--expect-chat-status <status>] [--allow-localhost true] [--propagation-timeout-ms <milliseconds>]\n')
+  process.stdout.write('Usage: node scripts/smoke-release.mjs --base-url <https-url> [--worker-name <name> --version-id <id>] [--dist-manifest <file>] [--expect-chat-status <status>] [--allow-localhost true] [--live-propagation true] [--propagation-timeout-ms <milliseconds>]\n')
   process.exit(0)
 }
 for (let index = 2; index < process.argv.length; index += 2) {
   const name = process.argv[index]
   const value = process.argv[index + 1]
   if (!name?.startsWith('--') || value === undefined) {
-    throw new Error('Usage: node scripts/smoke-release.mjs --base-url <https-url> [--worker-name <name> --version-id <id>] [--dist-manifest <file>] [--expect-chat-status <status>] [--allow-localhost true] [--propagation-timeout-ms <milliseconds>]')
+    throw new Error('Usage: node scripts/smoke-release.mjs --base-url <https-url> [--worker-name <name> --version-id <id>] [--dist-manifest <file>] [--expect-chat-status <status>] [--allow-localhost true] [--live-propagation true] [--propagation-timeout-ms <milliseconds>]')
   }
   argumentsByName.set(name, value)
 }
@@ -27,18 +27,32 @@ if (baseUrl.username || baseUrl.password || baseUrl.search || baseUrl.hash) {
   throw new Error('--base-url must be an origin without credentials, query, or fragment')
 }
 const propagationTimeoutValue = argumentsByName.get('--propagation-timeout-ms')
-if (propagationTimeoutValue && !allowLocalhost) {
-  throw new Error('--propagation-timeout-ms is limited to localhost test runs')
+const livePropagationValue = argumentsByName.get('--live-propagation')
+if (livePropagationValue !== undefined && livePropagationValue !== 'true') {
+  throw new Error('--live-propagation only accepts true')
+}
+const livePropagation = livePropagationValue === 'true'
+if (propagationTimeoutValue && !allowLocalhost && !livePropagation) {
+  throw new Error('--propagation-timeout-ms requires localhost or explicit live propagation')
 }
 if (propagationTimeoutValue && !/^[1-9][0-9]{0,4}$/.test(propagationTimeoutValue)) {
   throw new Error('--propagation-timeout-ms must be an integer from 1 to 99999')
 }
 const propagationTimeoutMs = Number(propagationTimeoutValue || '120000')
+if (livePropagation && !propagationTimeoutValue) {
+  throw new Error('--live-propagation requires --propagation-timeout-ms')
+}
+if (livePropagation && propagationTimeoutMs > 20_000) {
+  throw new Error('--live-propagation timeout must not exceed 20000 milliseconds')
+}
 
 const workerName = argumentsByName.get('--worker-name')
 const versionId = argumentsByName.get('--version-id')
 if (Boolean(workerName) !== Boolean(versionId)) {
   throw new Error('--worker-name and --version-id must be supplied together')
+}
+if (livePropagation && workerName) {
+  throw new Error('--live-propagation must verify the public origin without a version override')
 }
 if (workerName && !/^[A-Za-z0-9._-]+$/.test(workerName)) throw new Error('--worker-name has invalid characters')
 if (versionId && !/^[A-Za-z0-9_-]+$/.test(versionId)) throw new Error('--version-id has invalid characters')
@@ -136,11 +150,46 @@ const runtimeAssetPaths = (html) => [
   ...html.matchAll(/(?:src|href)=["'](?:\/?)(assets\/[^"']+\.(?:js|css))(?:\?[^"']*)?["']/gi),
 ].map((match) => match[1])
 
+const digestBoundedAsset = async (response, expectedBytes) => {
+  const declaredLength = response.headers.get('content-length')
+  if (/^[0-9]+$/.test(String(declaredLength || '')) && BigInt(declaredLength) > BigInt(expectedBytes)) {
+    await response.body?.cancel()
+    return { bytes: expectedBytes + 1, sha256: null }
+  }
+  const hash = createHash('sha256')
+  let bytes = 0
+  if (response.body) {
+    const reader = response.body.getReader()
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        bytes += value.byteLength
+        if (bytes > expectedBytes) {
+          await reader.cancel()
+          return { bytes: expectedBytes + 1, sha256: null }
+        }
+        hash.update(value)
+      }
+    } finally {
+      reader.releaseLock()
+    }
+  }
+  return { bytes, sha256: hash.digest('hex') }
+}
+
 const appUrl = new URL(baseUrl)
 appUrl.pathname = '/'
+if (livePropagation && !manifestPaths) {
+  throw new Error('--live-propagation requires --dist-manifest')
+}
+const releaseIdentityAsset = manifest?.files.find((asset) => asset.path === 'release-version.txt')
 const propagationMode = Boolean(workerName && manifestPaths)
-if (propagationMode && !manifestPaths.has('release-version.txt')) {
+if (propagationMode && !releaseIdentityAsset) {
   throw new Error('Version-override smoke requires the release identity asset')
+}
+if (livePropagation && !releaseIdentityAsset) {
+  throw new Error('Live propagation smoke requires the release identity asset')
 }
 const propagationDeadline = propagationMode ? performance.now() + propagationTimeoutMs : null
 const remainingPropagationMs = () => propagationDeadline === null ? 0 : propagationDeadline - performance.now()
@@ -152,9 +201,39 @@ const waitForPropagation = async () => {
 }
 const propagationFetchTimeout = () => {
   const remaining = remainingPropagationMs()
-  if (remaining <= 0) throw new Error('Candidate propagation deadline elapsed')
+  if (remaining <= 0) throw new Error('Release propagation deadline elapsed')
   return Math.min(20_000, remaining)
 }
+
+if (livePropagation) {
+  const identityUrl = new URL(releaseIdentityAsset.path, baseUrl)
+  const identityDeadline = performance.now() + propagationTimeoutMs
+  let identityFailure = 'request failed'
+  while (true) {
+    const remaining = identityDeadline - performance.now()
+    if (remaining <= 0) {
+      throw new Error(`Live release identity did not propagate before the deadline: ${identityFailure}`)
+    }
+    try {
+      const response = await fetchWithTimeout(
+        identityUrl,
+        { headers: { 'Cache-Control': 'no-cache' } },
+        Math.min(20_000, remaining),
+      )
+      const digest = await digestBoundedAsset(response, releaseIdentityAsset.bytes)
+      if (response.ok && digest.bytes === releaseIdentityAsset.bytes && digest.sha256 === releaseIdentityAsset.sha256) break
+      identityFailure = `status=${response.status} contentType=${response.headers.get('content-type')?.split(';', 1)[0] || 'unknown'} bytes=${digest.bytes}`
+    } catch {
+      identityFailure = 'request failed'
+    }
+    const retryRemaining = identityDeadline - performance.now()
+    if (retryRemaining <= 0) {
+      throw new Error(`Live release identity did not propagate before the deadline: ${identityFailure}`)
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.min(500, retryRemaining)))
+  }
+}
+
 let html = ''
 let homepageFailure = 'request failed'
 while (true) {
@@ -188,34 +267,6 @@ while (true) {
   if (!await waitForPropagation()) {
     throw new Error(`Homepage verification failed after propagation deadline: ${homepageFailure}`)
   }
-}
-
-const digestBoundedAsset = async (response, expectedBytes) => {
-  const declaredLength = response.headers.get('content-length')
-  if (/^[0-9]+$/.test(String(declaredLength || '')) && BigInt(declaredLength) > BigInt(expectedBytes)) {
-    await response.body?.cancel()
-    return { bytes: expectedBytes + 1, sha256: null }
-  }
-  const hash = createHash('sha256')
-  let bytes = 0
-  if (response.body) {
-    const reader = response.body.getReader()
-    try {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        bytes += value.byteLength
-        if (bytes > expectedBytes) {
-          await reader.cancel()
-          return { bytes: expectedBytes + 1, sha256: null }
-        }
-        hash.update(value)
-      }
-    } finally {
-      reader.releaseLock()
-    }
-  }
-  return { bytes, sha256: hash.digest('hex') }
 }
 
 if (manifest) {

@@ -267,6 +267,219 @@ test('release smoke does not retry manifest mismatches without a version overrid
   assert.doesNotMatch(result.stderr, /propagation deadline/)
 })
 
+test('live propagation polls only the release identity before one strict public-origin smoke', async (context) => {
+  const temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'v-mate-live-propagation-'))
+  context.after(async () => rm(temporaryDirectory, { recursive: true, force: true }))
+
+  const candidateAsset = Buffer.from('candidate asset')
+  const releaseVersion = Buffer.from('candidate-release\n')
+  const manifestPath = path.join(temporaryDirectory, 'manifest.json')
+  await writeFile(manifestPath, JSON.stringify({
+    version: 1,
+    files: [
+      { path: 'assets/candidate.js', bytes: candidateAsset.byteLength, sha256: createHash('sha256').update(candidateAsset).digest('hex') },
+      { path: 'release-version.txt', bytes: releaseVersion.byteLength, sha256: createHash('sha256').update(releaseVersion).digest('hex') },
+    ],
+  }))
+
+  let identityRequests = 0
+  let homepageRequests = 0
+  let assetRequests = 0
+  let recoveryRequests = 0
+  let chatRequests = 0
+  const server = createServer((request, response) => {
+    assert.equal(request.headers['cloudflare-workers-version-overrides'], undefined)
+    if (request.url === '/release-version.txt') {
+      identityRequests += 1
+      response.setHeader('content-type', 'text/plain')
+      response.end(identityRequests === 1 ? 'stable-release\n' : releaseVersion)
+      return
+    }
+    if (request.url === '/') {
+      homepageRequests += 1
+      response.end('<script>window.__V_MATE_RUNTIME_ENV__={}</script><script src="/assets/candidate.js"></script>')
+      return
+    }
+    if (request.url === '/assets/candidate.js') {
+      assetRequests += 1
+      response.end(candidateAsset)
+      return
+    }
+    if (request.url === '/auth/recovery') {
+      recoveryRequests += 1
+      response.end('<script>window.__V_MATE_RUNTIME_ENV__={}</script>')
+      return
+    }
+    if (request.url === '/api/chat') {
+      chatRequests += 1
+      response.writeHead(401, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ error_code: 'AUTH_REQUIRED' }))
+      return
+    }
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  context.after(() => new Promise((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve())
+  }))
+
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  const result = await runNodeScript(path.join(repositoryRoot, 'scripts', 'smoke-release.mjs'), [
+    '--base-url', `http://127.0.0.1:${address.port}`,
+    '--dist-manifest', manifestPath,
+    '--allow-localhost', 'true',
+    '--live-propagation', 'true',
+    '--propagation-timeout-ms', '3000',
+  ])
+
+  assert.equal(result.exitCode, 0, result.stderr)
+  assert.equal(identityRequests, 3)
+  assert.equal(homepageRequests, 1)
+  assert.equal(assetRequests, 1)
+  assert.equal(recoveryRequests, 1)
+  assert.equal(chatRequests, 1)
+})
+
+test('live propagation fails closed at the identity deadline without logging response bodies', async (context) => {
+  const temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'v-mate-live-propagation-deadline-'))
+  context.after(async () => rm(temporaryDirectory, { recursive: true, force: true }))
+
+  const releaseVersion = Buffer.from('candidate-release\n')
+  const leakedBody = 'private prompt payload must not appear in logs'
+  const manifestPath = path.join(temporaryDirectory, 'manifest.json')
+  await writeFile(manifestPath, JSON.stringify({
+    version: 1,
+    files: [{ path: 'release-version.txt', bytes: releaseVersion.byteLength, sha256: createHash('sha256').update(releaseVersion).digest('hex') }],
+  }))
+
+  let identityRequests = 0
+  let homepageRequests = 0
+  const server = createServer((request, response) => {
+    assert.equal(request.headers['cloudflare-workers-version-overrides'], undefined)
+    if (request.url === '/release-version.txt') {
+      identityRequests += 1
+      response.setHeader('content-type', 'text/plain')
+      response.end(leakedBody)
+      return
+    }
+    if (request.url === '/') homepageRequests += 1
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  context.after(() => new Promise((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve())
+  }))
+
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  const result = await runNodeScript(path.join(repositoryRoot, 'scripts', 'smoke-release.mjs'), [
+    '--base-url', `http://127.0.0.1:${address.port}`,
+    '--dist-manifest', manifestPath,
+    '--allow-localhost', 'true',
+    '--live-propagation', 'true',
+    '--propagation-timeout-ms', '75',
+  ])
+
+  assert.notEqual(result.exitCode, 0)
+  assert.ok(identityRequests >= 1)
+  assert.equal(homepageRequests, 0)
+  assert.match(result.stderr, /Live release identity did not propagate before the deadline/)
+  assert.doesNotMatch(result.stderr, new RegExp(leakedBody))
+})
+
+test('live propagation does not retry a strict smoke failure after identity convergence', async (context) => {
+  const temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'v-mate-live-propagation-strict-'))
+  context.after(async () => rm(temporaryDirectory, { recursive: true, force: true }))
+
+  const releaseVersion = Buffer.from('candidate-release\n')
+  const manifestPath = path.join(temporaryDirectory, 'manifest.json')
+  await writeFile(manifestPath, JSON.stringify({
+    version: 1,
+    files: [{ path: 'release-version.txt', bytes: releaseVersion.byteLength, sha256: createHash('sha256').update(releaseVersion).digest('hex') }],
+  }))
+
+  let identityRequests = 0
+  let homepageRequests = 0
+  const server = createServer((request, response) => {
+    assert.equal(request.headers['cloudflare-workers-version-overrides'], undefined)
+    if (request.url === '/release-version.txt') {
+      identityRequests += 1
+      response.end(releaseVersion)
+      return
+    }
+    if (request.url === '/') {
+      homepageRequests += 1
+      response.writeHead(503)
+      response.end()
+      return
+    }
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  context.after(() => new Promise((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve())
+  }))
+
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  const result = await runNodeScript(path.join(repositoryRoot, 'scripts', 'smoke-release.mjs'), [
+    '--base-url', `http://127.0.0.1:${address.port}`,
+    '--dist-manifest', manifestPath,
+    '--allow-localhost', 'true',
+    '--live-propagation', 'true',
+    '--propagation-timeout-ms', '3000',
+  ])
+
+  assert.notEqual(result.exitCode, 0)
+  assert.equal(identityRequests, 1)
+  assert.equal(homepageRequests, 1)
+  assert.match(result.stderr, /Homepage verification failed/)
+  assert.doesNotMatch(result.stderr, /propagation deadline/)
+})
+
+test('live propagation rejects missing identity and version overrides before network access', async (context) => {
+  const temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'v-mate-live-propagation-invalid-'))
+  context.after(async () => rm(temporaryDirectory, { recursive: true, force: true }))
+  const candidateManifestPath = path.join(temporaryDirectory, 'candidate-manifest.json')
+  const identityManifestPath = path.join(temporaryDirectory, 'identity-manifest.json')
+  await writeFile(candidateManifestPath, JSON.stringify({
+    version: 1,
+    files: [{ path: 'assets/candidate.js', bytes: 1, sha256: '0'.repeat(64) }],
+  }))
+  await writeFile(identityManifestPath, JSON.stringify({
+    version: 1,
+    files: [{ path: 'release-version.txt', bytes: 1, sha256: '0'.repeat(64) }],
+  }))
+
+  const missingIdentity = await runNodeScript(path.join(repositoryRoot, 'scripts', 'smoke-release.mjs'), [
+    '--base-url', 'http://127.0.0.1:1',
+    '--dist-manifest', candidateManifestPath,
+    '--allow-localhost', 'true',
+    '--live-propagation', 'true',
+    '--propagation-timeout-ms', '100',
+  ])
+  const conflictingOverride = await runNodeScript(path.join(repositoryRoot, 'scripts', 'smoke-release.mjs'), [
+    '--base-url', 'http://127.0.0.1:1',
+    '--worker-name', 'v-mate',
+    '--version-id', 'candidate-version',
+    '--dist-manifest', identityManifestPath,
+    '--allow-localhost', 'true',
+    '--live-propagation', 'true',
+    '--propagation-timeout-ms', '100',
+  ])
+
+  assert.notEqual(missingIdentity.exitCode, 0)
+  assert.match(missingIdentity.stderr, /Live propagation smoke requires the release identity asset/)
+  assert.doesNotMatch(missingIdentity.stderr, /ECONNREFUSED/)
+  assert.notEqual(conflictingOverride.exitCode, 0)
+  assert.match(conflictingOverride.stderr, /must verify the public origin without a version override/)
+  assert.doesNotMatch(conflictingOverride.stderr, /ECONNREFUSED/)
+})
+
 test('release smoke rejects unsafe manifest entries before making a request', async (context) => {
   const temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'v-mate-release-smoke-invalid-manifest-'))
   context.after(async () => rm(temporaryDirectory, { recursive: true, force: true }))

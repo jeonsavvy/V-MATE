@@ -317,8 +317,10 @@ const validateWorkflow = (file, source) => {
       || !liveCutoverSmoke.includes('smoke-release.mjs')
       || !liveCutoverSmoke.includes('--base-url "$BASE_URL"')
       || !liveCutoverSmoke.includes('--dist-manifest artifacts/dist-manifest.json')
-      || /--worker-name|--version-id|\bsleep\b/.test(liveCutoverSmoke)) {
-      fail(file, 'cutover must use one immediate public-origin smoke without a version override')
+      || !liveCutoverSmoke.includes('--live-propagation true')
+      || !liveCutoverSmoke.includes('--propagation-timeout-ms 20000')
+      || /--worker-name|--version-id|\bsleep\b|\bfor\b|\bwhile\b/.test(liveCutoverSmoke)) {
+      fail(file, 'cutover must use one 20-second identity-bound public-origin smoke without a version override')
     }
     if (/Observe cutover for 60 minutes|seq 1 13|check-worker-observability\.mjs/.test(source)) {
       fail(file, 'cutover must not use a delayed observation loop')
@@ -665,12 +667,17 @@ for (const required of [
 const releaseSmoke = await readFile(path.resolve(scriptDirectory, 'smoke-release.mjs'), 'utf8')
 for (const required of [
   'performance.now()',
-  "manifestPaths.has('release-version.txt')",
+  "asset.path === 'release-version.txt'",
   'maximumAssetBytes',
   'maximumManifestBytes',
   'digestBoundedAsset',
   'response.body.getReader()',
   'propagationMode ? propagationFetchTimeout() : 20_000',
+  'livePropagation && !propagationTimeoutValue',
+  'livePropagation && propagationTimeoutMs > 20_000',
+  'livePropagation && workerName',
+  'const propagationMode = Boolean(workerName && manifestPaths)',
+  'Live release identity did not propagate before the deadline',
 ]) {
   if (!releaseSmoke.includes(required)) fail('scripts/smoke-release.mjs', `missing bounded candidate smoke contract: ${required}`)
 }

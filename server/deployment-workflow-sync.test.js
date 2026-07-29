@@ -139,7 +139,9 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(liveCutoverSmokeStep.run, /smoke-release\.mjs/);
   assert.match(liveCutoverSmokeStep.run, /--base-url "\$BASE_URL"/);
   assert.match(liveCutoverSmokeStep.run, /--dist-manifest artifacts\/dist-manifest\.json/);
-  assert.doesNotMatch(liveCutoverSmokeStep.run, /--worker-name|--version-id|\bsleep\b/);
+  assert.match(liveCutoverSmokeStep.run, /--live-propagation true/);
+  assert.match(liveCutoverSmokeStep.run, /--propagation-timeout-ms 20000/);
+  assert.doesNotMatch(liveCutoverSmokeStep.run, /--worker-name|--version-id|\bsleep\b|\bfor\b|\bwhile\b/);
   assert.equal(liveRollbackSmokeStep.if, "${{ inputs.operation == 'rollback' }}");
   assert.match(liveRollbackSmokeStep.run, /smoke-release\.mjs/);
   assert.match(liveRollbackSmokeStep.run, /--base-url "\$BASE_URL"/);
@@ -265,7 +267,12 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(database, /createHmac\('sha256', process\.env\.SUPABASE_ACCESS_TOKEN\)/);
   assert.match(database, /process\.env\.PRELAUNCH_EVIDENCE_RUN_ID/);
   assert.match(release, /dist\/release-version\.txt/);
-  assert.match(smoke, /manifestPaths\.has\('release-version\.txt'\)/);
+  assert.match(smoke, /asset\.path === 'release-version\.txt'/);
+  assert.match(smoke, /livePropagation && !propagationTimeoutValue/);
+  assert.match(smoke, /livePropagation && propagationTimeoutMs > 20_000/);
+  assert.match(smoke, /livePropagation && workerName/);
+  assert.match(smoke, /const propagationMode = Boolean\(workerName && manifestPaths\)/);
+  assert.match(smoke, /Live release identity did not propagate before the deadline/);
   assert.match(smoke, /performance\.now\(\)/);
   assert.match(smoke, /maximumAssetBytes/);
   assert.match(smoke, /maximumManifestBytes/);

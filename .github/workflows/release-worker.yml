@@ -1077,7 +1077,9 @@ jobs:
           set -euo pipefail
           node scripts/smoke-release.mjs \
             --base-url "$BASE_URL" \
-            --dist-manifest artifacts/dist-manifest.json | tee artifacts/live-cutover-smoke.log
+            --dist-manifest artifacts/dist-manifest.json \
+            --live-propagation true \
+            --propagation-timeout-ms 20000 | tee artifacts/live-cutover-smoke.log
 
       - name: Verify live rollback once at public origin
         if: ${{ inputs.operation == 'rollback' }}
