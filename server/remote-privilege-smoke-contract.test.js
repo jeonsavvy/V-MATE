@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { test } from 'node:test'
 import { buildArtifact, hashProjectRef, isDeniedStatus, isStorageWriteDeniedStatus, parseArguments, validateRemoteConfig } from '../scripts/remote-privilege-smoke-contracts.mjs'
-import { V2_RPC_NAMES, rpcSurfaceMatchesPrivilegeContract } from '../scripts/remote-privilege-smoke.mjs'
+import { createTemporaryPassword, runRemotePrivilegeSmoke, V2_RPC_NAMES, rpcSurfaceMatchesPrivilegeContract } from '../scripts/remote-privilege-smoke.mjs'
 
 const env = {
   SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co', SUPABASE_ANON_KEY: 'anon-test-key', SUPABASE_SERVICE_ROLE_KEY: 'service-test-key', PRODUCTION_SUPABASE_PROJECT_REF: 'zyxwvutsrqponmlkjihg',
@@ -59,4 +62,56 @@ test('remote probe requires all six v2 RPCs only on the service-role gateway sur
     authenticatedRpcSurface: new Set(['/rpc/create_room_v2']),
     serviceRpcSurface,
   }).clientsDenied, false)
+})
+
+test('remote probe temporary password stays below the bcrypt byte limit', () => {
+  const password = createTemporaryPassword()
+  assert.match(password, /^[A-Za-z0-9_-]{43}$/)
+  assert.equal(Buffer.byteLength(password, 'utf8'), 43)
+  assert.ok(Buffer.byteLength(password, 'utf8') < 72)
+})
+
+test('remote probe deletes a created user when login fails and writes only sanitized cleanup evidence', async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), 'vmate-privilege-smoke-'))
+  const output = path.join(temporaryDirectory, 'probe.json')
+  const originalFetch = globalThis.fetch
+  const userId = 'ephemeral-user-id'
+  const calls = []
+  let createdCredentials = null
+  let artifact = null
+
+  try {
+    globalThis.fetch = async (url, init = {}) => {
+      const request = { url: String(url), method: init.method || 'GET' }
+      calls.push(request)
+      if (request.url.endsWith('/auth/v1/admin/users') && request.method === 'POST') {
+        createdCredentials = JSON.parse(init.body)
+        return { ok: true, json: async () => ({ id: userId }) }
+      }
+      if (request.url.endsWith('/auth/v1/token?grant_type=password') && request.method === 'POST') return { ok: false }
+      if (request.url.endsWith(`/auth/v1/admin/users/${userId}`) && request.method === 'DELETE') return { ok: true }
+      throw new Error(`UNEXPECTED_FETCH:${request.method}:${request.url}`)
+    }
+
+    await assert.rejects(runRemotePrivilegeSmoke({ ...options, output, url: env.SUPABASE_URL }), /USER_LOGIN_FAILED/)
+    artifact = JSON.parse(await readFile(output, 'utf8'))
+
+    assert.deepEqual(calls.map(({ method, url }) => [method, new URL(url).pathname]), [
+      ['POST', '/auth/v1/admin/users'],
+      ['POST', '/auth/v1/token'],
+      ['DELETE', `/auth/v1/admin/users/${userId}`],
+    ])
+    assert.equal(artifact.scenarios.ephemeralUserCreated, true)
+    assert.equal(artifact.scenarios.ephemeralUserCleanupSucceeded, true)
+    const serializedArtifact = JSON.stringify(artifact)
+    for (const privateValue of [userId, createdCredentials.email, createdCredentials.password, env.SUPABASE_URL]) {
+      assert.equal(serializedArtifact.includes(privateValue), false)
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+    await rm(temporaryDirectory, { recursive: true, force: true })
+  }
+
+  assert.equal(globalThis.fetch, originalFetch)
+  await assert.rejects(access(temporaryDirectory), { code: 'ENOENT' })
 })

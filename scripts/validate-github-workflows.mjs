@@ -456,9 +456,72 @@ const validateWorkflow = (file, source) => {
   }
   if (file === 'release-post-lockdown-privilege-smoke.yml') {
     const smokeJob = root.jobs?.smoke
+    const checkout = smokeJob?.steps?.find((step) => step?.uses === 'actions/checkout@v6')
+    if (checkout?.with?.['fetch-depth'] !== 0) fail(file, 'cross-commit lockdown evidence verification requires full Git history')
+    for (const [name, value] of Object.entries({
+      DEFAULT_BRANCH: '${{ github.event.repository.default_branch }}',
+      AUTHORIZED_POST_LOCKDOWN_SHA: '${{ vars.AUTHORIZED_POST_LOCKDOWN_SHA }}',
+      AUTHORIZED_LOCKDOWN_SOURCE_SHA: '${{ vars.AUTHORIZED_LOCKDOWN_SOURCE_SHA }}',
+      AUTHORIZED_LOCKDOWN_EVIDENCE_RUN_ID: '${{ vars.AUTHORIZED_LOCKDOWN_EVIDENCE_RUN_ID }}',
+    })) {
+      if (smokeJob?.env?.[name] !== value) fail(file, `post-lockdown privilege smoke lacks protected bridge binding: ${name}`)
+    }
     for (const secretName of ['SUPABASE_ACCESS_TOKEN', 'SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY']) {
       if (Object.hasOwn(smokeJob?.env || {}, secretName)) fail(file, `${secretName} must not persist at job scope`)
     }
+    const evidenceBinding = smokeJob?.steps?.find((step) => step?.name === 'Verify applied lockdown evidence binding')
+    if (!evidenceBinding || evidenceBinding.env?.GH_TOKEN !== '${{ github.token }}') fail(file, 'lockdown evidence metadata binding is absent')
+    for (const required of [
+      'actions/runs/$LOCKDOWN_EVIDENCE_RUN_ID',
+      'actions/workflows/release-database.yml',
+      "run.conclusion === 'success'",
+      "run.status === 'completed'",
+      "run.event === 'workflow_dispatch'",
+      'run.head_sha === value.commit',
+      'run.head_branch === process.env.DEFAULT_BRANCH',
+      'run.path === expectedWorkflowPath',
+      'workflow.path === expectedWorkflowPath',
+      'run.workflow_id === workflow.id',
+      'LOCKDOWN_REMOTE_STATE_FINGERPRINT',
+      'LOCKDOWN_MIGRATION_ROWS_FINGERPRINT',
+    ]) {
+      if (!String(evidenceBinding?.run).includes(required)) fail(file, `lockdown evidence metadata binding is missing: ${required}`)
+    }
+    const bridge = smokeJob?.steps?.find((step) => step?.name === 'Verify approved cross-commit lockdown evidence bridge')
+    if (!bridge) fail(file, 'cross-commit lockdown evidence bridge is absent')
+    for (const required of [
+      '"$GITHUB_SHA" == "$AUTHORIZED_POST_LOCKDOWN_SHA"',
+      '"$LOCKDOWN_COMMIT" == "$AUTHORIZED_LOCKDOWN_SOURCE_SHA"',
+      '"$LOCKDOWN_EVIDENCE_RUN_ID" == "$AUTHORIZED_LOCKDOWN_EVIDENCE_RUN_ID"',
+      'git merge-base --is-ancestor "$LOCKDOWN_COMMIT" "$GITHUB_SHA"',
+      'git diff --name-only "$LOCKDOWN_COMMIT" "$GITHUB_SHA"',
+      'git diff --name-status "$LOCKDOWN_COMMIT" "$GITHUB_SHA"',
+      '$1 != "M"',
+      '.github/workflows/release-post-lockdown-observation.yml',
+      '.github/workflows/release-post-lockdown-privilege-smoke.yml',
+      'scripts/remote-privilege-smoke.mjs',
+      'scripts/validate-github-workflows.mjs',
+      'server/deployment-workflow-sync.test.js',
+      'server/remote-privilege-smoke-contract.test.js',
+    ]) {
+      if (!String(bridge?.run).includes(required)) fail(file, `cross-commit lockdown evidence bridge is missing: ${required}`)
+    }
+    const reattest = smokeJob?.steps?.find((step) => step?.name === 'Reattest unchanged remote lockdown state')
+    if (!reattest || reattest.env?.SUPABASE_ACCESS_TOKEN !== '${{ secrets.SUPABASE_ACCESS_TOKEN }}') {
+      fail(file, 'lockdown state re-attestation lacks a step-scoped database credential')
+    }
+    for (const required of [
+      'scripts/capture-release-state.sql',
+      'scripts/capture-migration-state.sql',
+      'supabase db query',
+      'remoteStateFingerprint !== process.env.LOCKDOWN_REMOTE_STATE_FINGERPRINT',
+      'migrationRowsFingerprint !== process.env.LOCKDOWN_MIGRATION_ROWS_FINGERPRINT',
+      'LOCKDOWN_STATE_REATTESTED=true',
+      'LOCKDOWN_STATE_ATTESTED_AT=',
+    ]) {
+      if (!String(reattest?.run).includes(required)) fail(file, `lockdown state re-attestation is missing: ${required}`)
+    }
+    if (/supabase db push|confirm-remote-writes/i.test(String(reattest?.run))) fail(file, 'lockdown state re-attestation includes a remote write surface')
     const httpProbe = smokeJob?.steps?.find((step) => step?.name === 'Verify actual remote anon and authenticated HTTP privilege boundaries')
     if (!httpProbe) fail(file, 'remote HTTP privilege probe step is absent')
     if (httpProbe.env?.SUPABASE_ACCESS_TOKEN !== '${{ secrets.SUPABASE_ACCESS_TOKEN }}') {
@@ -481,6 +544,16 @@ const validateWorkflow = (file, source) => {
     }
     if (/GITHUB_ENV|(?:SUPABASE_ACCESS_TOKEN|SUPABASE_ANON_KEY|SUPABASE_SERVICE_ROLE_KEY)[^\n]*(?:artifacts|evidence)/.test(String(httpProbe.run))) {
       fail(file, 'remote HTTP privilege probe persists a credential outside its step')
+    }
+    const record = smokeJob?.steps?.find((step) => step?.name === 'Record sanitized privilege smoke evidence')
+    for (const required of [
+      'lockdownCommit:',
+      'lockdownAppliedAt:',
+      'lockdownStateReattested',
+      'lockdownStateAttestedAt:',
+      'allPassed: lockdownStateReattested && sqlPassed && remotePassed',
+    ]) {
+      if (!String(record?.run).includes(required)) fail(file, `sanitized privilege evidence is missing: ${required}`)
     }
   }
   if (file === 'release-post-lockdown-observation.yml') {
@@ -517,6 +590,15 @@ const validateWorkflow = (file, source) => {
     if (verificationJob.env?.DEFAULT_BRANCH !== '${{ github.event.repository.default_branch }}') {
       fail(file, 'post-lockdown verification does not bind the repository default branch')
     }
+    for (const [name, value] of Object.entries({
+      AUTHORIZED_POST_LOCKDOWN_SHA: '${{ vars.AUTHORIZED_POST_LOCKDOWN_SHA }}',
+      AUTHORIZED_LOCKDOWN_SOURCE_SHA: '${{ vars.AUTHORIZED_LOCKDOWN_SOURCE_SHA }}',
+      AUTHORIZED_LOCKDOWN_EVIDENCE_RUN_ID: '${{ vars.AUTHORIZED_LOCKDOWN_EVIDENCE_RUN_ID }}',
+    })) {
+      if (verificationJob.env?.[name] !== value) fail(file, `post-lockdown verification lacks protected bridge binding: ${name}`)
+    }
+    const checkout = verificationJob.steps?.find((step) => step?.uses === 'actions/checkout@v6')
+    if (checkout?.with?.['fetch-depth'] !== 0) fail(file, 'post-lockdown verification requires full Git history')
 
     const evidenceStep = verificationJob.steps?.find((step) => step?.name === 'Verify fresh lockdown and privilege evidence binding')
     if (!evidenceStep) fail(file, 'post-lockdown evidence binding step is absent')
@@ -535,15 +617,25 @@ const validateWorkflow = (file, source) => {
       "run.conclusion === 'success'",
       "run.status === 'completed'",
       "run.event === 'workflow_dispatch'",
-      'run.head_sha === process.env.GITHUB_SHA',
+      'run.head_sha === headSha',
       'run.head_branch === process.env.DEFAULT_BRANCH',
       'run.path === workflowPath',
       'workflow.path === workflowPath',
       'run.workflow_id === workflow.id',
       "lock.operation === 'apply-lockdown'",
       'lock.migration === expectedMigration',
+      'process.env.GITHUB_SHA === process.env.AUTHORIZED_POST_LOCKDOWN_SHA',
+      'lock.commit === process.env.AUTHORIZED_LOCKDOWN_SOURCE_SHA',
+      'process.env.LOCKDOWN_EVIDENCE_RUN_ID === process.env.AUTHORIZED_LOCKDOWN_EVIDENCE_RUN_ID',
+      'exactBridgeDiff(lock.commit)',
+      "['diff', '--name-status', '--no-renames', sourceSha, process.env.GITHUB_SHA]",
+      'smoke.lockdownCommit === lock.commit',
+      'smoke.lockdownAppliedAt === lock.appliedAt',
+      'smoke.lockdownStateReattested === true',
       'smoke.lockdownEvidenceRunId === process.env.LOCKDOWN_EVIDENCE_RUN_ID',
       'smoke.workerVersionId === lock.workerVersionId',
+      'appliedAt <= lockdownStateAttestedAt',
+      'lockdownStateAttestedAt <= privilegeCompletedAt',
       'appliedAt <= privilegeCompletedAt',
       'privilegeCompletedAt <= now',
       'now - appliedAt <= 6 * 60 * 60 * 1000',
@@ -593,6 +685,8 @@ const validateWorkflow = (file, source) => {
       'schemaVersion: 2',
       "operation: 'post-lockdown-verification'",
       "verificationMode: 'single-immediate-live-smoke'",
+      'lockdownCommit:',
+      'lockdownStateAttestedAt:',
       'servingVersionVerified: true',
       'liveSmokePassed: true',
     ]) {

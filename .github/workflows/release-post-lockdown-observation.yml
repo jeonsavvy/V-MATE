@@ -56,9 +56,14 @@ jobs:
       PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_WORKER_BASE_URL }}
       PRODUCTION_WORKER_NAME: ${{ vars.PRODUCTION_WORKER_NAME }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      AUTHORIZED_POST_LOCKDOWN_SHA: ${{ vars.AUTHORIZED_POST_LOCKDOWN_SHA }}
+      AUTHORIZED_LOCKDOWN_SOURCE_SHA: ${{ vars.AUTHORIZED_LOCKDOWN_SOURCE_SHA }}
+      AUTHORIZED_LOCKDOWN_EVIDENCE_RUN_ID: ${{ vars.AUTHORIZED_LOCKDOWN_EVIDENCE_RUN_ID }}
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v6
         with:
@@ -99,6 +104,7 @@ jobs:
           gh run download "$LOCKDOWN_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "database-release-evidence-${{ inputs.target }}-$LOCKDOWN_EVIDENCE_RUN_ID" --dir "$VERIFY_DIR/lockdown-artifact"
           gh run download "$PRIVILEGE_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "post-lockdown-privilege-evidence-${{ inputs.target }}-$PRIVILEGE_EVIDENCE_RUN_ID" --dir "$VERIFY_DIR/privilege-artifact"
           node <<'NODE'
+          const childProcess = require('node:child_process');
           const fs = require('node:fs');
           const path = require('node:path');
           const readJson = (name) => JSON.parse(fs.readFileSync(path.join(process.env.VERIFY_DIR, name), 'utf8'));
@@ -112,15 +118,35 @@ jobs:
             if (files.length !== 1) process.exit(1);
             return JSON.parse(fs.readFileSync(files[0], 'utf8'));
           };
-          const runBound = (run, workflow, runId, workflowPath) => run.id === Number(runId)
+          const runBound = (run, workflow, runId, workflowPath, headSha) => run.id === Number(runId)
             && run.conclusion === 'success'
             && run.status === 'completed'
             && run.event === 'workflow_dispatch'
-            && run.head_sha === process.env.GITHUB_SHA
+            && run.head_sha === headSha
             && run.head_branch === process.env.DEFAULT_BRANCH
             && run.path === workflowPath
             && workflow.path === workflowPath
             && run.workflow_id === workflow.id;
+          const bridgePaths = [
+            '.github/workflows/release-post-lockdown-observation.yml',
+            '.github/workflows/release-post-lockdown-privilege-smoke.yml',
+            'scripts/remote-privilege-smoke.mjs',
+            'scripts/validate-github-workflows.mjs',
+            'server/deployment-workflow-sync.test.js',
+            'server/remote-privilege-smoke-contract.test.js',
+          ];
+          const exactBridgeDiff = (sourceSha) => {
+            if (!/^[a-f0-9]{40}$/.test(sourceSha || '') || !/^[a-f0-9]{40}$/.test(process.env.GITHUB_SHA || '')) return false;
+            const ancestor = childProcess.spawnSync('git', ['merge-base', '--is-ancestor', sourceSha, process.env.GITHUB_SHA]);
+            if (ancestor.status !== 0) return false;
+            const diff = childProcess.execFileSync(
+              'git',
+              ['diff', '--name-status', '--no-renames', sourceSha, process.env.GITHUB_SHA],
+              { encoding: 'utf8' },
+            ).trim().split(/\r?\n/).filter(Boolean).sort();
+            const expected = bridgePaths.map((file) => `M\t${file}`).sort();
+            return JSON.stringify(diff) === JSON.stringify(expected);
+          };
           const lockdownRun = readJson('lockdown-run.json');
           const lockdownWorkflow = readJson('lockdown-workflow.json');
           const privilegeRun = readJson('privilege-run.json');
@@ -132,23 +158,35 @@ jobs:
             'prompt-privacy': '20260729010000_private_prompt_reads_lockdown.sql',
           }[lock.releaseTrack];
           const appliedAt = Date.parse(lock.appliedAt || '');
+          const lockdownStateAttestedAt = Date.parse(smoke.lockdownStateAttestedAt || '');
           const privilegeCompletedAt = Date.parse(smoke.completedAt || '');
           const now = Date.now();
+          const sameCommit = lock.commit === process.env.GITHUB_SHA;
+          const bridgeAuthorized = !sameCommit
+            && process.env.GITHUB_SHA === process.env.AUTHORIZED_POST_LOCKDOWN_SHA
+            && lock.commit === process.env.AUTHORIZED_LOCKDOWN_SOURCE_SHA
+            && process.env.LOCKDOWN_EVIDENCE_RUN_ID === process.env.AUTHORIZED_LOCKDOWN_EVIDENCE_RUN_ID
+            && exactBridgeDiff(lock.commit);
+          const commitBinding = sameCommit || bridgeAuthorized;
           const fresh = Number.isFinite(appliedAt)
+            && Number.isFinite(lockdownStateAttestedAt)
             && Number.isFinite(privilegeCompletedAt)
+            && appliedAt <= lockdownStateAttestedAt
+            && lockdownStateAttestedAt <= privilegeCompletedAt
             && appliedAt <= privilegeCompletedAt
             && privilegeCompletedAt <= now
             && now - appliedAt <= 6 * 60 * 60 * 1000
             && now - privilegeCompletedAt <= 30 * 60 * 1000;
-          const valid = runBound(lockdownRun, lockdownWorkflow, process.env.LOCKDOWN_EVIDENCE_RUN_ID, '.github/workflows/release-database.yml')
-            && runBound(privilegeRun, privilegeWorkflow, process.env.PRIVILEGE_EVIDENCE_RUN_ID, '.github/workflows/release-post-lockdown-privilege-smoke.yml')
+          const valid = runBound(lockdownRun, lockdownWorkflow, process.env.LOCKDOWN_EVIDENCE_RUN_ID, '.github/workflows/release-database.yml', lock.commit)
+            && runBound(privilegeRun, privilegeWorkflow, process.env.PRIVILEGE_EVIDENCE_RUN_ID, '.github/workflows/release-post-lockdown-privilege-smoke.yml', process.env.GITHUB_SHA)
+            && commitBinding
             && fresh
             && lock.schemaVersion === 3
             && lock.target === '${{ inputs.target }}'
             && lock.operation === 'apply-lockdown'
             && Boolean(expectedMigration)
             && lock.migration === expectedMigration
-            && lock.commit === process.env.GITHUB_SHA
+            && /^[a-f0-9]{40}$/.test(lock.commit || '')
             && /^[a-f0-9]{64}$/.test(lock.projectRefHash || '')
             && /^[A-Za-z0-9_-]+$/.test(lock.workerVersionId || '')
             && /^[A-Za-z0-9_-]+$/.test(lock.previousStableWorkerVersionId || '')
@@ -158,13 +196,16 @@ jobs:
             && smoke.releaseTrack === lock.releaseTrack
             && smoke.lockdownMigration === lock.migration
             && smoke.commit === process.env.GITHUB_SHA
+            && smoke.lockdownCommit === lock.commit
+            && smoke.lockdownAppliedAt === lock.appliedAt
+            && smoke.lockdownStateReattested === true
             && smoke.projectRefHash === lock.projectRefHash
             && smoke.workerVersionId === lock.workerVersionId
             && smoke.previousStableWorkerVersionId === lock.previousStableWorkerVersionId
             && smoke.lockdownEvidenceRunId === process.env.LOCKDOWN_EVIDENCE_RUN_ID
             && smoke.allPassed === true;
           if (!valid) process.exit(1);
-          fs.appendFileSync(process.env.GITHUB_ENV, `LOCKDOWN_RELEASE_TRACK=${lock.releaseTrack}\nLOCKDOWN_MIGRATION=${lock.migration}\nLOCKDOWN_PROJECT_REF_HASH=${lock.projectRefHash}\nLOCKDOWN_APPLIED_AT=${lock.appliedAt}\nWORKER_VERSION_ID=${lock.workerVersionId}\nBASELINE_WORKER_VERSION_ID=${lock.previousStableWorkerVersionId}\n`);
+          fs.appendFileSync(process.env.GITHUB_ENV, `LOCKDOWN_RELEASE_TRACK=${lock.releaseTrack}\nLOCKDOWN_MIGRATION=${lock.migration}\nLOCKDOWN_PROJECT_REF_HASH=${lock.projectRefHash}\nLOCKDOWN_COMMIT=${lock.commit}\nLOCKDOWN_APPLIED_AT=${lock.appliedAt}\nLOCKDOWN_STATE_ATTESTED_AT=${smoke.lockdownStateAttestedAt}\nWORKER_VERSION_ID=${lock.workerVersionId}\nBASELINE_WORKER_VERSION_ID=${lock.previousStableWorkerVersionId}\n`);
           NODE
 
       - name: Verify v2 Worker is the only serving version
@@ -222,7 +263,9 @@ jobs:
             baselineWorkerVersionId: process.env.BASELINE_WORKER_VERSION_ID,
             lockdownEvidenceRunId: process.env.LOCKDOWN_EVIDENCE_RUN_ID,
             privilegeEvidenceRunId: process.env.PRIVILEGE_EVIDENCE_RUN_ID,
+            lockdownCommit: process.env.LOCKDOWN_COMMIT,
             lockdownAppliedAt: process.env.LOCKDOWN_APPLIED_AT,
+            lockdownStateAttestedAt: process.env.LOCKDOWN_STATE_ATTESTED_AT || null,
             servingVersionVerified: true,
             liveSmokePassed: true,
             completedAt: new Date().toISOString(),

@@ -629,8 +629,21 @@ test('post-lockdown privilege and immediate one-shot verification remain evidenc
   const privilege = await readUtf8('.github/workflows/release-post-lockdown-privilege-smoke.yml');
   const privilegeWorkflow = parseDocument(privilege, { uniqueKeys: true, version: '1.2' }).toJS();
   const privilegeJob = privilegeWorkflow.jobs.smoke;
+  const privilegeCheckout = privilegeJob.steps.find((step) => step.uses === 'actions/checkout@v6');
+  const lockdownEvidenceBinding = privilegeJob.steps.find(
+    (step) => step.name === 'Verify applied lockdown evidence binding',
+  );
+  const bridgeBinding = privilegeJob.steps.find(
+    (step) => step.name === 'Verify approved cross-commit lockdown evidence bridge',
+  );
+  const reattest = privilegeJob.steps.find(
+    (step) => step.name === 'Reattest unchanged remote lockdown state',
+  );
   const httpProbe = privilegeJob.steps.find(
     (step) => step.name === 'Verify actual remote anon and authenticated HTTP privilege boundaries',
+  );
+  const privilegeRecord = privilegeJob.steps.find(
+    (step) => step.name === 'Record sanitized privilege smoke evidence',
   );
   const verification = await readUtf8('.github/workflows/release-post-lockdown-observation.yml');
   const verificationWorkflow = parseDocument(verification, { uniqueKeys: true, version: '1.2' }).toJS();
@@ -660,9 +673,55 @@ test('post-lockdown privilege and immediate one-shot verification remain evidenc
   assert.match(privilege, /gatewayScenarios/);
   assert.match(privilege, /sqlRoleProbePassed: sqlPassed/);
   assert.match(privilege, /httpGatewayProbePassed: remotePassed/);
+  assert.equal(privilegeCheckout.with['fetch-depth'], 0);
+  assert.equal(privilegeJob.env.DEFAULT_BRANCH, '${{ github.event.repository.default_branch }}');
+  assert.equal(privilegeJob.env.AUTHORIZED_POST_LOCKDOWN_SHA, '${{ vars.AUTHORIZED_POST_LOCKDOWN_SHA }}');
+  assert.equal(privilegeJob.env.AUTHORIZED_LOCKDOWN_SOURCE_SHA, '${{ vars.AUTHORIZED_LOCKDOWN_SOURCE_SHA }}');
+  assert.equal(privilegeJob.env.AUTHORIZED_LOCKDOWN_EVIDENCE_RUN_ID, '${{ vars.AUTHORIZED_LOCKDOWN_EVIDENCE_RUN_ID }}');
   for (const secretName of ['SUPABASE_ACCESS_TOKEN', 'SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY']) {
     assert.equal(Object.hasOwn(privilegeJob.env || {}, secretName), false, `${secretName} must not persist at job scope`);
   }
+  assert.deepEqual(lockdownEvidenceBinding.env, { GH_TOKEN: '${{ github.token }}' });
+  for (const pattern of [
+    /actions\/runs\/\$LOCKDOWN_EVIDENCE_RUN_ID/,
+    /actions\/workflows\/release-database\.yml/,
+    /run\.conclusion === 'success'/,
+    /run\.status === 'completed'/,
+    /run\.event === 'workflow_dispatch'/,
+    /run\.head_sha === value\.commit/,
+    /run\.head_branch === process\.env\.DEFAULT_BRANCH/,
+    /run\.path === expectedWorkflowPath/,
+    /workflow\.path === expectedWorkflowPath/,
+    /run\.workflow_id === workflow\.id/,
+    /LOCKDOWN_REMOTE_STATE_FINGERPRINT/,
+    /LOCKDOWN_MIGRATION_ROWS_FINGERPRINT/,
+  ]) assert.match(lockdownEvidenceBinding.run, pattern);
+  for (const pattern of [
+    /"\$GITHUB_SHA" == "\$AUTHORIZED_POST_LOCKDOWN_SHA"/,
+    /"\$LOCKDOWN_COMMIT" == "\$AUTHORIZED_LOCKDOWN_SOURCE_SHA"/,
+    /"\$LOCKDOWN_EVIDENCE_RUN_ID" == "\$AUTHORIZED_LOCKDOWN_EVIDENCE_RUN_ID"/,
+    /git merge-base --is-ancestor "\$LOCKDOWN_COMMIT" "\$GITHUB_SHA"/,
+    /git diff --name-only "\$LOCKDOWN_COMMIT" "\$GITHUB_SHA"/,
+    /git diff --name-status "\$LOCKDOWN_COMMIT" "\$GITHUB_SHA"/,
+    /\$1 != "M"/,
+    /\.github\/workflows\/release-post-lockdown-observation\.yml/,
+    /\.github\/workflows\/release-post-lockdown-privilege-smoke\.yml/,
+    /scripts\/remote-privilege-smoke\.mjs/,
+    /scripts\/validate-github-workflows\.mjs/,
+    /server\/deployment-workflow-sync\.test\.js/,
+    /server\/remote-privilege-smoke-contract\.test\.js/,
+  ]) assert.match(bridgeBinding.run, pattern);
+  assert.deepEqual(reattest.env, { SUPABASE_ACCESS_TOKEN: '${{ secrets.SUPABASE_ACCESS_TOKEN }}' });
+  for (const pattern of [
+    /scripts\/capture-release-state\.sql/,
+    /scripts\/capture-migration-state\.sql/,
+    /supabase db query/,
+    /remoteStateFingerprint !== process\.env\.LOCKDOWN_REMOTE_STATE_FINGERPRINT/,
+    /migrationRowsFingerprint !== process\.env\.LOCKDOWN_MIGRATION_ROWS_FINGERPRINT/,
+    /LOCKDOWN_STATE_REATTESTED=true/,
+    /LOCKDOWN_STATE_ATTESTED_AT=/,
+  ]) assert.match(reattest.run, pattern);
+  assert.doesNotMatch(reattest.run, /supabase db push|confirm-remote-writes/i);
   assert.deepEqual(httpProbe.env, { SUPABASE_ACCESS_TOKEN: '${{ secrets.SUPABASE_ACCESS_TOKEN }}' });
   assert.match(httpProbe.run, /api-keys\?reveal=true/);
   assert.match(httpProbe.run, /scripts\/select-supabase-project-api-keys\.mjs/);
@@ -674,6 +733,13 @@ test('post-lockdown privilege and immediate one-shot verification remain evidenc
   assert.doesNotMatch(httpProbe.run, /GITHUB_ENV|(?:SUPABASE_ACCESS_TOKEN|SUPABASE_ANON_KEY|SUPABASE_SERVICE_ROLE_KEY)[^\n]*(?:artifacts|evidence)/);
   assert.doesNotMatch(privilege, /\bgrant\s+(?:all|insert|update|delete|execute)/i);
   assert.doesNotMatch(privilege, /\brevoke\s+/i);
+  for (const pattern of [
+    /lockdownCommit:/,
+    /lockdownAppliedAt:/,
+    /lockdownStateReattested/,
+    /lockdownStateAttestedAt:/,
+    /allPassed: lockdownStateReattested && sqlPassed && remotePassed/,
+  ]) assert.match(privilegeRecord.run, pattern);
 
   assert.equal(verificationWorkflow.name, 'release-post-lockdown-verification');
   assert.deepEqual(Object.keys(verificationWorkflow.on.workflow_dispatch.inputs).sort(), [
@@ -686,6 +752,10 @@ test('post-lockdown privilege and immediate one-shot verification remain evidenc
   ]);
   assert.equal(verificationJob['timeout-minutes'], 15);
   assert.equal(verificationJob.env.DEFAULT_BRANCH, '${{ github.event.repository.default_branch }}');
+  assert.equal(verificationJob.env.AUTHORIZED_POST_LOCKDOWN_SHA, '${{ vars.AUTHORIZED_POST_LOCKDOWN_SHA }}');
+  assert.equal(verificationJob.env.AUTHORIZED_LOCKDOWN_SOURCE_SHA, '${{ vars.AUTHORIZED_LOCKDOWN_SOURCE_SHA }}');
+  assert.equal(verificationJob.env.AUTHORIZED_LOCKDOWN_EVIDENCE_RUN_ID, '${{ vars.AUTHORIZED_LOCKDOWN_EVIDENCE_RUN_ID }}');
+  assert.equal(verificationJob.steps.find((step) => step.uses === 'actions/checkout@v6').with['fetch-depth'], 0);
   assert.doesNotMatch(verification, /lockdown_completed_at|check-worker-observability\.mjs|CLOUDFLARE_OBSERVABILITY_TOKEN|elapsed<24\*60\*60\*1000|24 \* 60 \* 60 \* 1000|\bsleep\s+/);
 
   const evidenceBinding = verificationJob.steps.find(
@@ -702,15 +772,25 @@ test('post-lockdown privilege and immediate one-shot verification remain evidenc
     /run\.conclusion === 'success'/,
     /run\.status === 'completed'/,
     /run\.event === 'workflow_dispatch'/,
-    /run\.head_sha === process\.env\.GITHUB_SHA/,
+    /run\.head_sha === headSha/,
     /run\.head_branch === process\.env\.DEFAULT_BRANCH/,
     /run\.path === workflowPath/,
     /workflow\.path === workflowPath/,
     /run\.workflow_id === workflow\.id/,
     /lock\.operation === 'apply-lockdown'/,
     /lock\.migration === expectedMigration/,
+    /process\.env\.GITHUB_SHA === process\.env\.AUTHORIZED_POST_LOCKDOWN_SHA/,
+    /lock\.commit === process\.env\.AUTHORIZED_LOCKDOWN_SOURCE_SHA/,
+    /process\.env\.LOCKDOWN_EVIDENCE_RUN_ID === process\.env\.AUTHORIZED_LOCKDOWN_EVIDENCE_RUN_ID/,
+    /exactBridgeDiff\(lock\.commit\)/,
+    /\['diff', '--name-status', '--no-renames', sourceSha, process\.env\.GITHUB_SHA\]/,
+    /smoke\.lockdownCommit === lock\.commit/,
+    /smoke\.lockdownAppliedAt === lock\.appliedAt/,
+    /smoke\.lockdownStateReattested === true/,
     /smoke\.lockdownEvidenceRunId === process\.env\.LOCKDOWN_EVIDENCE_RUN_ID/,
     /smoke\.workerVersionId === lock\.workerVersionId/,
+    /appliedAt <= lockdownStateAttestedAt/,
+    /lockdownStateAttestedAt <= privilegeCompletedAt/,
     /appliedAt <= privilegeCompletedAt/,
     /privilegeCompletedAt <= now/,
     /now - appliedAt <= 6 \* 60 \* 60 \* 1000/,
@@ -784,6 +864,8 @@ test('post-lockdown privilege and immediate one-shot verification remain evidenc
   assert.match(evidenceRecord.run, /schemaVersion: 2/);
   assert.match(evidenceRecord.run, /operation: 'post-lockdown-verification'/);
   assert.match(evidenceRecord.run, /verificationMode: 'single-immediate-live-smoke'/);
+  assert.match(evidenceRecord.run, /lockdownCommit:/);
+  assert.match(evidenceRecord.run, /lockdownStateAttestedAt:/);
   assert.match(evidenceRecord.run, /servingVersionVerified: true/);
   assert.match(evidenceRecord.run, /liveSmokePassed: true/);
   assert.doesNotMatch(evidenceRecord.run, /\b(?:baseUrl|workerName|projectRef)\s*:/);

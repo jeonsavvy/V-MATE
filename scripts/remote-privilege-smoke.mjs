@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -30,6 +30,8 @@ export const rpcSurfaceMatchesPrivilegeContract = ({ anonRpcSurface, authenticat
     && !authenticatedRpcSurface.has(`/rpc/${name}`)),
 })
 
+export const createTemporaryPassword = () => randomBytes(32).toString('base64url')
+
 const fetchRpcSurface = async (rest, roleHeaders) => {
   const response = await fetchJson(`${rest}/`, {
     headers: { ...roleHeaders, Accept: 'application/openapi+json' },
@@ -48,16 +50,20 @@ const writeArtifact = async (output, artifact) => {
 
 const createUser = async (config, nonce) => {
   const email = `vmate-privilege-${nonce}@example.invalid`
-  const password = `${randomUUID()}-${randomUUID()}`
+  const password = createTemporaryPassword()
   const created = await fetch(`${config.url}/auth/v1/admin/users`, { method: 'POST', headers: headers(process.env.SUPABASE_SERVICE_ROLE_KEY), body: JSON.stringify({ email, password, email_confirm: true }) })
   if (!created.ok) throw new Error('USER_CREATE_FAILED')
   const user = await created.json()
   if (!user?.id) throw new Error('USER_CREATE_INVALID')
+  return { userId: user.id, email, password }
+}
+
+const loginUser = async (config, { email, password }) => {
   const loggedIn = await fetch(`${config.url}/auth/v1/token?grant_type=password`, { method: 'POST', headers: headers(process.env.SUPABASE_ANON_KEY), body: JSON.stringify({ email, password }) })
   if (!loggedIn.ok) throw new Error('USER_LOGIN_FAILED')
   const session = await loggedIn.json()
   if (!session?.access_token) throw new Error('USER_SESSION_INVALID')
-  return { userId: user.id, accessToken: session.access_token }
+  return session.access_token
 }
 
 const deleteUser = async (config, userId) => {
@@ -66,7 +72,7 @@ const deleteUser = async (config, userId) => {
   return response.ok
 }
 
-const run = async (config) => {
+export const runRemotePrivilegeSmoke = async (config) => {
   const startedAt = new Date().toISOString()
   const scenarios = {
     ephemeralUserCreated: false, anonCharactersInsertDenied: false, authenticatedCharactersInsertDenied: false,
@@ -76,11 +82,14 @@ const run = async (config) => {
     serviceRoleV2ReserveRefundAllowed: false, ephemeralUserCleanupSucceeded: false,
   }
   let user = null
+  let cleanupUserId = null
   let unexpectedStoragePath = ''
   let failure = null
   try {
-    user = await createUser(config, randomUUID())
+    const createdUser = await createUser(config, randomUUID())
+    cleanupUserId = createdUser.userId
     scenarios.ephemeralUserCreated = true
+    user = { userId: cleanupUserId, accessToken: await loginUser(config, createdUser) }
     const rest = `${config.url}/rest/v1`
     const anon = headers(process.env.SUPABASE_ANON_KEY)
     const authenticated = headers(process.env.SUPABASE_ANON_KEY, user.accessToken)
@@ -124,8 +133,8 @@ const run = async (config) => {
     if (user && unexpectedStoragePath && !scenarios.authenticatedStorageUploadDenied) {
       await fetch(`${config.url}/storage/v1/object/vmate-assets/${unexpectedStoragePath}`, { method: 'DELETE', headers: headers(process.env.SUPABASE_SERVICE_ROLE_KEY) }).catch(() => undefined)
     }
-    scenarios.ephemeralUserCleanupSucceeded = await deleteUser(config, user?.userId).catch(() => false)
-    if (!failure && user && !scenarios.ephemeralUserCleanupSucceeded) failure = new Error('USER_CLEANUP_FAILED')
+    scenarios.ephemeralUserCleanupSucceeded = await deleteUser(config, cleanupUserId).catch(() => false)
+    if (!failure && cleanupUserId && !scenarios.ephemeralUserCleanupSucceeded) failure = new Error('USER_CLEANUP_FAILED')
     await writeArtifact(config.output, buildArtifact({ ...config, startedAt, finishedAt: new Date().toISOString(), scenarios }))
   }
   if (failure) throw failure
@@ -136,7 +145,7 @@ const main = async () => {
   if (options.help) { process.stdout.write(`${helpText}\n`); return }
   const config = validateRemoteConfig({ options, env: process.env })
   if (config.checkConfig) { process.stdout.write('Remote privilege smoke configuration valid.\n'); return }
-  await run(config)
+  await runRemotePrivilegeSmoke(config)
   process.stdout.write('Remote privilege smoke completed.\n')
 }
 

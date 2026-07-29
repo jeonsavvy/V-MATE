@@ -37,9 +37,15 @@ jobs:
       PRODUCTION_PROJECT_REF: ${{ vars.PRODUCTION_SUPABASE_PROJECT_REF }}
       PRODUCTION_SUPABASE_PROJECT_REF: ${{ vars.PRODUCTION_SUPABASE_PROJECT_REF }}
       LOCKDOWN_EVIDENCE_RUN_ID: ${{ inputs.lockdown_evidence_run_id }}
+      AUTHORIZED_POST_LOCKDOWN_SHA: ${{ vars.AUTHORIZED_POST_LOCKDOWN_SHA }}
+      AUTHORIZED_LOCKDOWN_SOURCE_SHA: ${{ vars.AUTHORIZED_LOCKDOWN_SOURCE_SHA }}
+      AUTHORIZED_LOCKDOWN_EVIDENCE_RUN_ID: ${{ vars.AUTHORIZED_LOCKDOWN_EVIDENCE_RUN_ID }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v6
         with:
@@ -54,6 +60,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$PROJECT_REF" =~ ^[a-z0-9]{8,32}$ && "$LOCKDOWN_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::required privilege-smoke input is absent or invalid'; exit 1; }
+          [[ -n "$DEFAULT_BRANCH" && "$GITHUB_REF" == "refs/heads/$DEFAULT_BRANCH" ]] || { echo '::error::post-lockdown privilege smoke must run from the default branch'; exit 1; }
           [[ "$PROJECT_REF" == "$EXPECTED_PROJECT_REF" ]] || { echo '::error::project_ref does not match the selected environment'; exit 1; }
           if [[ '${{ inputs.target }}' == 'production' ]]; then [[ "$PROJECT_REF" == "$PRODUCTION_PROJECT_REF" ]] || { echo '::error::production project guard mismatch'; exit 1; }; else [[ "$PROJECT_REF" != "$PRODUCTION_PROJECT_REF" ]] || { echo '::error::staging cannot use the production project'; exit 1; }; fi
 
@@ -64,32 +71,68 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p evidence/lockdown
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$LOCKDOWN_EVIDENCE_RUN_ID" > evidence/lockdown/run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release-database.yml" > evidence/lockdown/workflow.json
           gh run download "$LOCKDOWN_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "database-release-evidence-${{ inputs.target }}-$LOCKDOWN_EVIDENCE_RUN_ID" --dir evidence/lockdown
           node <<'NODE'
           const crypto = require('node:crypto'); const fs = require('node:fs'); const path = require('node:path');
           const files = []; const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).forEach((entry) => { const item = path.join(dir, entry.name); if (entry.isDirectory()) walk(item); else if (entry.name === 'database-release-evidence.json') files.push(item); }); walk('evidence/lockdown');
           if (files.length !== 1) process.exit(1);
           const value = JSON.parse(fs.readFileSync(files[0], 'utf8'));
+          const run = JSON.parse(fs.readFileSync('evidence/lockdown/run.json', 'utf8'));
+          const workflow = JSON.parse(fs.readFileSync('evidence/lockdown/workflow.json', 'utf8'));
+          const expectedWorkflowPath = '.github/workflows/release-database.yml';
           const refHash = crypto.createHash('sha256').update(process.env.PROJECT_REF).digest('hex');
           const expectedMigration = {
             'backend-stabilization': '20260727000000_backend_stabilization_lockdown.sql',
             'prompt-privacy': '20260729010000_private_prompt_reads_lockdown.sql',
           }[value.releaseTrack];
-          const valid = value.schemaVersion === 3
+          const runBound = run.id === Number(process.env.LOCKDOWN_EVIDENCE_RUN_ID)
+            && run.conclusion === 'success'
+            && run.status === 'completed'
+            && run.event === 'workflow_dispatch'
+            && run.head_sha === value.commit
+            && run.head_branch === process.env.DEFAULT_BRANCH
+            && run.path === expectedWorkflowPath
+            && workflow.path === expectedWorkflowPath
+            && run.workflow_id === workflow.id;
+          const valid = runBound
+            && value.schemaVersion === 3
             && value.target === '${{ inputs.target }}'
             && value.operation === 'apply-lockdown'
-            && value.commit === process.env.GITHUB_SHA
+            && /^[a-f0-9]{40}$/.test(String(value.commit || ''))
             && Boolean(expectedMigration)
             && value.migration === expectedMigration
             && value.projectRefHash === refHash
+            && /^[a-f0-9]{32}$/.test(String(value.remoteStateFingerprint || ''))
+            && /^[a-f0-9]{32}$/.test(String(value.migrationRowsFingerprint || ''))
+            && Number.isFinite(Date.parse(value.appliedAt || ''))
             && /^[A-Za-z0-9_-]+$/.test(String(value.workerVersionId || ''))
             && /^[A-Za-z0-9_-]+$/.test(String(value.previousStableWorkerVersionId || ''));
           if (!valid) process.exit(1);
+          const appliedAt = new Date(value.appliedAt).toISOString();
           fs.appendFileSync(
             process.env.GITHUB_ENV,
-            `LOCKDOWN_RELEASE_TRACK=${value.releaseTrack}\nLOCKDOWN_MIGRATION=${value.migration}\nLOCKDOWN_WORKER_VERSION_ID=${value.workerVersionId}\nLOCKDOWN_PREVIOUS_STABLE_VERSION_ID=${value.previousStableWorkerVersionId}\n`,
+            `LOCKDOWN_RELEASE_TRACK=${value.releaseTrack}\nLOCKDOWN_MIGRATION=${value.migration}\nLOCKDOWN_WORKER_VERSION_ID=${value.workerVersionId}\nLOCKDOWN_PREVIOUS_STABLE_VERSION_ID=${value.previousStableWorkerVersionId}\nLOCKDOWN_COMMIT=${value.commit}\nLOCKDOWN_APPLIED_AT=${appliedAt}\nLOCKDOWN_REMOTE_STATE_FINGERPRINT=${value.remoteStateFingerprint}\nLOCKDOWN_MIGRATION_ROWS_FINGERPRINT=${value.migrationRowsFingerprint}\n`,
           );
           NODE
+
+      - name: Verify approved cross-commit lockdown evidence bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$LOCKDOWN_COMMIT" != "$GITHUB_SHA" ]]; then
+            [[ "$GITHUB_SHA" =~ ^[a-f0-9]{40}$ && "$AUTHORIZED_POST_LOCKDOWN_SHA" =~ ^[a-f0-9]{40}$ && "$GITHUB_SHA" == "$AUTHORIZED_POST_LOCKDOWN_SHA" ]] || { echo '::error::authorized post-lockdown SHA guard mismatch'; exit 1; }
+            [[ "$LOCKDOWN_COMMIT" =~ ^[a-f0-9]{40}$ && "$AUTHORIZED_LOCKDOWN_SOURCE_SHA" =~ ^[a-f0-9]{40}$ && "$LOCKDOWN_COMMIT" == "$AUTHORIZED_LOCKDOWN_SOURCE_SHA" ]] || { echo '::error::authorized lockdown source SHA guard mismatch'; exit 1; }
+            [[ "$AUTHORIZED_LOCKDOWN_EVIDENCE_RUN_ID" =~ ^[0-9]+$ && "$LOCKDOWN_EVIDENCE_RUN_ID" == "$AUTHORIZED_LOCKDOWN_EVIDENCE_RUN_ID" ]] || { echo '::error::authorized lockdown evidence run guard mismatch'; exit 1; }
+            git merge-base --is-ancestor "$LOCKDOWN_COMMIT" "$GITHUB_SHA" || { echo '::error::lockdown evidence source is not an ancestor of this verifier'; exit 1; }
+            bridge_allowed_files=$'.github/workflows/release-post-lockdown-observation.yml\n.github/workflows/release-post-lockdown-privilege-smoke.yml\nscripts/remote-privilege-smoke.mjs\nscripts/validate-github-workflows.mjs\nserver/deployment-workflow-sync.test.js\nserver/remote-privilege-smoke-contract.test.js'
+            expected_bridge_files=$(printf '%s\n' "$bridge_allowed_files" | sort -u)
+            actual_bridge_files=$(git diff --name-only "$LOCKDOWN_COMMIT" "$GITHUB_SHA" | sort -u)
+            [[ "$actual_bridge_files" == "$expected_bridge_files" ]] || { echo '::error::lockdown verifier bridge change scope is not the exact harness-only set'; exit 1; }
+            unexpected_bridge_status=$(git diff --name-status "$LOCKDOWN_COMMIT" "$GITHUB_SHA" | awk '$1 != "M" { print }')
+            [[ -z "$unexpected_bridge_status" ]] || { echo '::error::lockdown verifier bridge files must be in-place modifications'; exit 1; }
+          fi
 
       - name: Link disposable worktree to approved project
         env:
@@ -103,6 +146,37 @@ jobs:
           cp supabase/config.toml "$workdir/supabase/config.toml"
           npx --no-install supabase link --workdir "$workdir" --project-ref "$PROJECT_REF"
           echo "SUPABASE_WORKDIR=$workdir" >> "$GITHUB_ENV"
+
+      - name: Reattest unchanged remote lockdown state
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$SUPABASE_ACCESS_TOKEN" ]] || { echo '::error::Database read credential is not configured'; exit 1; }
+          state_dir=$(mktemp -d "$RUNNER_TEMP/vmate-lockdown-reattest-XXXXXX")
+          trap 'rm -rf -- "$state_dir"' EXIT
+          cp scripts/capture-release-state.sql "$SUPABASE_WORKDIR/capture_release_state.sql"
+          cp scripts/capture-migration-state.sql "$SUPABASE_WORKDIR/capture_migration_state.sql"
+          npx --no-install supabase db query --workdir "$SUPABASE_WORKDIR" --linked --file "$SUPABASE_WORKDIR/capture_release_state.sql" > "$state_dir/release-state.txt"
+          npx --no-install supabase db query --workdir "$SUPABASE_WORKDIR" --linked --file "$SUPABASE_WORKDIR/capture_migration_state.sql" > "$state_dir/migration-state.txt"
+          export LOCKDOWN_REATTEST_DIR="$state_dir"
+          node <<'NODE'
+          const fs = require('node:fs');
+          const oneFingerprint = (name) => {
+            const matches = fs.readFileSync(`${process.env.LOCKDOWN_REATTEST_DIR}/${name}`, 'utf8').match(/\b[a-f0-9]{32}\b/g) || [];
+            if (matches.length !== 1) process.exit(1);
+            return matches[0];
+          };
+          const remoteStateFingerprint = oneFingerprint('release-state.txt');
+          const migrationRowsFingerprint = oneFingerprint('migration-state.txt');
+          if (remoteStateFingerprint !== process.env.LOCKDOWN_REMOTE_STATE_FINGERPRINT
+            || migrationRowsFingerprint !== process.env.LOCKDOWN_MIGRATION_ROWS_FINGERPRINT) process.exit(1);
+          fs.appendFileSync(
+            process.env.GITHUB_ENV,
+            `LOCKDOWN_STATE_REATTESTED=true\nLOCKDOWN_STATE_ATTESTED_AT=${new Date().toISOString()}\n`,
+          );
+          NODE
 
       - name: Verify SQL role and transaction privilege contracts
         id: sql_probe
@@ -317,6 +391,8 @@ jobs:
           const crypto = require('node:crypto'); const fs = require('node:fs');
           const refHash = crypto.createHash('sha256').update(process.env.PROJECT_REF).digest('hex');
           const sqlPassed = '${{ steps.sql_probe.outcome }}' === 'success';
+          const lockdownStateReattested = process.env.LOCKDOWN_STATE_REATTESTED === 'true'
+            && Number.isFinite(Date.parse(process.env.LOCKDOWN_STATE_ATTESTED_AT || ''));
           let remote = null;
           try { remote = JSON.parse(fs.readFileSync('private-artifacts/remote-privilege-result.json', 'utf8')); } catch {}
           const scenarios = remote?.scenarios && typeof remote.scenarios === 'object' ? remote.scenarios : {};
@@ -334,7 +410,7 @@ jobs:
             && remote?.workerVersionId === process.env.LOCKDOWN_WORKER_VERSION_ID
             && Object.keys(scenarios).length === requiredScenarios.length
             && requiredScenarios.every((name) => scenarios[name] === true);
-          const evidence = { schemaVersion: 1, target: '${{ inputs.target }}', operation: 'post-lockdown-privilege-smoke', releaseTrack: process.env.LOCKDOWN_RELEASE_TRACK, lockdownMigration: process.env.LOCKDOWN_MIGRATION, commit: process.env.GITHUB_SHA, projectRefHash: refHash, workerVersionId: process.env.LOCKDOWN_WORKER_VERSION_ID || null, previousStableWorkerVersionId: process.env.LOCKDOWN_PREVIOUS_STABLE_VERSION_ID || null, lockdownEvidenceRunId: process.env.LOCKDOWN_EVIDENCE_RUN_ID, sqlRoleProbePassed: sqlPassed, httpGatewayProbePassed: remotePassed, gatewayScenarios: Object.fromEntries(requiredScenarios.map((name) => [name, scenarios[name] === true])), allPassed: sqlPassed && remotePassed, completedAt: new Date().toISOString() };
+          const evidence = { schemaVersion: 1, target: '${{ inputs.target }}', operation: 'post-lockdown-privilege-smoke', releaseTrack: process.env.LOCKDOWN_RELEASE_TRACK, lockdownMigration: process.env.LOCKDOWN_MIGRATION, commit: process.env.GITHUB_SHA, lockdownCommit: process.env.LOCKDOWN_COMMIT || null, lockdownAppliedAt: process.env.LOCKDOWN_APPLIED_AT || null, lockdownStateReattested, lockdownStateAttestedAt: lockdownStateReattested ? process.env.LOCKDOWN_STATE_ATTESTED_AT : null, projectRefHash: refHash, workerVersionId: process.env.LOCKDOWN_WORKER_VERSION_ID || null, previousStableWorkerVersionId: process.env.LOCKDOWN_PREVIOUS_STABLE_VERSION_ID || null, lockdownEvidenceRunId: process.env.LOCKDOWN_EVIDENCE_RUN_ID, sqlRoleProbePassed: sqlPassed, httpGatewayProbePassed: remotePassed, gatewayScenarios: Object.fromEntries(requiredScenarios.map((name) => [name, scenarios[name] === true])), allPassed: lockdownStateReattested && sqlPassed && remotePassed, completedAt: new Date().toISOString() };
           fs.writeFileSync('artifacts/post-lockdown-privilege-smoke-evidence.json', `${JSON.stringify(evidence, null, 2)}\n`);
           if (!evidence.allPassed) process.exitCode = 1;
           NODE
