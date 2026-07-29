@@ -157,7 +157,31 @@ jobs:
               select 1 from pg_catalog.pg_policies where schemaname = 'storage' and tablename = 'objects'
               and policyname in ('Authenticated users can upload vmate assets to their own folder', 'Authenticated users can update vmate assets in their own folder', 'Authenticated users can delete vmate assets in their own folder')
             ),
-            'serviceV2ReserveCallable', pg_catalog.has_function_privilege('service_role', 'public.reserve_chat_message_v2(uuid,text,uuid,text,text,integer,integer)', 'EXECUTE')
+            'serviceV2MutationRpcsCallable', not exists (
+              select 1
+              from (values
+                ('public.reserve_chat_message_v2(uuid,text,uuid,text,text,integer,integer)'),
+                ('public.complete_legacy_chat_message_v2(uuid,text,text,jsonb)'),
+                ('public.refund_chat_message_v2(uuid,text,text,integer)'),
+                ('public.create_room_v2(uuid,text,text,text,text,jsonb,jsonb,jsonb,jsonb)'),
+                ('public.commit_room_turn_v2(uuid,uuid,text,text,bigint,jsonb,jsonb,jsonb,jsonb,jsonb)'),
+                ('public.reconcile_expired_chat_reservations_v2(integer)')
+              ) as functions(signature)
+              where not pg_catalog.has_function_privilege('service_role', signature, 'EXECUTE')
+            ),
+            'clientV2MutationRpcsBlocked', not exists (
+              select 1
+              from pg_catalog.unnest(array['anon', 'authenticated']) as roles(role_name)
+              cross join (values
+                ('public.reserve_chat_message_v2(uuid,text,uuid,text,text,integer,integer)'),
+                ('public.complete_legacy_chat_message_v2(uuid,text,text,jsonb)'),
+                ('public.refund_chat_message_v2(uuid,text,text,integer)'),
+                ('public.create_room_v2(uuid,text,text,text,text,jsonb,jsonb,jsonb,jsonb)'),
+                ('public.commit_room_turn_v2(uuid,uuid,text,text,bigint,jsonb,jsonb,jsonb,jsonb,jsonb)'),
+                ('public.reconcile_expired_chat_reservations_v2(integer)')
+              ) as functions(signature)
+              where pg_catalog.has_function_privilege(role_name, signature, 'EXECUTE')
+            )
           ) as invariants;
           SQL
           node scripts/run-supabase-read-only-query.mjs --project-ref "$PROJECT_REF" --sql-file "$workdir/baseline-invariants.sql" --output private-artifacts/invariants.json
@@ -186,7 +210,7 @@ jobs:
           const invariants = firstRow(readJson('private-artifacts/invariants.json'))?.invariants;
           if (!migration?.migration_rows_fingerprint || !release?.release_state_fingerprint || !migrationCoverage || !invariants || typeof invariants !== 'object') throw new Error('Read-only baseline query result is invalid.');
           if (!Array.isArray(migrationCoverage.missing_source_versions) || migrationCoverage.missing_source_versions.length !== 0) throw new Error('A source migration is not applied remotely.');
-          const required = ['expandApplied', 'lockdownAliasApplied', 'directTableWritesBlocked', 'legacyQuotaWritesBlocked', 'storageWritePoliciesAbsent', 'serviceV2ReserveCallable'];
+          const required = ['expandApplied', 'lockdownAliasApplied', 'directTableWritesBlocked', 'legacyQuotaWritesBlocked', 'storageWritePoliciesAbsent', 'serviceV2MutationRpcsCallable', 'clientV2MutationRpcsBlocked'];
           if (!required.every((name) => invariants[name] === true)) throw new Error('Read-only baseline invariants did not pass.');
           const migrationList = fs.readFileSync('private-artifacts/migration-list.json');
           const lockdownMigrationAlias = { sourceVersion: '20260727000000', remoteVersion: '20260727025134', remoteName: 'backend_stabilization_lockdown' };

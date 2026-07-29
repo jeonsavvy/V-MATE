@@ -120,24 +120,54 @@ const queryCalculation = async ({ accountId, token, from, to, alias, calculation
   return extractCalculationValue(payload, alias)
 }
 
-const collectWindowMetrics = async ({ accountId, token, workerName, versionId, from, to, prefix }) => {
+export const collectWindowMetrics = async ({ accountId, token, workerName, versionId, from, to, prefix }) => {
   const baseFilters = invocationFilters({ workerName, versionId })
   const countCalculation = { operator: 'count' }
-  const [requests, errors5xx, failedOutcomes, nonChatP95Ms] = await Promise.all([
+  const chatUrlFilters = [
+    leaf('$metadata.url', 'string', 'includes', '/api/rooms/'),
+    leaf('$metadata.url', 'string', 'includes', '/chat'),
+    leaf('$metadata.url', 'string', 'not_includes', '/chat-quota'),
+  ]
+  // Keep the latency buckets exhaustive: this OR group is the exact De Morgan
+  // complement of the chat-turn AND filters above.
+  const nonChatUrlFilter = {
+    kind: 'group',
+    filterCombination: 'or',
+    filters: [
+      leaf('$metadata.url', 'string', 'not_includes', '/api/rooms/'),
+      leaf('$metadata.url', 'string', 'not_includes', '/chat'),
+      leaf('$metadata.url', 'string', 'includes', '/chat-quota'),
+    ],
+  }
+  const [requests, errors5xx, failedOutcomes, nonChatRequests, chatRequests, chat5xx] = await Promise.all([
     queryCalculation({ accountId, token, from, to, alias: `${prefix}Requests`, calculation: countCalculation, filters: baseFilters }),
     queryCalculation({ accountId, token, from, to, alias: `${prefix}5xx`, calculation: countCalculation, filters: [...baseFilters, leaf('$metadata.statusCode', 'number', 'gte', 500)] }),
     queryCalculation({ accountId, token, from, to, alias: `${prefix}FailedOutcomes`, calculation: countCalculation, filters: [...baseFilters, leaf('$workers.outcome', 'string', 'neq', 'ok')] }),
-    queryCalculation({
+    queryCalculation({ accountId, token, from, to, alias: `${prefix}NonChatRequests`, calculation: countCalculation, filters: [...baseFilters, nonChatUrlFilter] }),
+    queryCalculation({ accountId, token, from, to, alias: `${prefix}ChatRequests`, calculation: countCalculation, filters: [...baseFilters, ...chatUrlFilters] }),
+    queryCalculation({ accountId, token, from, to, alias: `${prefix}Chat5xx`, calculation: countCalculation, filters: [...baseFilters, ...chatUrlFilters, leaf('$metadata.statusCode', 'number', 'gte', 500)] }),
+  ])
+  const [nonChatP95Ms, chatP95Ms] = await Promise.all([
+    nonChatRequests === 0 ? 0 : queryCalculation({
       accountId,
       token,
       from,
       to,
       alias: `${prefix}NonChatP95Ms`,
       calculation: { operator: 'p95', key: '$workers.wallTimeMs', keyType: 'number' },
-      filters: [...baseFilters, leaf('$metadata.url', 'string', 'not_includes', '/chat')],
+      filters: [...baseFilters, nonChatUrlFilter],
+    }),
+    chatRequests === 0 ? 0 : queryCalculation({
+      accountId,
+      token,
+      from,
+      to,
+      alias: `${prefix}ChatP95Ms`,
+      calculation: { operator: 'p95', key: '$workers.wallTimeMs', keyType: 'number' },
+      filters: [...baseFilters, ...chatUrlFilters],
     }),
   ])
-  return { requests, errors5xx, failedOutcomes, nonChatP95Ms }
+  return { requests, errors5xx, failedOutcomes, nonChatRequests, nonChatP95Ms, chatRequests, chat5xx, chatP95Ms }
 }
 
 const collectCronMetrics = async ({ accountId, token, workerName, versionId, from, to }) => {
@@ -184,10 +214,18 @@ const main = async () => {
     currentRequests: current.requests,
     current5xx: current.errors5xx,
     currentFailedOutcomes: current.failedOutcomes,
+    currentNonChatRequests: current.nonChatRequests,
     currentNonChatP95Ms: current.nonChatP95Ms,
+    currentChatRequests: current.chatRequests,
+    currentChat5xx: current.chat5xx,
+    currentChatP95Ms: current.chatP95Ms,
     baselineRequests: baseline.requests,
     baseline5xx: baseline.errors5xx,
+    baselineNonChatRequests: baseline.nonChatRequests,
     baselineNonChatP95Ms: baseline.nonChatP95Ms,
+    baselineChatRequests: baseline.chatRequests,
+    baselineChat5xx: baseline.chat5xx,
+    baselineChatP95Ms: baseline.chatP95Ms,
     cronSuccesses,
     cronFailures,
   }

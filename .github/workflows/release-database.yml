@@ -8,8 +8,13 @@ on:
         required: true
         type: choice
         options: [staging, production]
+      release_track:
+        description: Allowlisted two-phase database contract to preview or apply
+        required: true
+        type: choice
+        options: [backend-stabilization, prompt-privacy]
       operation:
-        description: Preview or explicitly apply exactly one stabilization stage
+        description: Preview or explicitly apply exactly one stage in the selected track
         required: true
         type: choice
         options: [dry-run-expand, apply-expand, dry-run-lockdown, apply-lockdown]
@@ -26,7 +31,7 @@ on:
         required: false
         type: string
       backup_evidence_run_id:
-        description: Required before apply-expand; GitHub run containing approved backup readiness evidence
+        description: Required before apply-expand and prompt-privacy apply-lockdown; GitHub run containing approved backup readiness evidence
         required: false
         type: string
       synthetic_evidence_run_id:
@@ -63,6 +68,7 @@ jobs:
       BACKUP_EVIDENCE_RUN_ID: ${{ inputs.backup_evidence_run_id }}
       SYNTHETIC_EVIDENCE_RUN_ID: ${{ inputs.synthetic_evidence_run_id }}
       STAGING_PRIVILEGE_EVIDENCE_RUN_ID: ${{ inputs.staging_privilege_evidence_run_id }}
+      RELEASE_TRACK: ${{ inputs.release_track }}
 
     steps:
       - name: Checkout
@@ -130,9 +136,11 @@ jobs:
           else
             [[ "$PROJECT_REF" == "$PRODUCTION_PROJECT_REF" ]] || { echo '::error::production project guard mismatch'; exit 1; }
           fi
-          case '${{ inputs.operation }}' in
-            dry-run-expand|apply-expand) migration='20260726190559_backend_stabilization_expand.sql' ;;
-            dry-run-lockdown|apply-lockdown) migration='20260727000000_backend_stabilization_lockdown.sql' ;;
+          case '${{ inputs.release_track }}:${{ inputs.operation }}' in
+            backend-stabilization:dry-run-expand|backend-stabilization:apply-expand) migration='20260726190559_backend_stabilization_expand.sql' ;;
+            backend-stabilization:dry-run-lockdown|backend-stabilization:apply-lockdown) migration='20260727000000_backend_stabilization_lockdown.sql' ;;
+            prompt-privacy:dry-run-expand|prompt-privacy:apply-expand) migration='20260729000000_prompt_read_views_expand.sql' ;;
+            prompt-privacy:dry-run-lockdown|prompt-privacy:apply-lockdown) migration='20260729010000_private_prompt_reads_lockdown.sql' ;;
             *) echo '::error::unsupported migration operation'; exit 1 ;;
           esac
           [[ -f "supabase/migrations/$migration" ]] || { echo '::error::allowlisted migration is absent'; exit 1; }
@@ -141,8 +149,8 @@ jobs:
             [[ "$WORKER_VERSION_ID" =~ ^[A-Za-z0-9_-]+$ ]] || { echo '::error::worker_version_id is required for lockdown'; exit 1; }
             [[ "$WORKER_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::worker_evidence_run_id is required for lockdown'; exit 1; }
           fi
-          if [[ '${{ inputs.operation }}' == 'apply-expand' ]]; then
-            [[ "$BACKUP_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::backup_evidence_run_id is required before apply-expand'; exit 1; }
+          if [[ '${{ inputs.operation }}' == 'apply-expand' || ( '${{ inputs.release_track }}' == 'prompt-privacy' && '${{ inputs.operation }}' == 'apply-lockdown' ) ]]; then
+            [[ "$BACKUP_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::backup_evidence_run_id is required before apply-expand and prompt-privacy apply-lockdown'; exit 1; }
           fi
           if [[ '${{ inputs.target }}' == 'production' && '${{ inputs.operation }}' == 'apply-expand' ]]; then
             [[ "$STAGING_PRIVILEGE_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::staging_privilege_evidence_run_id is required before production apply-expand'; exit 1; }
@@ -152,8 +160,8 @@ jobs:
             [[ "$SYNTHETIC_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::synthetic_evidence_run_id is required before staging apply-lockdown'; exit 1; }
           fi
 
-      - name: Verify approved backup readiness before expand
-        if: ${{ inputs.operation == 'apply-expand' }}
+      - name: Verify approved backup readiness before expand or prompt privacy lockdown
+        if: ${{ inputs.operation == 'apply-expand' || (inputs.release_track == 'prompt-privacy' && inputs.operation == 'apply-lockdown') }}
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -215,14 +223,22 @@ jobs:
           if (files.length !== 1) process.exit(1);
           const evidence = JSON.parse(fs.readFileSync(files[0], 'utf8'));
           const stagingRefHash = crypto.createHash('sha256').update(process.env.STAGING_PROJECT_REF).digest('hex');
+          const expectedLockdownMigration = {
+            'backend-stabilization': '20260727000000_backend_stabilization_lockdown.sql',
+            'prompt-privacy': '20260729010000_private_prompt_reads_lockdown.sql',
+          }['${{ inputs.release_track }}'];
           const valid = evidence.schemaVersion === 1
             && evidence.target === 'staging'
             && evidence.operation === 'post-lockdown-privilege-smoke'
+            && evidence.releaseTrack === '${{ inputs.release_track }}'
+            && evidence.lockdownMigration === expectedLockdownMigration
             && evidence.commit === process.env.GITHUB_SHA
             && evidence.projectRefHash === stagingRefHash
             && evidence.allPassed === true
             && evidence.sqlRoleProbePassed === true
             && evidence.httpGatewayProbePassed === true
+            && evidence.gatewayScenarios?.serviceRoleV2RpcSurfaceAllowed === true
+            && evidence.gatewayScenarios?.clientV2RpcSurfaceDenied === true
             && /^[A-Za-z0-9_-]+$/.test(String(evidence.workerVersionId || ''))
             && /^[0-9]+$/.test(String(evidence.lockdownEvidenceRunId || ''));
           if (!valid) process.exit(1);
@@ -250,10 +266,17 @@ jobs:
           if (files.length !== 1) process.exit(1);
           const evidence = JSON.parse(fs.readFileSync(files[0], 'utf8'));
           const refHash = crypto.createHash('sha256').update(process.env.PROJECT_REF).digest('hex');
+          const expectedExpandMigration = {
+            'backend-stabilization': '20260726190559_backend_stabilization_expand.sql',
+            'prompt-privacy': '20260729000000_prompt_read_views_expand.sql',
+          }[process.env.RELEASE_TRACK];
           const scenarioValues = evidence.scenarios && typeof evidence.scenarios === 'object' ? Object.values(evidence.scenarios) : [];
           const valid = evidence.schemaVersion === 1
             && evidence.target === 'staging'
             && evidence.operation === 'synthetic-smoke'
+            && evidence.releaseTrack === process.env.RELEASE_TRACK
+            && evidence.expandMigration === expectedExpandMigration
+            && /^[0-9]+$/.test(String(evidence.expandEvidenceRunId || ''))
             && evidence.commit === process.env.GITHUB_SHA
             && evidence.projectRefHash === refHash
             && evidence.allPassed === true
@@ -261,6 +284,7 @@ jobs:
             && scenarioValues.every((value) => value === true)
             && evidence.workerVersionId === process.env.WORKER_VERSION_ID;
           if (!valid) process.exit(1);
+          fs.appendFileSync(process.env.GITHUB_ENV, `SYNTHETIC_EXPAND_EVIDENCE_RUN_ID=${evidence.expandEvidenceRunId}\n`);
           NODE
 
       - name: Verify compatible Worker cutover evidence before lockdown
@@ -272,6 +296,8 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts/worker-evidence
           artifact_name="release-evidence-${{ inputs.target }}-${WORKER_EVIDENCE_RUN_ID}"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$WORKER_EVIDENCE_RUN_ID" > artifacts/worker-evidence/run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release-worker.yml" > artifacts/worker-evidence/workflow.json
           gh run download "$WORKER_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$artifact_name" --dir artifacts/worker-evidence
           node <<'NODE'
           const crypto = require('node:crypto');
@@ -285,13 +311,40 @@ jobs:
           walk('artifacts/worker-evidence');
           if (files.length !== 1) process.exit(1);
           const evidence = JSON.parse(fs.readFileSync(files[0], 'utf8'));
+          const run = JSON.parse(fs.readFileSync('artifacts/worker-evidence/run.json', 'utf8'));
+          const workflow = JSON.parse(fs.readFileSync('artifacts/worker-evidence/workflow.json', 'utf8'));
           const projectRefHash = crypto.createHash('sha256').update(process.env.PROJECT_REF).digest('hex');
-          const valid = evidence.schemaVersion === 2
+          const expectedExpandMigration = {
+            'backend-stabilization': '20260726190559_backend_stabilization_expand.sql',
+            'prompt-privacy': '20260729000000_prompt_read_views_expand.sql',
+          }[process.env.RELEASE_TRACK];
+          const expectedWorkflowPath = '.github/workflows/release-worker.yml';
+          const runBound = run.id === Number(process.env.WORKER_EVIDENCE_RUN_ID)
+            && run.conclusion === 'success'
+            && run.status === 'completed'
+            && run.event === 'workflow_dispatch'
+            && run.head_sha === process.env.GITHUB_SHA
+            && run.path === expectedWorkflowPath
+            && workflow.path === expectedWorkflowPath
+            && run.workflow_id === workflow.id;
+          const immutableVersionBound = /^[0-9]+$/.test(String(evidence.shadowEvidenceRunId || ''))
+            && Number.isInteger(evidence.shadowRunAttempt)
+            && evidence.shadowRunAttempt >= 1
+            && evidence.versionTag === `github-${evidence.shadowEvidenceRunId}-${evidence.shadowRunAttempt}`
+            && evidence.versionMessage === process.env.GITHUB_SHA
+            && Number.isFinite(Date.parse(evidence.versionCreatedAt || ''))
+            && /^[a-f0-9]{64}$/.test(String(evidence.versionMetadataHash || ''));
+          const valid = runBound
+            && immutableVersionBound
+            && evidence.schemaVersion === 3
             && evidence.target === '${{ inputs.target }}'
             && evidence.operation === 'cutover'
             && evidence.commit === process.env.GITHUB_SHA
             && evidence.versionId === process.env.WORKER_VERSION_ID
+            && evidence.databaseReleaseTrack === process.env.RELEASE_TRACK
+            && evidence.expandMigration === expectedExpandMigration
             && /^[0-9]+$/.test(String(evidence.expandEvidenceRunId || ''))
+            && ('${{ inputs.target }}' !== 'staging' || evidence.expandEvidenceRunId === process.env.SYNTHETIC_EXPAND_EVIDENCE_RUN_ID)
             && evidence.expandProjectRefHash === projectRefHash
             && Number.isFinite(Date.parse(evidence.expandAppliedAt || ''))
             && /^[A-Za-z0-9_-]+$/.test(String(evidence.previousStableVersionId || ''))
@@ -323,8 +376,12 @@ jobs:
           : > artifacts/migration-allowlist.txt
           while IFS= read -r source; do
             filename=$(basename "$source")
-            cp "$source" "$workdir/supabase/migrations/$filename"
-            printf '%s\n' "$filename" >> artifacts/migration-allowlist.txt
+            destination_filename="$filename"
+            if [[ '${{ inputs.target }}' == 'production' && '${{ inputs.release_track }}' == 'prompt-privacy' && "$filename" == '20260727000000_backend_stabilization_lockdown.sql' ]]; then
+              destination_filename='20260727025134_backend_stabilization_lockdown.sql'
+            fi
+            cp "$source" "$workdir/supabase/migrations/$destination_filename"
+            printf '%s\n' "$destination_filename" >> artifacts/migration-allowlist.txt
             if [[ "$filename" == "$MIGRATION" ]]; then found=true; break; fi
           done < <(find supabase/migrations -maxdepth 1 -type f -name '*.sql' | sort)
           [[ "$found" == true ]] || { echo '::error::selected migration is not in the ordered chain'; exit 1; }
@@ -336,8 +393,32 @@ jobs:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
         run: npx --no-install supabase link --workdir "$SUPABASE_WORKDIR" --project-ref "$PROJECT_REF"
 
+      - name: Verify production lockdown migration alias before prompt release
+        if: ${{ inputs.target == 'production' && inputs.release_track == 'prompt-privacy' }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$SUPABASE_WORKDIR/verify_lockdown_alias.sql" <<'SQL'
+          begin;
+          do $$
+          begin
+            if not exists (
+              select 1 from supabase_migrations.schema_migrations
+              where version = '20260727025134' and name = 'backend_stabilization_lockdown'
+            ) then raise exception 'production lockdown migration alias is absent'; end if;
+            if exists (
+              select 1 from supabase_migrations.schema_migrations
+              where version = '20260727000000'
+            ) then raise exception 'production contains both source and alias lockdown versions'; end if;
+          end $$;
+          rollback;
+          SQL
+          npx --no-install supabase db query --workdir "$SUPABASE_WORKDIR" --linked --file "$SUPABASE_WORKDIR/verify_lockdown_alias.sql" > /dev/null
+
       - name: Verify consolidated legacy baseline before expand
-        if: ${{ inputs.operation == 'dry-run-expand' || inputs.operation == 'apply-expand' }}
+        if: ${{ inputs.release_track == 'backend-stabilization' && (inputs.operation == 'dry-run-expand' || inputs.operation == 'apply-expand') }}
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
         shell: bash
@@ -371,6 +452,70 @@ jobs:
           rollback;
           SQL
           npx --no-install supabase db query --workdir "$SUPABASE_WORKDIR" --linked --file "$SUPABASE_WORKDIR/verify_legacy_baseline.sql" > /dev/null
+
+      - name: Verify prompt privacy baseline before expand
+        if: ${{ inputs.release_track == 'prompt-privacy' && (inputs.operation == 'dry-run-expand' || inputs.operation == 'apply-expand') }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$SUPABASE_WORKDIR/verify_prompt_privacy_baseline.sql" <<'SQL'
+          begin;
+          do $$
+          begin
+            if has_function_privilege('authenticated', 'public.reserve_daily_chat_message(text,integer)', 'EXECUTE') then
+              raise exception 'backend stabilization lockdown is not applied';
+            end if;
+            if exists (
+              select 1
+              from (values
+                ('public.reserve_chat_message_v2(uuid,text,uuid,text,text,integer,integer)'),
+                ('public.complete_legacy_chat_message_v2(uuid,text,text,jsonb)'),
+                ('public.refund_chat_message_v2(uuid,text,text,integer)'),
+                ('public.create_room_v2(uuid,text,text,text,text,jsonb,jsonb,jsonb,jsonb)'),
+                ('public.commit_room_turn_v2(uuid,uuid,text,text,bigint,jsonb,jsonb,jsonb,jsonb,jsonb)'),
+                ('public.reconcile_expired_chat_reservations_v2(integer)')
+              ) as functions(signature)
+              where not has_function_privilege('service_role', signature, 'EXECUTE')
+            ) then raise exception 'service v2 RPC contract is incomplete'; end if;
+            if exists (
+              select 1
+              from unnest(array['anon', 'authenticated']) as roles(role_name)
+              cross join (values
+                ('public.reserve_chat_message_v2(uuid,text,uuid,text,text,integer,integer)'),
+                ('public.complete_legacy_chat_message_v2(uuid,text,text,jsonb)'),
+                ('public.refund_chat_message_v2(uuid,text,text,integer)'),
+                ('public.create_room_v2(uuid,text,text,text,text,jsonb,jsonb,jsonb,jsonb)'),
+                ('public.commit_room_turn_v2(uuid,uuid,text,text,bigint,jsonb,jsonb,jsonb,jsonb,jsonb)'),
+                ('public.reconcile_expired_chat_reservations_v2(integer)')
+              ) as functions(signature)
+              where has_function_privilege(role_name, signature, 'EXECUTE')
+            ) then raise exception 'a browser role can execute a service-only v2 RPC'; end if;
+            if exists (
+              select 1
+              from (values
+                ('anon', 'public.characters', 'profile_json'),
+                ('anon', 'public.characters', 'speech_style_json'),
+                ('anon', 'public.characters', 'prompt_profile_json'),
+                ('authenticated', 'public.characters', 'profile_json'),
+                ('authenticated', 'public.characters', 'speech_style_json'),
+                ('authenticated', 'public.characters', 'prompt_profile_json'),
+                ('anon', 'public.worlds', 'world_rules_markdown'),
+                ('anon', 'public.worlds', 'prompt_profile_json'),
+                ('authenticated', 'public.worlds', 'world_rules_markdown'),
+                ('authenticated', 'public.worlds', 'prompt_profile_json'),
+                ('authenticated', 'public.rooms', 'resolved_prompt_snapshot_json'),
+                ('authenticated', 'public.rooms', 'bridge_profile_json')
+              ) as required(role_name, table_name, column_name)
+              where not has_column_privilege(role_name, table_name, column_name, 'SELECT')
+            ) then
+              raise exception 'old Worker prompt reads are not available before prompt expand';
+            end if;
+          end $$;
+          rollback;
+          SQL
+          npx --no-install supabase db query --workdir "$SUPABASE_WORKDIR" --linked --file "$SUPABASE_WORKDIR/verify_prompt_privacy_baseline.sql" > /dev/null
 
       - name: Capture remote database state before preview
         env:
@@ -408,6 +553,47 @@ jobs:
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
         run: npx --no-install supabase db push --workdir "$SUPABASE_WORKDIR" --linked
+
+      - name: Verify complete service-only v2 RPC contract after apply
+        if: ${{ startsWith(inputs.operation, 'apply-') }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$SUPABASE_WORKDIR/verify_v2_rpc_privileges.sql" <<'SQL'
+          begin;
+          do $$
+          begin
+            if exists (
+              select 1
+              from (values
+                ('public.reserve_chat_message_v2(uuid,text,uuid,text,text,integer,integer)'),
+                ('public.complete_legacy_chat_message_v2(uuid,text,text,jsonb)'),
+                ('public.refund_chat_message_v2(uuid,text,text,integer)'),
+                ('public.create_room_v2(uuid,text,text,text,text,jsonb,jsonb,jsonb,jsonb)'),
+                ('public.commit_room_turn_v2(uuid,uuid,text,text,bigint,jsonb,jsonb,jsonb,jsonb,jsonb)'),
+                ('public.reconcile_expired_chat_reservations_v2(integer)')
+              ) as functions(signature)
+              where not has_function_privilege('service_role', signature, 'EXECUTE')
+            ) then raise exception 'service role is missing a required v2 RPC grant'; end if;
+            if exists (
+              select 1
+              from unnest(array['anon', 'authenticated']) as roles(role_name)
+              cross join (values
+                ('public.reserve_chat_message_v2(uuid,text,uuid,text,text,integer,integer)'),
+                ('public.complete_legacy_chat_message_v2(uuid,text,text,jsonb)'),
+                ('public.refund_chat_message_v2(uuid,text,text,integer)'),
+                ('public.create_room_v2(uuid,text,text,text,text,jsonb,jsonb,jsonb,jsonb)'),
+                ('public.commit_room_turn_v2(uuid,uuid,text,text,bigint,jsonb,jsonb,jsonb,jsonb,jsonb)'),
+                ('public.reconcile_expired_chat_reservations_v2(integer)')
+              ) as functions(signature)
+              where has_function_privilege(role_name, signature, 'EXECUTE')
+            ) then raise exception 'a browser role retains a service-only v2 RPC grant'; end if;
+          end $$;
+          rollback;
+          SQL
+          npx --no-install supabase db query --workdir "$SUPABASE_WORKDIR" --linked --file "$SUPABASE_WORKDIR/verify_v2_rpc_privileges.sql" > /dev/null
 
       - name: Prove dry-run did not change remote database state
         if: ${{ startsWith(inputs.operation, 'dry-run-') }}
@@ -452,6 +638,11 @@ jobs:
           const fs = require('node:fs');
           const operation = '${{ inputs.operation }}';
           const applied = operation.startsWith('apply-');
+          const backupRequired = operation === 'apply-expand'
+            || (process.env.RELEASE_TRACK === 'prompt-privacy' && operation === 'apply-lockdown');
+          if (backupRequired && !/^[0-9]+$/.test(process.env.BACKUP_EVIDENCE_RUN_ID || '')) {
+            throw new Error('Required backup evidence run ID is absent.');
+          }
           const historyPath = `${process.env.RUNNER_TEMP}/migration-history-${applied ? 'after' : 'after-dry-run'}.txt`;
           const statePath = `${process.env.RUNNER_TEMP}/release-state-${applied ? 'after' : 'after-dry-run'}.txt`;
           const migrationStatePath = `${process.env.RUNNER_TEMP}/migration-state-${applied ? 'after' : 'after-dry-run'}.txt`;
@@ -465,6 +656,7 @@ jobs:
             schemaVersion: 3,
             target: '${{ inputs.target }}',
             operation,
+            releaseTrack: process.env.RELEASE_TRACK,
             commit: process.env.GITHUB_SHA,
             migration: process.env.MIGRATION,
             projectRefHash: crypto.createHash('sha256').update(process.env.PROJECT_REF).digest('hex'),
@@ -477,7 +669,7 @@ jobs:
             workerEvidenceRunId: operation === 'apply-lockdown' ? process.env.WORKER_EVIDENCE_RUN_ID : null,
             previousStableWorkerVersionId: operation === 'apply-lockdown' ? process.env.LOCKDOWN_PREVIOUS_STABLE_VERSION_ID : null,
             expandEvidenceRunId: operation === 'apply-lockdown' ? process.env.LOCKDOWN_EXPAND_EVIDENCE_RUN_ID : null,
-            backupEvidenceRunId: operation === 'apply-expand' ? process.env.BACKUP_EVIDENCE_RUN_ID : null,
+            backupEvidenceRunId: backupRequired ? process.env.BACKUP_EVIDENCE_RUN_ID : null,
             syntheticEvidenceRunId: '${{ inputs.target }}' === 'staging' && '${{ inputs.operation }}' === 'apply-lockdown' ? process.env.SYNTHETIC_EVIDENCE_RUN_ID : null,
           };
           fs.writeFileSync('artifacts/database-release-evidence.json', `${JSON.stringify(evidence, null, 2)}\n`);

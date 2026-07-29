@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { buildArtifact, hashProjectRef, isDeniedStatus, isStorageWriteDeniedStatus, parseArguments, validateRemoteConfig } from '../scripts/remote-privilege-smoke-contracts.mjs'
+import { V2_RPC_NAMES, rpcSurfaceMatchesPrivilegeContract } from '../scripts/remote-privilege-smoke.mjs'
 
 const env = {
   SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co', SUPABASE_ANON_KEY: 'anon-test-key', SUPABASE_SERVICE_ROLE_KEY: 'service-test-key', PRODUCTION_SUPABASE_PROJECT_REF: 'zyxwvutsrqponmlkjihg',
@@ -26,4 +27,36 @@ test('artifact uses full project hash and only approved safe fields', () => {
   assert.match(artifact.projectRefHash, /^[a-f0-9]{64}$/)
   assert.equal(artifact.projectRefHash, hashProjectRef(options.projectRef))
   assert.deepEqual(Object.keys(artifact).sort(), ['commit', 'projectRefHash', 'scenarios', 'schemaVersion', 'target', 'timestamps', 'workerVersionId'])
+})
+
+test('remote probe requires all six v2 RPCs only on the service-role gateway surface', () => {
+  assert.deepEqual(V2_RPC_NAMES, [
+    'reserve_chat_message_v2',
+    'complete_legacy_chat_message_v2',
+    'refund_chat_message_v2',
+    'create_room_v2',
+    'commit_room_turn_v2',
+    'reconcile_expired_chat_reservations_v2',
+  ])
+  const serviceRpcSurface = new Set(V2_RPC_NAMES.map((name) => `/rpc/${name}`))
+  const emptyClientSurface = new Set(['/rpc/get_daily_chat_quota'])
+  assert.deepEqual(rpcSurfaceMatchesPrivilegeContract({
+    anonRpcSurface: emptyClientSurface,
+    authenticatedRpcSurface: emptyClientSurface,
+    serviceRpcSurface,
+  }), { serviceAllowed: true, clientsDenied: true })
+
+  const incompleteServiceSurface = new Set(serviceRpcSurface)
+  incompleteServiceSurface.delete('/rpc/commit_room_turn_v2')
+  assert.equal(rpcSurfaceMatchesPrivilegeContract({
+    anonRpcSurface: emptyClientSurface,
+    authenticatedRpcSurface: emptyClientSurface,
+    serviceRpcSurface: incompleteServiceSurface,
+  }).serviceAllowed, false)
+
+  assert.equal(rpcSurfaceMatchesPrivilegeContract({
+    anonRpcSurface: emptyClientSurface,
+    authenticatedRpcSurface: new Set(['/rpc/create_room_v2']),
+    serviceRpcSurface,
+  }).clientsDenied, false)
 })

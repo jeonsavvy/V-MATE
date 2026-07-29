@@ -115,9 +115,15 @@ jobs:
           const lockdown = find('evidence/lockdown', 'database-release-evidence.json'); const privilege = find('evidence/privilege', 'post-lockdown-privilege-smoke-evidence.json');
           if (lockdown.length !== 1 || privilege.length !== 1) process.exit(1);
           const lock = JSON.parse(fs.readFileSync(lockdown[0], 'utf8')); const smoke = JSON.parse(fs.readFileSync(privilege[0], 'utf8'));
+          const expectedMigration = {
+            'backend-stabilization': '20260727000000_backend_stabilization_lockdown.sql',
+            'prompt-privacy': '20260729010000_private_prompt_reads_lockdown.sql',
+          }[lock.releaseTrack];
           const valid = lock.schemaVersion === 3
             && lock.target === '${{ inputs.target }}'
             && lock.operation === 'apply-lockdown'
+            && Boolean(expectedMigration)
+            && lock.migration === expectedMigration
             && lock.commit === process.env.GITHUB_SHA
             && /^[a-f0-9]{64}$/.test(lock.projectRefHash || '')
             && lock.appliedAt === process.env.LOCKDOWN_COMPLETED_AT
@@ -126,6 +132,8 @@ jobs:
             && smoke.schemaVersion === 1
             && smoke.target === '${{ inputs.target }}'
             && smoke.operation === 'post-lockdown-privilege-smoke'
+            && smoke.releaseTrack === lock.releaseTrack
+            && smoke.lockdownMigration === lock.migration
             && smoke.commit === process.env.GITHUB_SHA
             && smoke.projectRefHash === lock.projectRefHash
             && smoke.workerVersionId === lock.workerVersionId
@@ -133,7 +141,7 @@ jobs:
             && smoke.lockdownEvidenceRunId === process.env.LOCKDOWN_EVIDENCE_RUN_ID
             && smoke.allPassed === true;
           if (!valid) process.exit(1);
-          fs.appendFileSync(process.env.GITHUB_ENV, `LOCKDOWN_PROJECT_REF_HASH=${lock.projectRefHash}\n`);
+          fs.appendFileSync(process.env.GITHUB_ENV, `LOCKDOWN_RELEASE_TRACK=${lock.releaseTrack}\nLOCKDOWN_MIGRATION=${lock.migration}\nLOCKDOWN_PROJECT_REF_HASH=${lock.projectRefHash}\n`);
           NODE
 
       - name: Verify v2 Worker remains the serving version
@@ -162,7 +170,7 @@ jobs:
           set -euo pipefail
           node <<'NODE'
           const fs = require('node:fs'); const observation = JSON.parse(fs.readFileSync('artifacts/post-lockdown-observability.json', 'utf8'));
-          const evidence = { schemaVersion: 1, target: '${{ inputs.target }}', operation: 'post-lockdown-observation', commit: process.env.GITHUB_SHA, projectRefHash: process.env.LOCKDOWN_PROJECT_REF_HASH, workerVersionId: process.env.WORKER_VERSION_ID, baselineWorkerVersionId: process.env.BASELINE_WORKER_VERSION_ID, lockdownEvidenceRunId: process.env.LOCKDOWN_EVIDENCE_RUN_ID, privilegeEvidenceRunId: process.env.PRIVILEGE_EVIDENCE_RUN_ID, observedAfterLockdownHours: (Date.now() - Date.parse(process.env.LOCKDOWN_COMPLETED_AT)) / 3600000, observabilityPassed: observation.passed === true, completedAt: new Date().toISOString() };
+          const evidence = { schemaVersion: 1, target: '${{ inputs.target }}', operation: 'post-lockdown-observation', releaseTrack: process.env.LOCKDOWN_RELEASE_TRACK, lockdownMigration: process.env.LOCKDOWN_MIGRATION, commit: process.env.GITHUB_SHA, projectRefHash: process.env.LOCKDOWN_PROJECT_REF_HASH, workerVersionId: process.env.WORKER_VERSION_ID, baselineWorkerVersionId: process.env.BASELINE_WORKER_VERSION_ID, lockdownEvidenceRunId: process.env.LOCKDOWN_EVIDENCE_RUN_ID, privilegeEvidenceRunId: process.env.PRIVILEGE_EVIDENCE_RUN_ID, observedAfterLockdownHours: (Date.now() - Date.parse(process.env.LOCKDOWN_COMPLETED_AT)) / 3600000, observabilityPassed: observation.passed === true, completedAt: new Date().toISOString() };
           fs.writeFileSync('artifacts/post-lockdown-observation-evidence.json', `${JSON.stringify(evidence, null, 2)}\n`);
           NODE
           rm -rf evidence deployment.json

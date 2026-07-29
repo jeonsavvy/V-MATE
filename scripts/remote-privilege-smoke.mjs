@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { buildArtifact, helpText, isDeniedStatus, isStorageWriteDeniedStatus, parseArguments, validateRemoteConfig } from './remote-privilege-smoke-contracts.mjs'
 
 const headers = (key, token = key, contentType = 'application/json') => ({ apikey: key, Authorization: `Bearer ${token}`, 'Content-Type': contentType })
@@ -14,6 +15,30 @@ const fetchJson = async (url, init) => {
 }
 const safeFailure = () => process.stderr.write('Remote privilege smoke failed.\n')
 const id = () => `privilege-smoke-${randomUUID()}`
+export const V2_RPC_NAMES = Object.freeze([
+  'reserve_chat_message_v2',
+  'complete_legacy_chat_message_v2',
+  'refund_chat_message_v2',
+  'create_room_v2',
+  'commit_room_turn_v2',
+  'reconcile_expired_chat_reservations_v2',
+])
+
+export const rpcSurfaceMatchesPrivilegeContract = ({ anonRpcSurface, authenticatedRpcSurface, serviceRpcSurface }) => ({
+  serviceAllowed: V2_RPC_NAMES.every((name) => serviceRpcSurface.has(`/rpc/${name}`)),
+  clientsDenied: V2_RPC_NAMES.every((name) => !anonRpcSurface.has(`/rpc/${name}`)
+    && !authenticatedRpcSurface.has(`/rpc/${name}`)),
+})
+
+const fetchRpcSurface = async (rest, roleHeaders) => {
+  const response = await fetchJson(`${rest}/`, {
+    headers: { ...roleHeaders, Accept: 'application/openapi+json' },
+  })
+  if (!response.ok || !response.body?.paths || typeof response.body.paths !== 'object') {
+    throw new Error('RPC_SURFACE_UNAVAILABLE')
+  }
+  return new Set(Object.keys(response.body.paths))
+}
 
 const writeArtifact = async (output, artifact) => {
   const destination = path.resolve(output)
@@ -47,6 +72,7 @@ const run = async (config) => {
     ephemeralUserCreated: false, anonCharactersInsertDenied: false, authenticatedCharactersInsertDenied: false,
     anonRoomsInsertDenied: false, authenticatedRoomsInsertDenied: false, legacyQuotaMutationDenied: false,
     authenticatedStorageUploadDenied: false, authenticatedQuotaReadAllowed: false,
+    serviceRoleV2RpcSurfaceAllowed: false, clientV2RpcSurfaceDenied: false,
     serviceRoleV2ReserveRefundAllowed: false, ephemeralUserCleanupSucceeded: false,
   }
   let user = null
@@ -58,6 +84,15 @@ const run = async (config) => {
     const rest = `${config.url}/rest/v1`
     const anon = headers(process.env.SUPABASE_ANON_KEY)
     const authenticated = headers(process.env.SUPABASE_ANON_KEY, user.accessToken)
+    const service = headers(process.env.SUPABASE_SERVICE_ROLE_KEY)
+    const [anonRpcSurface, authenticatedRpcSurface, serviceRpcSurface] = await Promise.all([
+      fetchRpcSurface(rest, anon),
+      fetchRpcSurface(rest, authenticated),
+      fetchRpcSurface(rest, service),
+    ])
+    const rpcSurfaceContract = rpcSurfaceMatchesPrivilegeContract({ anonRpcSurface, authenticatedRpcSurface, serviceRpcSurface })
+    scenarios.serviceRoleV2RpcSurfaceAllowed = rpcSurfaceContract.serviceAllowed
+    scenarios.clientV2RpcSurfaceDenied = rpcSurfaceContract.clientsDenied
     scenarios.anonCharactersInsertDenied = await denied(() => responseStatus(`${rest}/characters`, { method: 'POST', headers: anon, body: '{}' }))
     scenarios.authenticatedCharactersInsertDenied = await denied(() => responseStatus(`${rest}/characters`, { method: 'POST', headers: authenticated, body: '{}' }))
     scenarios.anonRoomsInsertDenied = await denied(() => responseStatus(`${rest}/rooms`, { method: 'POST', headers: anon, body: '{}' }))
@@ -70,7 +105,6 @@ const run = async (config) => {
     scenarios.authenticatedQuotaReadAllowed = quotaStatus >= 200 && quotaStatus < 300
     const requestId = id()
     const fingerprint = randomUUID().replaceAll('-', '')
-    const service = headers(process.env.SUPABASE_SERVICE_ROLE_KEY)
     const reserve = await fetchJson(`${rest}/rpc/reserve_chat_message_v2`, { method: 'POST', headers: service, body: JSON.stringify({ p_user_id: user.userId, p_route: 'legacy', p_room_id: null, p_request_id: requestId, p_request_fingerprint: fingerprint, p_limit: 30, p_lease_seconds: 120 }) })
     const reservation = Array.isArray(reserve.body) ? reserve.body[0] : reserve.body
     const refund = reserve.ok && reservation?.disposition === 'reserved' && reservation?.allowed === true
@@ -106,4 +140,5 @@ const main = async () => {
   process.stdout.write('Remote privilege smoke completed.\n')
 }
 
-main().catch(() => { safeFailure(); process.exitCode = 1 })
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
+if (isMain) main().catch(() => { safeFailure(); process.exitCode = 1 })

@@ -47,6 +47,40 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(release, /PREVIOUS_STABLE_VERSION_ID@100%/);
   assert.match(release, /automatic-rollback\.json/);
   assert.match(release, /expand_evidence_run_id/);
+  assert.match(release, /shadow_evidence_run_id/);
+  assert.match(release, /shadow_evidence_run_id is required for smoke and cutover/);
+  assert.match(release, /Verify current-commit shadow upload and immutable version metadata/);
+  assert.match(release, /actions\/runs\/\$SHADOW_EVIDENCE_RUN_ID/);
+  assert.match(release, /wrangler versions view "\$INPUT_VERSION_ID"/);
+  assert.match(release, /workers\/tag/);
+  assert.match(release, /workers\/message/);
+  assert.match(release, /versionMetadataHash/);
+  assert.match(release, /shadow\.schemaVersion === 3/);
+  assert.match(release, /database_release_track/);
+  assert.match(release, /options: \[backend-stabilization, prompt-privacy\]/);
+  assert.match(release, /20260729000000_prompt_read_views_expand\.sql/);
+  assert.match(release, /evidence\.releaseTrack === process\.env\.DATABASE_RELEASE_TRACK/);
+  assert.match(release, /release\.databaseReleaseTrack === process\.env\.DATABASE_RELEASE_TRACK/);
+  assert.match(release, /lockdown\.migration === expectedLockdownMigration/);
+  assert.match(release, /release\.databaseEvidenceMode === 'expand'/);
+  assert.match(release, /release\.databaseEvidenceMode === 'baseline'/);
+  assert.match(release, /vmate\.release_track/);
+  assert.match(release, /prompt pre-lockdown contract/);
+  assert.match(release, /prompt post-lockdown contract/);
+  assert.match(release, /raw_prompt_read_grant_count <> 12/);
+  assert.match(release, /raw_prompt_read_grant_count <> 0/);
+  assert.match(release, /authenticated_direct_write_grant_count <> 21/);
+  assert.match(release, /api_direct_write_grant_count <> 42/);
+  assert.match(release, /complete_legacy_chat_message_v2\(uuid,text,text,jsonb\)/);
+  assert.match(release, /refund_chat_message_v2\(uuid,text,text,integer\)/);
+  assert.match(release, /create_room_v2\(uuid,text,text,text,text,jsonb,jsonb,jsonb,jsonb\)/);
+  assert.match(release, /reconcile_expired_chat_reservations_v2\(integer\)/);
+  assert.match(release, /client_v2_rpc_grant_count <> 0/);
+  assert.match(release, /safe_view_security_barrier_count <> 5/);
+  assert.match(release, /safe_view_protected_column_count <> 0/);
+  assert.match(release, /safe_view_projection_mismatch_count <> 0/);
+  assert.match(release, /select \* from expected except select \* from actual/);
+  assert.doesNotMatch(release, /pre-lockdown rollback is only valid for backend-stabilization/);
   assert.match(release, /EXPAND_PROJECT_REF_HASH/);
   assert.match(release, /rollback_mode/);
   assert.match(release, /rollback_evidence_run_id/);
@@ -57,6 +91,11 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(release, /storage_write_policy_count/);
   assert.match(release, /release\.previousStableVersionId !== process\.env\.INPUT_VERSION_ID/);
   assert.match(release, /lockdown\.workerVersionId === release\.versionId/);
+  assert.match(release, /const baselineBacked = release\.databaseEvidenceMode === 'baseline'/);
+  assert.match(release, /baselineBacked \|\| process\.env\.LOCKDOWN_EVIDENCE_RUN_ID/);
+  assert.match(release, /validBaselineRollback/);
+  assert.match(release, /!process\.env\.LOCKDOWN_EVIDENCE_RUN_ID/);
+  assert.match(release, /DATABASE_EVIDENCE_MODE === 'expand' \|\| process\.env\.DATABASE_EVIDENCE_MODE === 'baseline'/);
   assert.match(release, /rollback-preflight-smoke\.log/);
   assert.match(release, /GH_TOKEN: \$\{\{ github\.token \}\}/);
   assert.match(release, /APPROVED_ORIGIN=\$input_origin/);
@@ -95,6 +134,10 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(baseline, /scripts\/smoke-release\.mjs/);
   assert.match(baseline, /server\/smoke-release\.test\.js/);
   assert.match(baseline, /queryMode: 'supabase_read_only_user'/);
+  assert.match(baseline, /serviceV2MutationRpcsCallable/);
+  assert.match(baseline, /clientV2MutationRpcsBlocked/);
+  assert.match(baseline, /complete_legacy_chat_message_v2\(uuid,text,text,jsonb\)/);
+  assert.match(baseline, /commit_room_turn_v2\(uuid,uuid,text,text,bigint,jsonb,jsonb,jsonb,jsonb,jsonb\)/);
   assert.match(baseline, /Record sanitized read-only baseline evidence[\s\S]*trap 'rm -rf private-artifacts' EXIT/);
   assert.doesNotMatch(baseline, /!\s+git diff --quiet/);
   assert.doesNotMatch(baseline, /supabase db push|supabase db query|confirm-remote-writes|^\s*(?:insert|update|delete)\s+/im);
@@ -146,12 +189,20 @@ test('database release stages expand and lockdown separately behind evidence gat
   assert.match(release, /apply-expand/);
   assert.match(release, /dry-run-lockdown/);
   assert.match(release, /apply-lockdown/);
+  assert.match(release, /release_track/);
+  assert.match(release, /options: \[backend-stabilization, prompt-privacy\]/);
   assert.match(release, /worker_evidence_run_id/);
   assert.match(release, /observabilityPassed === true/);
   assert.match(release, /cronSuccesses >= 2/);
   assert.match(release, /db push[\s\S]*--dry-run/);
   assert.match(release, /PROJECT_REF.*EXPECTED_PROJECT_REF/);
   assert.match(release, /backup_evidence_run_id/);
+  assert.match(release, /backup_evidence_run_id is required before apply-expand and prompt-privacy apply-lockdown/);
+  assert.match(release, /inputs\.operation \}\}' == 'apply-expand' \|\| \( '\$\{\{ inputs\.release_track \}\}' == 'prompt-privacy' && '\$\{\{ inputs\.operation \}\}' == 'apply-lockdown' \)/);
+  assert.match(release, /Verify approved backup readiness before expand or prompt privacy lockdown/);
+  assert.match(release, /inputs\.operation == 'apply-expand' \|\| \(inputs\.release_track == 'prompt-privacy' && inputs\.operation == 'apply-lockdown'\)/);
+  assert.match(release, /const backupRequired = operation === 'apply-expand'[\s\S]*process\.env\.RELEASE_TRACK === 'prompt-privacy' && operation === 'apply-lockdown'/);
+  assert.match(release, /backupEvidenceRunId: backupRequired \? process\.env\.BACKUP_EVIDENCE_RUN_ID : null/);
   assert.match(release, /synthetic_evidence_run_id/);
   assert.match(release, /staging_privilege_evidence_run_id/);
   assert.match(release, /STAGING_PRIVILEGE_EVIDENCE_RUN_ID/);
@@ -167,6 +218,24 @@ test('database release stages expand and lockdown separately behind evidence gat
   assert.match(release, /expandProjectRefHash/);
   assert.match(release, /20260726190559_backend_stabilization_expand\.sql/);
   assert.match(release, /20260727000000_backend_stabilization_lockdown\.sql/);
+  assert.match(release, /20260729000000_prompt_read_views_expand\.sql/);
+  assert.match(release, /20260729010000_private_prompt_reads_lockdown\.sql/);
+  assert.match(release, /evidence\.databaseReleaseTrack === process\.env\.RELEASE_TRACK/);
+  assert.match(release, /evidence\.releaseTrack === process\.env\.RELEASE_TRACK/);
+  assert.match(release, /evidence\.expandMigration === expectedExpandMigration/);
+  assert.match(release, /SYNTHETIC_EXPAND_EVIDENCE_RUN_ID/);
+  assert.match(release, /evidence\.expandEvidenceRunId === process\.env\.SYNTHETIC_EXPAND_EVIDENCE_RUN_ID/);
+  assert.match(release, /evidence\.schemaVersion === 3/);
+  assert.match(release, /immutableVersionBound/);
+  assert.match(release, /actions\/runs\/\$WORKER_EVIDENCE_RUN_ID/);
+  assert.match(release, /Verify complete service-only v2 RPC contract after apply/);
+  assert.match(release, /a browser role retains a service-only v2 RPC grant/);
+  assert.match(release, /20260727025134_backend_stabilization_lockdown\.sql/);
+  assert.match(release, /Verify production lockdown migration alias before prompt release/);
+  assert.match(release, /supabase_migrations\.schema_migrations/);
+  assert.match(release, /destination_filename="\$filename"/);
+  assert.match(release, /\('anon', 'public\.characters', 'profile_json'\)/);
+  assert.match(release, /\('authenticated', 'public\.rooms', 'resolved_prompt_snapshot_json'\)/);
   assert.match(release, /Verify consolidated legacy baseline before expand/);
   assert.match(release, /Require successful CI for this default-branch commit/);
   assert.match(release, /actions\/workflows\/ci\.yml\/runs\?head_sha=/);
@@ -191,6 +260,33 @@ test('database release stages expand and lockdown separately behind evidence gat
   assert.doesNotMatch(release, /path: artifacts\/\s*$/m);
 });
 
+test('every remote database phase gate enforces the complete service-only v2 RPC set', async () => {
+  const sources = await Promise.all([
+    '.github/workflows/release-worker.yml',
+    '.github/workflows/release-database.yml',
+    '.github/workflows/release-database-baseline-attestation.yml',
+    '.github/workflows/release-post-lockdown-privilege-smoke.yml',
+  ].map(readUtf8));
+  const signatures = [
+    'public.reserve_chat_message_v2(uuid,text,uuid,text,text,integer,integer)',
+    'public.complete_legacy_chat_message_v2(uuid,text,text,jsonb)',
+    'public.refund_chat_message_v2(uuid,text,text,integer)',
+    'public.create_room_v2(uuid,text,text,text,text,jsonb,jsonb,jsonb,jsonb)',
+    'public.commit_room_turn_v2(uuid,uuid,text,text,bigint,jsonb,jsonb,jsonb,jsonb,jsonb)',
+    'public.reconcile_expired_chat_reservations_v2(integer)',
+  ];
+
+  for (const source of sources) {
+    for (const signature of signatures) {
+      assert.ok(source.includes(signature), `remote phase gate is missing ${signature}`);
+    }
+    assert.match(source, /service_role/);
+    assert.match(source, /anon/);
+    assert.match(source, /authenticated/);
+    assert.match(source, /has_function_privilege/);
+  }
+});
+
 test('backup readiness and staging synthetic smoke are approval-gated and target-bound', async () => {
   const backup = await readUtf8('.github/workflows/release-backup-readiness.yml');
   const synthetic = await readUtf8('.github/workflows/release-staging-synthetic-smoke.yml');
@@ -208,6 +304,13 @@ test('backup readiness and staging synthetic smoke are approval-gated and target
   assert.match(synthetic, /staging-synthetic-smoke\.mjs/);
   assert.match(synthetic, /--confirm-staging-writes true/);
   assert.match(synthetic, /Cloudflare|worker-version|WORKER_VERSION_ID/);
+  assert.match(synthetic, /release_track:/);
+  assert.match(synthetic, /options: \[backend-stabilization, prompt-privacy\]/);
+  assert.match(synthetic, /value\.releaseTrack === process\.env\.RELEASE_TRACK/);
+  assert.match(synthetic, /20260726190559_backend_stabilization_expand\.sql/);
+  assert.match(synthetic, /20260729000000_prompt_read_views_expand\.sql/);
+  assert.match(synthetic, /expandMigration: process\.env\.EXPAND_MIGRATION/);
+  assert.match(synthetic, /expandEvidenceRunId: process\.env\.EXPAND_EVIDENCE_RUN_ID/);
   assert.match(synthetic, /scenarios/);
   assert.match(synthetic, /if: \$\{\{ always\(\) \}\}/);
 });
@@ -217,6 +320,15 @@ test('post-lockdown privilege and delayed observation remain evidence-bound with
   const observation = await readUtf8('.github/workflows/release-post-lockdown-observation.yml');
 
   assert.match(privilege, /apply-lockdown/);
+  assert.match(privilege, /value\.releaseTrack/);
+  assert.match(privilege, /20260729010000_private_prompt_reads_lockdown\.sql/);
+  assert.match(privilege, /LOCKDOWN_RELEASE_TRACK/);
+  assert.match(privilege, /has_column_privilege/);
+  assert.match(privilege, /public\.owned_room_summaries/);
+  assert.match(privilege, /anon can select an owner-only view/);
+  assert.match(privilege, /a safe view exposes a protected prompt column/);
+  assert.match(privilege, /security_barrier=true/);
+  assert.match(privilege, /service role cannot read a required prompt column/);
   assert.match(privilege, /begin;/);
   assert.match(privilege, /rollback;/);
   assert.match(privilege, /reserve_daily_chat_message/);
@@ -224,6 +336,10 @@ test('post-lockdown privilege and delayed observation remain evidence-bound with
   assert.match(privilege, /has_function_privilege/);
   assert.match(privilege, /remote-privilege-smoke\.mjs/);
   assert.match(privilege, /serviceRoleV2ReserveRefundAllowed/);
+  assert.match(privilege, /serviceRoleV2RpcSurfaceAllowed/);
+  assert.match(privilege, /clientV2RpcSurfaceDenied/);
+  assert.match(privilege, /service role cannot execute every required v2 RPC/);
+  assert.match(privilege, /a browser role can execute a service-only v2 RPC/);
   assert.match(privilege, /gatewayScenarios/);
   assert.match(privilege, /sqlRoleProbePassed: sqlPassed/);
   assert.match(privilege, /httpGatewayProbePassed: remotePassed/);
@@ -232,6 +348,8 @@ test('post-lockdown privilege and delayed observation remain evidence-bound with
 
   assert.match(observation, /elapsed<24\*60\*60\*1000/);
   assert.match(observation, /post-lockdown-privilege-evidence/);
+  assert.match(observation, /smoke\.releaseTrack === lock\.releaseTrack/);
+  assert.match(observation, /lock\.migration === expectedMigration/);
   assert.match(observation, /lock\.workerVersionId === process\.env\.WORKER_VERSION_ID/);
   assert.match(observation, /previousStableWorkerVersionId/);
   assert.match(observation, /check-worker-observability\.mjs/);
@@ -302,4 +420,7 @@ test('operations documentation records manual approved release, runtime prerequi
   assert.match(operationsDoc, /VITE_SUPABASE_ANON_KEY|VITE_SUPABASE_PUBLISHABLE_KEY/);
   assert.match(operationsDoc, /VITE_CHAT_API_BASE_URL/);
   assert.match(operationsDoc, /versions deploy/);
+  assert.match(operationsDoc, /prompt-privacy:apply-lockdown.*6시간.*backup evidence.*필수/);
+  assert.match(operationsDoc, /baseline-backed cutover evidence/);
+  assert.match(operationsDoc, /lockdown_evidence_run_id.*비워/);
 });

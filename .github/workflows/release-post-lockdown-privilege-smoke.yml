@@ -74,18 +74,23 @@ jobs:
           if (files.length !== 1) process.exit(1);
           const value = JSON.parse(fs.readFileSync(files[0], 'utf8'));
           const refHash = crypto.createHash('sha256').update(process.env.PROJECT_REF).digest('hex');
+          const expectedMigration = {
+            'backend-stabilization': '20260727000000_backend_stabilization_lockdown.sql',
+            'prompt-privacy': '20260729010000_private_prompt_reads_lockdown.sql',
+          }[value.releaseTrack];
           const valid = value.schemaVersion === 3
             && value.target === '${{ inputs.target }}'
             && value.operation === 'apply-lockdown'
             && value.commit === process.env.GITHUB_SHA
-            && value.migration === '20260727000000_backend_stabilization_lockdown.sql'
+            && Boolean(expectedMigration)
+            && value.migration === expectedMigration
             && value.projectRefHash === refHash
             && /^[A-Za-z0-9_-]+$/.test(String(value.workerVersionId || ''))
             && /^[A-Za-z0-9_-]+$/.test(String(value.previousStableWorkerVersionId || ''));
           if (!valid) process.exit(1);
           fs.appendFileSync(
             process.env.GITHUB_ENV,
-            `LOCKDOWN_WORKER_VERSION_ID=${value.workerVersionId}\nLOCKDOWN_PREVIOUS_STABLE_VERSION_ID=${value.previousStableWorkerVersionId}\n`,
+            `LOCKDOWN_RELEASE_TRACK=${value.releaseTrack}\nLOCKDOWN_MIGRATION=${value.migration}\nLOCKDOWN_WORKER_VERSION_ID=${value.workerVersionId}\nLOCKDOWN_PREVIOUS_STABLE_VERSION_ID=${value.previousStableWorkerVersionId}\n`,
           );
           NODE
 
@@ -105,8 +110,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat > "$SUPABASE_WORKDIR/post_lockdown_privilege_smoke.sql" <<'SQL'
-          begin;
+          printf "begin;\nselect set_config('vmate.release_track', '%s', true);\n" "$LOCKDOWN_RELEASE_TRACK" > "$SUPABASE_WORKDIR/post_lockdown_privilege_smoke.sql"
+          cat >> "$SUPABASE_WORKDIR/post_lockdown_privilege_smoke.sql" <<'SQL'
           do $$
           begin
             set local role anon;
@@ -151,7 +156,112 @@ jobs:
                   'Authenticated users can delete vmate assets in their own folder'
                 )
             ) then raise exception 'an authenticated Storage write policy remains'; end if;
-            if not has_function_privilege('service_role', 'public.reserve_chat_message_v2(uuid,text,uuid,text,text,integer,integer)', 'EXECUTE') then raise exception 'service v2 reserve RPC is not callable'; end if;
+            if exists (
+              select 1
+              from (values
+                ('public.reserve_chat_message_v2(uuid,text,uuid,text,text,integer,integer)'),
+                ('public.complete_legacy_chat_message_v2(uuid,text,text,jsonb)'),
+                ('public.refund_chat_message_v2(uuid,text,text,integer)'),
+                ('public.create_room_v2(uuid,text,text,text,text,jsonb,jsonb,jsonb,jsonb)'),
+                ('public.commit_room_turn_v2(uuid,uuid,text,text,bigint,jsonb,jsonb,jsonb,jsonb,jsonb)'),
+                ('public.reconcile_expired_chat_reservations_v2(integer)')
+              ) as functions(signature)
+              where not has_function_privilege('service_role', signature, 'EXECUTE')
+            ) then raise exception 'service role cannot execute every required v2 RPC'; end if;
+            if exists (
+              select 1
+              from unnest(array['anon', 'authenticated']) as roles(role_name)
+              cross join (values
+                ('public.reserve_chat_message_v2(uuid,text,uuid,text,text,integer,integer)'),
+                ('public.complete_legacy_chat_message_v2(uuid,text,text,jsonb)'),
+                ('public.refund_chat_message_v2(uuid,text,text,integer)'),
+                ('public.create_room_v2(uuid,text,text,text,text,jsonb,jsonb,jsonb,jsonb)'),
+                ('public.commit_room_turn_v2(uuid,uuid,text,text,bigint,jsonb,jsonb,jsonb,jsonb,jsonb)'),
+                ('public.reconcile_expired_chat_reservations_v2(integer)')
+              ) as functions(signature)
+              where has_function_privilege(role_name, signature, 'EXECUTE')
+            ) then raise exception 'a browser role can execute a service-only v2 RPC'; end if;
+            if current_setting('vmate.release_track', true) = 'prompt-privacy' then
+              if exists (
+                select 1
+                from (values
+                  ('anon', 'public.characters', 'profile_json'),
+                  ('anon', 'public.characters', 'speech_style_json'),
+                  ('anon', 'public.characters', 'prompt_profile_json'),
+                  ('anon', 'public.worlds', 'world_rules_markdown'),
+                  ('anon', 'public.worlds', 'prompt_profile_json'),
+                  ('anon', 'public.rooms', 'resolved_prompt_snapshot_json'),
+                  ('authenticated', 'public.characters', 'profile_json'),
+                  ('authenticated', 'public.characters', 'speech_style_json'),
+                  ('authenticated', 'public.characters', 'prompt_profile_json'),
+                  ('authenticated', 'public.worlds', 'world_rules_markdown'),
+                  ('authenticated', 'public.worlds', 'prompt_profile_json'),
+                  ('authenticated', 'public.rooms', 'resolved_prompt_snapshot_json'),
+                  ('authenticated', 'public.rooms', 'bridge_profile_json')
+                ) as protected(role_name, table_name, column_name)
+                where has_column_privilege(role_name, table_name, column_name, 'SELECT')
+              ) then raise exception 'a browser role retains direct prompt-column read access'; end if;
+              if exists (
+                select 1
+                from (values
+                  ('anon', 'public.public_character_catalog'),
+                  ('anon', 'public.public_world_catalog'),
+                  ('authenticated', 'public.public_character_catalog'),
+                  ('authenticated', 'public.public_world_catalog'),
+                  ('authenticated', 'public.owned_character_details'),
+                  ('authenticated', 'public.owned_world_details'),
+                  ('authenticated', 'public.owned_room_summaries')
+                ) as required(role_name, table_name)
+                where not has_table_privilege(role_name, table_name, 'SELECT')
+              ) then raise exception 'a required safe read view is not selectable'; end if;
+              if exists (
+                select 1
+                from (values
+                  ('public.owned_character_details'),
+                  ('public.owned_world_details'),
+                  ('public.owned_room_summaries')
+                ) as owner_views(table_name)
+                where has_table_privilege('anon', table_name, 'SELECT')
+              ) then raise exception 'anon can select an owner-only view'; end if;
+              if exists (
+                select 1
+                from information_schema.columns
+                where table_schema = 'public' and (
+                  (table_name = 'public_character_catalog' and column_name in ('profile_json', 'speech_style_json', 'prompt_profile_json'))
+                  or (table_name = 'public_world_catalog' and column_name in ('world_rules_markdown', 'prompt_profile_json'))
+                  or (table_name = 'owned_room_summaries' and column_name in ('resolved_prompt_snapshot_json', 'bridge_profile_json'))
+                )
+              ) then raise exception 'a safe view exposes a protected prompt column'; end if;
+              if exists (
+                select 1
+                from (values
+                  ('public_character_catalog'),
+                  ('public_world_catalog'),
+                  ('owned_character_details'),
+                  ('owned_world_details'),
+                  ('owned_room_summaries')
+                ) as safe_views(view_name)
+                where not exists (
+                  select 1 from pg_class c
+                  join pg_namespace n on n.oid = c.relnamespace
+                  where n.nspname = 'public' and c.relname = safe_views.view_name
+                    and coalesce(c.reloptions, array[]::text[]) @> array['security_barrier=true']
+                )
+              ) then raise exception 'a safe view is missing its security barrier'; end if;
+              if exists (
+                select 1
+                from (values
+                  ('public.characters', 'profile_json'),
+                  ('public.characters', 'speech_style_json'),
+                  ('public.characters', 'prompt_profile_json'),
+                  ('public.worlds', 'world_rules_markdown'),
+                  ('public.worlds', 'prompt_profile_json'),
+                  ('public.rooms', 'resolved_prompt_snapshot_json'),
+                  ('public.rooms', 'bridge_profile_json')
+                ) as protected(table_name, column_name)
+                where not has_column_privilege('service_role', table_name, column_name, 'SELECT')
+              ) then raise exception 'service role cannot read a required prompt column'; end if;
+            end if;
           end $$;
           rollback;
           SQL
@@ -191,6 +301,7 @@ jobs:
             'ephemeralUserCreated', 'anonCharactersInsertDenied', 'authenticatedCharactersInsertDenied',
             'anonRoomsInsertDenied', 'authenticatedRoomsInsertDenied', 'legacyQuotaMutationDenied',
             'authenticatedStorageUploadDenied', 'authenticatedQuotaReadAllowed',
+            'serviceRoleV2RpcSurfaceAllowed', 'clientV2RpcSurfaceDenied',
             'serviceRoleV2ReserveRefundAllowed', 'ephemeralUserCleanupSucceeded',
           ];
           const remotePassed = remote?.schemaVersion === 1
@@ -200,7 +311,7 @@ jobs:
             && remote?.workerVersionId === process.env.LOCKDOWN_WORKER_VERSION_ID
             && Object.keys(scenarios).length === requiredScenarios.length
             && requiredScenarios.every((name) => scenarios[name] === true);
-          const evidence = { schemaVersion: 1, target: '${{ inputs.target }}', operation: 'post-lockdown-privilege-smoke', commit: process.env.GITHUB_SHA, projectRefHash: refHash, workerVersionId: process.env.LOCKDOWN_WORKER_VERSION_ID || null, previousStableWorkerVersionId: process.env.LOCKDOWN_PREVIOUS_STABLE_VERSION_ID || null, lockdownEvidenceRunId: process.env.LOCKDOWN_EVIDENCE_RUN_ID, sqlRoleProbePassed: sqlPassed, httpGatewayProbePassed: remotePassed, gatewayScenarios: Object.fromEntries(requiredScenarios.map((name) => [name, scenarios[name] === true])), allPassed: sqlPassed && remotePassed, completedAt: new Date().toISOString() };
+          const evidence = { schemaVersion: 1, target: '${{ inputs.target }}', operation: 'post-lockdown-privilege-smoke', releaseTrack: process.env.LOCKDOWN_RELEASE_TRACK, lockdownMigration: process.env.LOCKDOWN_MIGRATION, commit: process.env.GITHUB_SHA, projectRefHash: refHash, workerVersionId: process.env.LOCKDOWN_WORKER_VERSION_ID || null, previousStableWorkerVersionId: process.env.LOCKDOWN_PREVIOUS_STABLE_VERSION_ID || null, lockdownEvidenceRunId: process.env.LOCKDOWN_EVIDENCE_RUN_ID, sqlRoleProbePassed: sqlPassed, httpGatewayProbePassed: remotePassed, gatewayScenarios: Object.fromEntries(requiredScenarios.map((name) => [name, scenarios[name] === true])), allPassed: sqlPassed && remotePassed, completedAt: new Date().toISOString() };
           fs.writeFileSync('artifacts/post-lockdown-privilege-smoke-evidence.json', `${JSON.stringify(evidence, null, 2)}\n`);
           if (!evidence.allPassed) process.exitCode = 1;
           NODE

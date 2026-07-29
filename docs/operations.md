@@ -129,7 +129,7 @@ flowchart TD
 
 | workflow | 역할 |
 | --- | --- |
-| `release-backup-readiness.yml` | expand 전 backup/PITR readiness evidence |
+| `release-backup-readiness.yml` | expand와 `prompt-privacy` lockdown 전 backup/PITR readiness evidence |
 | `release-database.yml` | 선택한 expand 또는 lockdown 한 단계만 dry-run/apply |
 | `release-worker.yml` | Worker shadow, smoke, cutover, evidence-bound rollback |
 | `release-staging-synthetic-smoke.yml` | staging v2 A/B 시나리오 검증 |
@@ -138,6 +138,8 @@ flowchart TD
 | `release-database-baseline-attestation.yml` | 제한된 production read-only baseline 경로 |
 
 Worker release는 확장 migration evidence가 기본입니다. DB/schema/data 변경이 없는 allowlisted domain/canonical 변경만 별도 승인된 read-only baseline attestation을 사용할 수 있습니다. 이 경로는 `db push`나 원격 DML을 실행하지 않으며 `AUTHORIZED_DOMAIN_RELEASE_SHA`가 현재 40자리 release commit SHA와 일치해야 합니다.
+
+DB와 Worker workflow의 `release_track`/`database_release_track`은 같은 값을 사용합니다. `backend-stabilization`과 `prompt-privacy` evidence는 서로 대체할 수 없으며, post-lockdown smoke와 observation은 선택값을 수동 입력받지 않고 적용된 lockdown evidence에서 이어받습니다.
 
 승인 환경이 보관하는 배포 자격 증명:
 
@@ -161,6 +163,12 @@ Worker release는 확장 migration evidence가 기본입니다. DB/schema/data �
 - **pre-lockdown**: 승인된 이전 v2 Worker version으로 복원
 - **post-lockdown**: lockdown evidence와 호환되는 v2 Worker version으로 복원
 - **DB 계약 변경 필요**: 권한을 후퇴시키는 down migration 대신 새 forward migration 작성
+
+`pre-lockdown`과 `post-lockdown`은 선택한 release track을 기준으로 판정합니다. `prompt-privacy`의 pre-lockdown은 backend 쓰기 권한이 이미 회수되고 safe view가 설치됐지만 raw prompt read가 아직 유지된 상태이며, post-lockdown은 raw prompt read까지 회수된 상태입니다.
+
+`prompt-privacy` lockdown은 과거 방의 초기 상황·위치·관계·월드 용어 캐시와 첫 assistant 인사 메시지도 안전한 기본값으로 교체합니다. 권한 rollback은 이 데이터를 복원하지 않으므로, `prompt-privacy:apply-lockdown`은 적용 시점부터 6시간 이내에 생성된 동일 commit·target·project의 승인된 backup evidence를 필수로 검증합니다.
+
+`backend-stabilization` read-only baseline으로 cutover한 version은 이미 post-lockdown DB에서 검증된 복원 대상입니다. 이 version을 복원할 때는 `rollback_mode: post-lockdown`과 baseline-backed cutover evidence를 사용하고 `lockdown_evidence_run_id`는 비워 둡니다. Expand-backed cutover의 post-lockdown 복원은 기존처럼 그 cutover에 결속된 lockdown evidence가 필요합니다.
 
 lockdown 후 `anon`/`authenticated`의 직접 table/Storage 쓰기 권한을 복구 수단으로 되살리지 않습니다.
 

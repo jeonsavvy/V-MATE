@@ -13,6 +13,11 @@ on:
         required: true
         type: choice
         options: [shadow, smoke, cutover, rollback]
+      database_release_track:
+        description: Database contract this Worker and its rollback evidence must match
+        required: true
+        type: choice
+        options: [backend-stabilization, prompt-privacy]
       base_url:
         description: HTTPS origin registered in the selected GitHub environment
         required: true
@@ -25,12 +30,16 @@ on:
         description: Required for smoke, cutover, and rollback; leave empty for shadow
         required: false
         type: string
+      shadow_evidence_run_id:
+        description: Required for smoke and cutover; successful current-commit shadow upload evidence for version_id
+        required: false
+        type: string
       wrangler_env:
         description: Named Wrangler environment; staging must match the approved environment variable
         required: false
         type: string
       expand_evidence_run_id:
-        description: Mutually exclusive with baseline_evidence_run_id; apply-expand database evidence for this target and commit
+        description: Mutually exclusive with baseline_evidence_run_id; apply-expand evidence for the selected database track, target, and commit
         required: false
         type: string
       baseline_evidence_run_id:
@@ -47,7 +56,7 @@ on:
         required: false
         type: string
       lockdown_evidence_run_id:
-        description: Required for post-lockdown rollback; apply-lockdown database evidence run
+        description: Required for expand-backed post-lockdown rollback; omit for a baseline-backed rollback
         required: false
         type: string
 
@@ -75,6 +84,7 @@ jobs:
       BASE_URL: ${{ inputs.base_url }}
       WORKER_NAME: ${{ inputs.worker_name }}
       INPUT_VERSION_ID: ${{ inputs.version_id }}
+      SHADOW_EVIDENCE_RUN_ID: ${{ inputs.shadow_evidence_run_id }}
       WRANGLER_ENV: ${{ inputs.wrangler_env }}
       EXPECTED_BASE_URL: ${{ vars.WORKER_BASE_URL }}
       EXPECTED_WORKER_NAME: ${{ vars.WORKER_NAME }}
@@ -87,6 +97,7 @@ jobs:
       ROLLBACK_MODE: ${{ inputs.rollback_mode }}
       ROLLBACK_EVIDENCE_RUN_ID: ${{ inputs.rollback_evidence_run_id }}
       LOCKDOWN_EVIDENCE_RUN_ID: ${{ inputs.lockdown_evidence_run_id }}
+      DATABASE_RELEASE_TRACK: ${{ inputs.database_release_track }}
       GH_TOKEN: ${{ github.token }}
       AUTHORIZED_DOMAIN_RELEASE_SHA: ${{ vars.AUTHORIZED_DOMAIN_RELEASE_SHA }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -134,7 +145,13 @@ jobs:
           if [[ '${{ inputs.operation }}' != 'shadow' ]]; then
             [[ "$INPUT_VERSION_ID" =~ ^[A-Za-z0-9_-]+$ ]] || { echo '::error::version_id is required and must be canonical'; exit 1; }
           fi
+          if [[ '${{ inputs.operation }}' == 'smoke' || '${{ inputs.operation }}' == 'cutover' ]]; then
+            [[ "$SHADOW_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::shadow_evidence_run_id is required for smoke and cutover'; exit 1; }
+          else
+            [[ -z "$SHADOW_EVIDENCE_RUN_ID" ]] || { echo '::error::shadow_evidence_run_id is only valid for smoke and cutover'; exit 1; }
+          fi
           if [[ '${{ inputs.operation }}' != 'rollback' ]]; then
+            [[ "$DATABASE_RELEASE_TRACK" == 'backend-stabilization' || "$DATABASE_RELEASE_TRACK" == 'prompt-privacy' ]] || { echo '::error::database_release_track is invalid'; exit 1; }
             [[ -z "$EXPAND_EVIDENCE_RUN_ID" || "$EXPAND_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::expand_evidence_run_id must be canonical'; exit 1; }
             [[ -z "$BASELINE_EVIDENCE_RUN_ID" || "$BASELINE_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::baseline_evidence_run_id must be canonical'; exit 1; }
             expand_set=false; baseline_set=false
@@ -142,6 +159,7 @@ jobs:
             [[ "$BASELINE_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] && baseline_set=true
             [[ "$expand_set" != "$baseline_set" ]] || { echo '::error::exactly one expand_evidence_run_id or baseline_evidence_run_id is required'; exit 1; }
             if [[ "$baseline_set" == true ]]; then
+              [[ "$DATABASE_RELEASE_TRACK" == 'backend-stabilization' ]] || { echo '::error::baseline evidence cannot satisfy the prompt-privacy track'; exit 1; }
               [[ '${{ inputs.target }}' == 'production' ]] || { echo '::error::baseline evidence is production-only'; exit 1; }
               [[ -n "$DEFAULT_BRANCH" && "$GITHUB_REF" == "refs/heads/$DEFAULT_BRANCH" ]] || { echo '::error::baseline release must run from the default branch'; exit 1; }
               [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ && "$AUTHORIZED_DOMAIN_RELEASE_SHA" =~ ^[0-9a-f]{40}$ && "$GITHUB_SHA" == "$AUTHORIZED_DOMAIN_RELEASE_SHA" ]] || { echo '::error::authorized domain release SHA guard mismatch'; exit 1; }
@@ -160,7 +178,7 @@ jobs:
             if [[ "$ROLLBACK_MODE" == 'pre-lockdown' ]]; then
               [[ -z "$LOCKDOWN_EVIDENCE_RUN_ID" ]] || { echo '::error::pre-lockdown rollback must not supply lockdown evidence'; exit 1; }
             else
-              [[ "$LOCKDOWN_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::post-lockdown rollback requires lockdown_evidence_run_id'; exit 1; }
+              [[ -z "$LOCKDOWN_EVIDENCE_RUN_ID" || "$LOCKDOWN_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::lockdown_evidence_run_id must be canonical when supplied'; exit 1; }
             fi
           fi
           [[ -n "$CLOUDFLARE_API_TOKEN" ]] || { echo '::error::Cloudflare credential is not configured for this environment'; exit 1; }
@@ -214,6 +232,10 @@ jobs:
           if (!/^[a-z0-9]{8,32}$/.test(projectRef || '')) process.exit(1);
           const refHash = crypto.createHash('sha256').update(projectRef).digest('hex');
           const baseline = /^[0-9]+$/.test(String(process.env.BASELINE_EVIDENCE_RUN_ID || ''));
+          const expectedExpandMigration = {
+            'backend-stabilization': '20260726190559_backend_stabilization_expand.sql',
+            'prompt-privacy': '20260729000000_prompt_read_views_expand.sql',
+          }[process.env.DATABASE_RELEASE_TRACK];
           const lockdownMigrationAlias = { sourceVersion: '20260727000000', remoteVersion: '20260727025134', remoteName: 'backend_stabilization_lockdown' };
           const lockdownMigrationAliasHash = crypto.createHash('sha256').update(JSON.stringify(lockdownMigrationAlias)).digest('hex');
           const valid = baseline
@@ -231,12 +253,113 @@ jobs:
             : evidence.schemaVersion === 3
               && evidence.target === '${{ inputs.target }}'
               && evidence.operation === 'apply-expand'
+              && evidence.releaseTrack === process.env.DATABASE_RELEASE_TRACK
               && evidence.commit === process.env.GITHUB_SHA
-              && evidence.migration === '20260726190559_backend_stabilization_expand.sql'
+              && evidence.migration === expectedExpandMigration
               && evidence.projectRefHash === refHash
               && Number.isFinite(Date.parse(evidence.appliedAt || ''));
           if (!valid) process.exit(1);
-          fs.appendFileSync(process.env.GITHUB_ENV, `DATABASE_EVIDENCE_MODE=${baseline ? 'baseline' : 'expand'}\nEXPAND_PROJECT_REF_HASH=${baseline ? '' : refHash}\nEXPAND_APPLIED_AT=${baseline ? '' : evidence.appliedAt}\n`);
+          fs.appendFileSync(process.env.GITHUB_ENV, `DATABASE_EVIDENCE_MODE=${baseline ? 'baseline' : 'expand'}\nEXPAND_PROJECT_REF_HASH=${baseline ? '' : refHash}\nEXPAND_APPLIED_AT=${baseline ? '' : evidence.appliedAt}\nEXPAND_MIGRATION=${baseline ? '' : evidence.migration}\n`);
+          NODE
+
+      - name: Verify current-commit shadow upload and immutable version metadata
+        if: ${{ inputs.operation == 'smoke' || inputs.operation == 'cutover' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SHADOW_VERIFY_DIR
+          SHADOW_VERIFY_DIR=$(mktemp -d "$RUNNER_TEMP/vmate-shadow-evidence-XXXXXX")
+          trap 'rm -rf -- "$SHADOW_VERIFY_DIR"' EXIT
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SHADOW_EVIDENCE_RUN_ID" > "$SHADOW_VERIFY_DIR/run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release-worker.yml" > "$SHADOW_VERIFY_DIR/workflow.json"
+          gh run download "$SHADOW_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "release-evidence-${{ inputs.target }}-$SHADOW_EVIDENCE_RUN_ID" --dir "$SHADOW_VERIFY_DIR/artifact"
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const files = [];
+          const walk = (directory) => fs.readdirSync(directory, { withFileTypes: true }).forEach((entry) => {
+            const item = path.join(directory, entry.name);
+            if (entry.isDirectory()) walk(item); else if (entry.name === 'release-evidence.json') files.push(item);
+          });
+          walk(path.join(process.env.SHADOW_VERIFY_DIR, 'artifact'));
+          if (files.length !== 1) process.exit(1);
+          const shadow = JSON.parse(fs.readFileSync(files[0], 'utf8'));
+          const run = JSON.parse(fs.readFileSync(path.join(process.env.SHADOW_VERIFY_DIR, 'run.json'), 'utf8'));
+          const workflow = JSON.parse(fs.readFileSync(path.join(process.env.SHADOW_VERIFY_DIR, 'workflow.json'), 'utf8'));
+          const expectedPath = '.github/workflows/release-worker.yml';
+          const expectedOrigin = new URL(process.env.BASE_URL).origin;
+          const refHash = crypto.createHash('sha256').update(process.env.EXPECTED_SUPABASE_PROJECT_REF).digest('hex');
+          const expectedTag = `github-${process.env.SHADOW_EVIDENCE_RUN_ID}-${run.run_attempt}`;
+          const expectedExpandMigration = {
+            'backend-stabilization': '20260726190559_backend_stabilization_expand.sql',
+            'prompt-privacy': '20260729000000_prompt_read_views_expand.sql',
+          }[process.env.DATABASE_RELEASE_TRACK];
+          const runBound = run.id === Number(process.env.SHADOW_EVIDENCE_RUN_ID)
+            && run.conclusion === 'success'
+            && run.status === 'completed'
+            && run.event === 'workflow_dispatch'
+            && run.head_sha === process.env.GITHUB_SHA
+            && run.path === expectedPath
+            && workflow.path === expectedPath
+            && run.workflow_id === workflow.id;
+          const databaseBound = shadow.databaseReleaseTrack === process.env.DATABASE_RELEASE_TRACK
+            && shadow.databaseEvidenceMode === process.env.DATABASE_EVIDENCE_MODE
+            && (process.env.DATABASE_EVIDENCE_MODE === 'expand'
+              ? shadow.expandEvidenceRunId === process.env.EXPAND_EVIDENCE_RUN_ID
+                && shadow.baselineEvidenceRunId === null
+                && shadow.expandMigration === expectedExpandMigration
+                && shadow.expandProjectRefHash === refHash
+              : process.env.DATABASE_EVIDENCE_MODE === 'baseline'
+                && shadow.baselineEvidenceRunId === process.env.BASELINE_EVIDENCE_RUN_ID
+                && !shadow.expandEvidenceRunId
+                && shadow.expandMigration === null
+              : false);
+          const evidenceBound = shadow.schemaVersion === 3
+            && shadow.target === '${{ inputs.target }}'
+            && shadow.operation === 'shadow'
+            && shadow.commit === process.env.GITHUB_SHA
+            && shadow.workerName === process.env.WORKER_NAME
+            && shadow.baseUrl === expectedOrigin
+            && shadow.projectRefHash === refHash
+            && shadow.versionId === process.env.INPUT_VERSION_ID
+            && shadow.shadowEvidenceRunId === process.env.SHADOW_EVIDENCE_RUN_ID
+            && shadow.shadowRunAttempt === run.run_attempt
+            && shadow.versionTag === expectedTag
+            && shadow.versionMessage === process.env.GITHUB_SHA
+            && /^[a-f0-9]{64}$/.test(String(shadow.versionMetadataHash || ''))
+            && Number.isFinite(Date.parse(shadow.versionCreatedAt || ''))
+            && shadow.smokePassed === true;
+          if (!runBound || !databaseBound || !evidenceBound) process.exit(1);
+          fs.writeFileSync(path.join(process.env.SHADOW_VERIFY_DIR, 'bound.json'), JSON.stringify({
+            runAttempt: run.run_attempt,
+            versionTag: shadow.versionTag,
+            versionMessage: shadow.versionMessage,
+            versionCreatedAt: shadow.versionCreatedAt,
+            versionMetadataHash: shadow.versionMetadataHash,
+          }));
+          NODE
+          args=(--env ""); if [[ -n "$WRANGLER_ENV" ]]; then args=(--env "$WRANGLER_ENV"); fi
+          npx --no-install wrangler versions view "$INPUT_VERSION_ID" "${args[@]}" --name "$WORKER_NAME" --json > "$SHADOW_VERIFY_DIR/live-version.json"
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const canonicalize = (value) => Array.isArray(value)
+            ? value.map(canonicalize)
+            : value && typeof value === 'object'
+              ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalize(value[key])]))
+              : value;
+          const bound = JSON.parse(fs.readFileSync(path.join(process.env.SHADOW_VERIFY_DIR, 'bound.json'), 'utf8'));
+          const live = JSON.parse(fs.readFileSync(path.join(process.env.SHADOW_VERIFY_DIR, 'live-version.json'), 'utf8'));
+          const liveHash = crypto.createHash('sha256').update(JSON.stringify(canonicalize(live))).digest('hex');
+          const valid = live.id === process.env.INPUT_VERSION_ID
+            && live.annotations?.['workers/tag'] === bound.versionTag
+            && live.annotations?.['workers/message'] === bound.versionMessage
+            && live.metadata?.created_on === bound.versionCreatedAt
+            && liveHash === bound.versionMetadataHash;
+          if (!valid) process.exit(1);
+          fs.appendFileSync(process.env.GITHUB_ENV, `VERIFIED_SHADOW_RUN_ATTEMPT=${bound.runAttempt}\nVERSION_TAG=${bound.versionTag}\nVERSION_MESSAGE=${bound.versionMessage}\nVERSION_CREATED_AT=${bound.versionCreatedAt}\nVERSION_METADATA_HASH=${bound.versionMetadataHash}\n`);
           NODE
 
       - name: Verify evidence-bound manual rollback target
@@ -245,8 +368,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p artifacts/rollback-evidence
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ROLLBACK_EVIDENCE_RUN_ID" > artifacts/rollback-evidence/release-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release-worker.yml" > artifacts/rollback-evidence/release-workflow.json
           gh run download "$ROLLBACK_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "release-evidence-${{ inputs.target }}-$ROLLBACK_EVIDENCE_RUN_ID" --dir artifacts/rollback-evidence/release
-          if [[ "$ROLLBACK_MODE" == 'post-lockdown' ]]; then
+          if [[ "$ROLLBACK_MODE" == 'post-lockdown' && "$LOCKDOWN_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]]; then
             gh run download "$LOCKDOWN_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "database-release-evidence-${{ inputs.target }}-$LOCKDOWN_EVIDENCE_RUN_ID" --dir artifacts/rollback-evidence/lockdown
           fi
           node <<'NODE'
@@ -264,13 +389,55 @@ jobs:
             return JSON.parse(fs.readFileSync(files[0], 'utf8'));
           };
           const release = findOne('artifacts/rollback-evidence/release', 'release-evidence.json');
+          const run = JSON.parse(fs.readFileSync('artifacts/rollback-evidence/release-run.json', 'utf8'));
+          const workflow = JSON.parse(fs.readFileSync('artifacts/rollback-evidence/release-workflow.json', 'utf8'));
           const refHash = crypto.createHash('sha256').update(process.env.EXPECTED_SUPABASE_PROJECT_REF).digest('hex');
           const expectedOrigin = new URL(process.env.BASE_URL).origin;
-          const successfulCutover = release.schemaVersion === 2
+          const expectedExpandMigration = {
+            'backend-stabilization': '20260726190559_backend_stabilization_expand.sql',
+            'prompt-privacy': '20260729000000_prompt_read_views_expand.sql',
+          }[process.env.DATABASE_RELEASE_TRACK];
+          const expectedLockdownMigration = {
+            'backend-stabilization': '20260727000000_backend_stabilization_lockdown.sql',
+            'prompt-privacy': '20260729010000_private_prompt_reads_lockdown.sql',
+          }[process.env.DATABASE_RELEASE_TRACK];
+          const expandBacked = release.databaseEvidenceMode === 'expand';
+          const baselineBacked = release.databaseEvidenceMode === 'baseline';
+          const matchingDatabaseEvidence = release.databaseReleaseTrack === process.env.DATABASE_RELEASE_TRACK
+            && (expandBacked
+              ? release.expandMigration === expectedExpandMigration
+                && /^[0-9]+$/.test(String(release.expandEvidenceRunId || ''))
+                && release.baselineEvidenceRunId === null
+              : baselineBacked
+                && process.env.DATABASE_RELEASE_TRACK === 'backend-stabilization'
+                && release.expandMigration === null
+                && !release.expandEvidenceRunId
+                && /^[0-9]+$/.test(String(release.baselineEvidenceRunId || ''))
+              : false);
+          const expectedWorkflowPath = '.github/workflows/release-worker.yml';
+          const runBound = run.id === Number(process.env.ROLLBACK_EVIDENCE_RUN_ID)
+            && run.conclusion === 'success'
+            && run.status === 'completed'
+            && run.event === 'workflow_dispatch'
+            && run.head_sha === process.env.GITHUB_SHA
+            && run.path === expectedWorkflowPath
+            && workflow.path === expectedWorkflowPath
+            && run.workflow_id === workflow.id;
+          const immutableVersionBound = /^[0-9]+$/.test(String(release.shadowEvidenceRunId || ''))
+            && Number.isInteger(release.shadowRunAttempt)
+            && release.shadowRunAttempt >= 1
+            && release.versionTag === `github-${release.shadowEvidenceRunId}-${release.shadowRunAttempt}`
+            && release.versionMessage === process.env.GITHUB_SHA
+            && Number.isFinite(Date.parse(release.versionCreatedAt || ''))
+            && /^[a-f0-9]{64}$/.test(String(release.versionMetadataHash || ''));
+          const successfulCutover = runBound
+            && immutableVersionBound
+            && release.schemaVersion === 3
             && release.target === '${{ inputs.target }}'
             && release.operation === 'cutover'
             && release.commit === process.env.GITHUB_SHA
             && release.projectRefHash === refHash
+            && matchingDatabaseEvidence
             && release.workerName === process.env.WORKER_NAME
             && release.baseUrl === expectedOrigin
             && release.smokePassed === true
@@ -279,12 +446,20 @@ jobs:
             && release.observabilityPassed === true;
           if (!successfulCutover) process.exit(1);
           if (process.env.ROLLBACK_MODE === 'pre-lockdown') {
-            if (release.previousStableVersionId !== process.env.INPUT_VERSION_ID) process.exit(1);
+            if (baselineBacked || process.env.LOCKDOWN_EVIDENCE_RUN_ID || release.previousStableVersionId !== process.env.INPUT_VERSION_ID) process.exit(1);
+          } else if (baselineBacked) {
+            const validBaselineRollback = !process.env.LOCKDOWN_EVIDENCE_RUN_ID
+              && release.v2Compatible === true
+              && release.versionId === process.env.INPUT_VERSION_ID;
+            if (!validBaselineRollback) process.exit(1);
           } else {
+            if (!/^[0-9]+$/.test(String(process.env.LOCKDOWN_EVIDENCE_RUN_ID || ''))) process.exit(1);
             const lockdown = findOne('artifacts/rollback-evidence/lockdown', 'database-release-evidence.json');
             const validLockdown = lockdown.schemaVersion === 3
               && lockdown.target === '${{ inputs.target }}'
               && lockdown.operation === 'apply-lockdown'
+              && lockdown.releaseTrack === process.env.DATABASE_RELEASE_TRACK
+              && lockdown.migration === expectedLockdownMigration
               && lockdown.commit === process.env.GITHUB_SHA
               && lockdown.projectRefHash === refHash
               && lockdown.workerVersionId === release.versionId
@@ -306,7 +481,7 @@ jobs:
           mkdir -p "$workdir/supabase"
           cp supabase/config.toml "$workdir/supabase/config.toml"
           npx --no-install supabase link --workdir "$workdir" --project-ref "$EXPECTED_SUPABASE_PROJECT_REF" > /dev/null
-          printf "begin;\nselect set_config('vmate.rollback_mode', '%s', true);\n" "$ROLLBACK_MODE" > "$workdir/rollback-state.sql"
+          printf "begin;\nselect set_config('vmate.rollback_mode', '%s', true);\nselect set_config('vmate.release_track', '%s', true);\n" "$ROLLBACK_MODE" "$DATABASE_RELEASE_TRACK" > "$workdir/rollback-state.sql"
           cat >> "$workdir/rollback-state.sql" <<'SQL'
           do $$
           declare
@@ -315,6 +490,14 @@ jobs:
             api_direct_write_grant_count integer;
             storage_write_policy_count integer;
             service_v2_contract boolean;
+            client_v2_rpc_grant_count integer;
+            raw_prompt_read_grant_count integer;
+            safe_view_count integer;
+            safe_view_grant_count integer;
+            anon_owner_view_grant_count integer;
+            safe_view_security_barrier_count integer;
+            safe_view_protected_column_count integer;
+            safe_view_projection_mismatch_count integer;
           begin
             select count(*) into legacy_client_rpc_grant_count
             from (values
@@ -344,17 +527,179 @@ jobs:
               );
             service_v2_contract :=
               has_function_privilege('service_role', 'public.reserve_chat_message_v2(uuid,text,uuid,text,text,integer,integer)', 'EXECUTE')
-              and has_function_privilege('service_role', 'public.commit_room_turn_v2(uuid,uuid,text,text,bigint,jsonb,jsonb,jsonb,jsonb,jsonb)', 'EXECUTE');
-            if current_setting('vmate.rollback_mode', true) = 'pre-lockdown' then
-              if legacy_client_rpc_grant_count <> 3 or authenticated_direct_write_grant_count = 0 or storage_write_policy_count <> 3 or not service_v2_contract then
+              and has_function_privilege('service_role', 'public.complete_legacy_chat_message_v2(uuid,text,text,jsonb)', 'EXECUTE')
+              and has_function_privilege('service_role', 'public.refund_chat_message_v2(uuid,text,text,integer)', 'EXECUTE')
+              and has_function_privilege('service_role', 'public.create_room_v2(uuid,text,text,text,text,jsonb,jsonb,jsonb,jsonb)', 'EXECUTE')
+              and has_function_privilege('service_role', 'public.commit_room_turn_v2(uuid,uuid,text,text,bigint,jsonb,jsonb,jsonb,jsonb,jsonb)', 'EXECUTE')
+              and has_function_privilege('service_role', 'public.reconcile_expired_chat_reservations_v2(integer)', 'EXECUTE');
+            select count(*) into client_v2_rpc_grant_count
+            from unnest(array['anon', 'authenticated']) as roles(role_name)
+            cross join unnest(array[
+              'public.reserve_chat_message_v2(uuid,text,uuid,text,text,integer,integer)',
+              'public.complete_legacy_chat_message_v2(uuid,text,text,jsonb)',
+              'public.refund_chat_message_v2(uuid,text,text,integer)',
+              'public.create_room_v2(uuid,text,text,text,text,jsonb,jsonb,jsonb,jsonb)',
+              'public.commit_room_turn_v2(uuid,uuid,text,text,bigint,jsonb,jsonb,jsonb,jsonb,jsonb)',
+              'public.reconcile_expired_chat_reservations_v2(integer)'
+            ]) as functions(signature)
+            where has_function_privilege(role_name, signature, 'EXECUTE');
+            select count(*) into raw_prompt_read_grant_count
+            from (values
+              (has_column_privilege('anon', 'public.characters', 'profile_json', 'SELECT')),
+              (has_column_privilege('anon', 'public.characters', 'speech_style_json', 'SELECT')),
+              (has_column_privilege('anon', 'public.characters', 'prompt_profile_json', 'SELECT')),
+              (has_column_privilege('authenticated', 'public.characters', 'profile_json', 'SELECT')),
+              (has_column_privilege('authenticated', 'public.characters', 'speech_style_json', 'SELECT')),
+              (has_column_privilege('authenticated', 'public.characters', 'prompt_profile_json', 'SELECT')),
+              (has_column_privilege('anon', 'public.worlds', 'world_rules_markdown', 'SELECT')),
+              (has_column_privilege('anon', 'public.worlds', 'prompt_profile_json', 'SELECT')),
+              (has_column_privilege('authenticated', 'public.worlds', 'world_rules_markdown', 'SELECT')),
+              (has_column_privilege('authenticated', 'public.worlds', 'prompt_profile_json', 'SELECT')),
+              (has_column_privilege('authenticated', 'public.rooms', 'resolved_prompt_snapshot_json', 'SELECT')),
+              (has_column_privilege('authenticated', 'public.rooms', 'bridge_profile_json', 'SELECT'))
+            ) as grants(allowed)
+            where allowed;
+            select count(*) into safe_view_count
+            from information_schema.views
+            where table_schema = 'public' and table_name in (
+              'public_character_catalog', 'public_world_catalog', 'owned_character_details',
+              'owned_world_details', 'owned_room_summaries'
+            );
+            select count(*) into safe_view_grant_count
+            from (values
+              (has_table_privilege('anon', to_regclass('public.public_character_catalog'), 'SELECT')),
+              (has_table_privilege('anon', to_regclass('public.public_world_catalog'), 'SELECT')),
+              (has_table_privilege('authenticated', to_regclass('public.public_character_catalog'), 'SELECT')),
+              (has_table_privilege('authenticated', to_regclass('public.public_world_catalog'), 'SELECT')),
+              (has_table_privilege('authenticated', to_regclass('public.owned_character_details'), 'SELECT')),
+              (has_table_privilege('authenticated', to_regclass('public.owned_world_details'), 'SELECT')),
+              (has_table_privilege('authenticated', to_regclass('public.owned_room_summaries'), 'SELECT'))
+            ) as grants(allowed)
+            where allowed;
+            select count(*) into anon_owner_view_grant_count
+            from (values
+              (has_table_privilege('anon', to_regclass('public.owned_character_details'), 'SELECT')),
+              (has_table_privilege('anon', to_regclass('public.owned_world_details'), 'SELECT')),
+              (has_table_privilege('anon', to_regclass('public.owned_room_summaries'), 'SELECT'))
+            ) as grants(allowed)
+            where allowed;
+            select count(*) into safe_view_security_barrier_count
+            from pg_class relation
+            join pg_namespace namespace on namespace.oid = relation.relnamespace
+            where namespace.nspname = 'public'
+              and relation.relname in (
+                'public_character_catalog', 'public_world_catalog', 'owned_character_details',
+                'owned_world_details', 'owned_room_summaries'
+              )
+              and coalesce(relation.reloptions, array[]::text[]) @> array['security_barrier=true'];
+            select count(*) into safe_view_protected_column_count
+            from information_schema.columns
+            where table_schema = 'public' and (
+              (table_name = 'public_character_catalog' and column_name in ('profile_json', 'speech_style_json', 'prompt_profile_json'))
+              or (table_name = 'public_world_catalog' and column_name in ('world_rules_markdown', 'prompt_profile_json'))
+              or (table_name = 'owned_room_summaries' and column_name in ('resolved_prompt_snapshot_json', 'bridge_profile_json'))
+            );
+            with expected(table_name, column_name) as (values
+              ('public_character_catalog', 'id'),
+              ('public_character_catalog', 'owner_user_id'),
+              ('public_character_catalog', 'slug'),
+              ('public_character_catalog', 'name'),
+              ('public_character_catalog', 'headline'),
+              ('public_character_catalog', 'summary'),
+              ('public_character_catalog', 'cover_image_url'),
+              ('public_character_catalog', 'avatar_image_url'),
+              ('public_character_catalog', 'visibility'),
+              ('public_character_catalog', 'display_status'),
+              ('public_character_catalog', 'source_type'),
+              ('public_character_catalog', 'source_url'),
+              ('public_character_catalog', 'tags'),
+              ('public_character_catalog', 'favorite_count'),
+              ('public_character_catalog', 'chat_start_count'),
+              ('public_character_catalog', 'rights_attested_at'),
+              ('public_character_catalog', 'published_at'),
+              ('public_character_catalog', 'created_at'),
+              ('public_character_catalog', 'updated_at'),
+              ('public_character_catalog', 'creator_name'),
+              ('public_character_catalog', 'personality'),
+              ('public_character_catalog', 'voice'),
+              ('public_character_catalog', 'relationship'),
+              ('public_character_catalog', 'hero_image_url'),
+              ('public_character_catalog', 'image_slots'),
+              ('public_character_catalog', 'search_text'),
+              ('public_world_catalog', 'id'),
+              ('public_world_catalog', 'owner_user_id'),
+              ('public_world_catalog', 'slug'),
+              ('public_world_catalog', 'name'),
+              ('public_world_catalog', 'headline'),
+              ('public_world_catalog', 'summary'),
+              ('public_world_catalog', 'cover_image_url'),
+              ('public_world_catalog', 'visibility'),
+              ('public_world_catalog', 'display_status'),
+              ('public_world_catalog', 'source_type'),
+              ('public_world_catalog', 'source_url'),
+              ('public_world_catalog', 'tags'),
+              ('public_world_catalog', 'favorite_count'),
+              ('public_world_catalog', 'chat_start_count'),
+              ('public_world_catalog', 'rights_attested_at'),
+              ('public_world_catalog', 'published_at'),
+              ('public_world_catalog', 'created_at'),
+              ('public_world_catalog', 'updated_at'),
+              ('public_world_catalog', 'creator_name'),
+              ('public_world_catalog', 'image_slots'),
+              ('public_world_catalog', 'search_text'),
+              ('owned_room_summaries', 'id'),
+              ('owned_room_summaries', 'user_id'),
+              ('owned_room_summaries', 'character_id'),
+              ('owned_room_summaries', 'world_id'),
+              ('owned_room_summaries', 'user_alias'),
+              ('owned_room_summaries', 'title'),
+              ('owned_room_summaries', 'last_message_at'),
+              ('owned_room_summaries', 'created_at'),
+              ('owned_room_summaries', 'updated_at'),
+              ('owned_room_summaries', 'version')
+            ), actual as (
+              select table_name::text, column_name::text
+              from information_schema.columns
+              where table_schema = 'public'
+                and table_name in ('public_character_catalog', 'public_world_catalog', 'owned_room_summaries')
+            )
+            select count(*) into safe_view_projection_mismatch_count
+            from (
+              (select * from expected except select * from actual)
+              union all
+              (select * from actual except select * from expected)
+            ) projection_differences;
+            if current_setting('vmate.release_track', true) = 'backend-stabilization'
+              and current_setting('vmate.rollback_mode', true) = 'pre-lockdown' then
+              if legacy_client_rpc_grant_count <> 3 or authenticated_direct_write_grant_count <> 21 or api_direct_write_grant_count <> 42
+                or storage_write_policy_count <> 3 or not service_v2_contract or client_v2_rpc_grant_count <> 0
+                or raw_prompt_read_grant_count <> 12 then
                 raise exception 'rollback phase does not match the approved pre-lockdown contract';
               end if;
-            elsif current_setting('vmate.rollback_mode', true) = 'post-lockdown' then
-              if legacy_client_rpc_grant_count <> 0 or api_direct_write_grant_count <> 0 or storage_write_policy_count <> 0 or not service_v2_contract then
+            elsif current_setting('vmate.release_track', true) = 'backend-stabilization'
+              and current_setting('vmate.rollback_mode', true) = 'post-lockdown' then
+              if legacy_client_rpc_grant_count <> 0 or api_direct_write_grant_count <> 0 or storage_write_policy_count <> 0
+                or not service_v2_contract or client_v2_rpc_grant_count <> 0 or raw_prompt_read_grant_count <> 12 then
                 raise exception 'rollback phase does not match the approved post-lockdown contract';
               end if;
+            elsif current_setting('vmate.release_track', true) = 'prompt-privacy'
+              and current_setting('vmate.rollback_mode', true) = 'pre-lockdown' then
+              if legacy_client_rpc_grant_count <> 0 or api_direct_write_grant_count <> 0 or storage_write_policy_count <> 0 or not service_v2_contract
+                or client_v2_rpc_grant_count <> 0
+                or raw_prompt_read_grant_count <> 12 or safe_view_count <> 5 or safe_view_grant_count <> 7 or anon_owner_view_grant_count <> 0
+                or safe_view_security_barrier_count <> 5 or safe_view_protected_column_count <> 0 or safe_view_projection_mismatch_count <> 0 then
+                raise exception 'rollback phase does not match the approved prompt pre-lockdown contract';
+              end if;
+            elsif current_setting('vmate.release_track', true) = 'prompt-privacy'
+              and current_setting('vmate.rollback_mode', true) = 'post-lockdown' then
+              if legacy_client_rpc_grant_count <> 0 or api_direct_write_grant_count <> 0 or storage_write_policy_count <> 0 or not service_v2_contract
+                or client_v2_rpc_grant_count <> 0
+                or raw_prompt_read_grant_count <> 0 or safe_view_count <> 5 or safe_view_grant_count <> 7 or anon_owner_view_grant_count <> 0
+                or safe_view_security_barrier_count <> 5 or safe_view_protected_column_count <> 0 or safe_view_projection_mismatch_count <> 0 then
+                raise exception 'rollback phase does not match the approved prompt post-lockdown contract';
+              end if;
             else
-              raise exception 'unsupported rollback mode';
+              raise exception 'unsupported release track or rollback mode';
             end if;
           end $$;
           rollback;
@@ -432,6 +777,28 @@ jobs:
           NODE
           )
           [[ -n "$version_id" ]] || { echo '::error::Could not determine the exact uploaded Worker version'; exit 1; }
+          version_metadata_file="$RUNNER_TEMP/vmate-shadow-version-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
+          npx --no-install wrangler versions view "$version_id" "${args[@]}" --name "$WORKER_NAME" --json > "$version_metadata_file"
+          node - "$version_metadata_file" "$version_id" "$version_tag" <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const [metadataPath, versionId, versionTag] = process.argv.slice(2);
+          const canonicalize = (value) => Array.isArray(value)
+            ? value.map(canonicalize)
+            : value && typeof value === 'object'
+              ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalize(value[key])]))
+              : value;
+          const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+          const createdAt = metadata.metadata?.created_on;
+          const valid = metadata.id === versionId
+            && metadata.annotations?.['workers/tag'] === versionTag
+            && metadata.annotations?.['workers/message'] === process.env.GITHUB_SHA
+            && Number.isFinite(Date.parse(createdAt || ''));
+          if (!valid) process.exit(1);
+          const metadataHash = crypto.createHash('sha256').update(JSON.stringify(canonicalize(metadata))).digest('hex');
+          fs.appendFileSync(process.env.GITHUB_ENV, `VERSION_TAG=${versionTag}\nVERSION_MESSAGE=${process.env.GITHUB_SHA}\nVERSION_CREATED_AT=${createdAt}\nVERSION_METADATA_HASH=${metadataHash}\n`);
+          NODE
+          rm -f -- "$version_metadata_file"
           npx --no-install wrangler versions deploy "${args[@]}" --name "$WORKER_NAME" "$stable_version_id@100%" "$version_id@0%" --dry-run --yes
           npx --no-install wrangler versions deploy "${args[@]}" --name "$WORKER_NAME" "$stable_version_id@100%" "$version_id@0%" --yes
           echo "version_id=$version_id" >> "$GITHUB_OUTPUT"
@@ -576,20 +943,36 @@ jobs:
             ? JSON.parse(fs.readFileSync('artifacts/observability.json', 'utf8'))
             : null;
           const evidence = {
-            schemaVersion: 2,
+            schemaVersion: 3,
             target: '${{ inputs.target }}',
             operation,
             commit: process.env.GITHUB_SHA,
             workerName: process.env.WORKER_NAME,
             baseUrl: new URL(process.env.BASE_URL).origin,
             versionId,
+            shadowEvidenceRunId: operation === 'shadow'
+              ? process.env.GITHUB_RUN_ID
+              : operation === 'smoke' || operation === 'cutover'
+                ? process.env.SHADOW_EVIDENCE_RUN_ID
+                : null,
+            shadowRunAttempt: operation === 'shadow'
+              ? Number(process.env.GITHUB_RUN_ATTEMPT)
+              : operation === 'smoke' || operation === 'cutover'
+                ? Number(process.env.VERIFIED_SHADOW_RUN_ATTEMPT)
+                : null,
+            versionTag: operation === 'rollback' ? null : process.env.VERSION_TAG || null,
+            versionMessage: operation === 'rollback' ? null : process.env.VERSION_MESSAGE || null,
+            versionCreatedAt: operation === 'rollback' ? null : process.env.VERSION_CREATED_AT || null,
+            versionMetadataHash: operation === 'rollback' ? null : process.env.VERSION_METADATA_HASH || null,
             projectRefHash: crypto.createHash('sha256').update(process.env.EXPECTED_SUPABASE_PROJECT_REF).digest('hex'),
             databaseEvidenceMode: operation === 'rollback' ? null : process.env.DATABASE_EVIDENCE_MODE || null,
+            databaseReleaseTrack: process.env.DATABASE_RELEASE_TRACK,
             baselineEvidenceRunId: operation === 'rollback' ? null : (/^[0-9]+$/.test(String(process.env.BASELINE_EVIDENCE_RUN_ID || '')) ? process.env.BASELINE_EVIDENCE_RUN_ID : null),
-            v2Compatible: operation === 'cutover' && /^[0-9]+$/.test(String(process.env.EXPAND_EVIDENCE_RUN_ID || '')),
+            v2Compatible: operation === 'cutover' && (process.env.DATABASE_EVIDENCE_MODE === 'expand' || process.env.DATABASE_EVIDENCE_MODE === 'baseline'),
             expandEvidenceRunId: operation === 'rollback' ? null : process.env.EXPAND_EVIDENCE_RUN_ID,
             expandProjectRefHash: operation === 'rollback' ? null : process.env.EXPAND_PROJECT_REF_HASH,
             expandAppliedAt: operation === 'rollback' ? null : process.env.EXPAND_APPLIED_AT,
+            expandMigration: operation === 'rollback' ? null : process.env.EXPAND_MIGRATION || null,
             previousStableVersionId: process.env.PREVIOUS_STABLE_VERSION_ID || process.env.STABLE_VERSION_ID || null,
             rollbackMode: operation === 'rollback' ? process.env.ROLLBACK_MODE : null,
             rollbackEvidenceRunId: operation === 'rollback' ? process.env.ROLLBACK_SOURCE_EVIDENCE_RUN_ID : null,
@@ -604,6 +987,16 @@ jobs:
             observabilityWindow: observability?.window || null,
             baselineWindow: observability?.baselineWindow || null,
           };
+          if (operation !== 'rollback') {
+            const immutableVersionBound = /^[0-9]+$/.test(String(evidence.shadowEvidenceRunId || ''))
+              && Number.isInteger(evidence.shadowRunAttempt)
+              && evidence.shadowRunAttempt >= 1
+              && evidence.versionTag === `github-${evidence.shadowEvidenceRunId}-${evidence.shadowRunAttempt}`
+              && evidence.versionMessage === process.env.GITHUB_SHA
+              && Number.isFinite(Date.parse(evidence.versionCreatedAt || ''))
+              && /^[a-f0-9]{64}$/.test(String(evidence.versionMetadataHash || ''));
+            if (!immutableVersionBound) throw new Error('Immutable Worker version evidence is incomplete.');
+          }
           fs.writeFileSync('artifacts/release-evidence.json', `${JSON.stringify(evidence, null, 2)}\n`);
           NODE
 

@@ -19,8 +19,13 @@ on:
         description: Zero-traffic Worker version to exercise through an override
         required: true
         type: string
+      release_track:
+        description: Database contract whose expand evidence the Worker must match
+        required: true
+        type: choice
+        options: [backend-stabilization, prompt-privacy]
       expand_evidence_run_id:
-        description: apply-expand evidence run for this staging commit
+        description: apply-expand evidence run for the selected track and staging commit
         required: true
         type: string
 
@@ -44,6 +49,7 @@ jobs:
       BASE_URL: ${{ inputs.base_url }}
       WORKER_NAME: ${{ inputs.worker_name }}
       WORKER_VERSION_ID: ${{ inputs.worker_version_id }}
+      RELEASE_TRACK: ${{ inputs.release_track }}
       EXPAND_EVIDENCE_RUN_ID: ${{ inputs.expand_evidence_run_id }}
       EXPECTED_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
       PRODUCTION_PROJECT_REF: ${{ vars.PRODUCTION_SUPABASE_PROJECT_REF }}
@@ -98,7 +104,20 @@ jobs:
           if (files.length !== 1) process.exit(1);
           const value = JSON.parse(fs.readFileSync(files[0], 'utf8'));
           const projectRefHash = crypto.createHash('sha256').update(process.env.PROJECT_REF).digest('hex');
-          if (!(value.schemaVersion === 3 && value.target === 'staging' && value.operation === 'apply-expand' && value.commit === process.env.GITHUB_SHA && value.migration === '20260726190559_backend_stabilization_expand.sql' && value.projectRefHash === projectRefHash)) process.exit(1);
+          const expectedMigration = {
+            'backend-stabilization': '20260726190559_backend_stabilization_expand.sql',
+            'prompt-privacy': '20260729000000_prompt_read_views_expand.sql',
+          }[process.env.RELEASE_TRACK];
+          const valid = value.schemaVersion === 3
+            && value.target === 'staging'
+            && value.operation === 'apply-expand'
+            && Boolean(expectedMigration)
+            && value.releaseTrack === process.env.RELEASE_TRACK
+            && value.commit === process.env.GITHUB_SHA
+            && value.migration === expectedMigration
+            && value.projectRefHash === projectRefHash;
+          if (!valid) process.exit(1);
+          fs.appendFileSync(process.env.GITHUB_ENV, `EXPAND_MIGRATION=${value.migration}\n`);
           NODE
 
       - name: Prove selected Worker remains at zero traffic
@@ -138,7 +157,7 @@ jobs:
             && result?.targets?.workerNameHash === hash(process.env.WORKER_NAME)
             && result?.targets?.versionId === process.env.WORKER_VERSION_ID;
           const allPassed = bound && scenarioValues.length >= 20 && scenarioValues.every((value) => value === true) && result?.allPassed === true;
-          const evidence = { schemaVersion: 1, target: 'staging', operation: 'synthetic-smoke', commit: process.env.GITHUB_SHA, projectRefHash: hash(process.env.PROJECT_REF), workerVersionId: process.env.WORKER_VERSION_ID, allPassed, scenarios: bound ? result.scenarios : {}, scriptEvidenceHash: scriptEvidence ? hash(scriptEvidence) : null, completedAt: new Date().toISOString() };
+          const evidence = { schemaVersion: 1, target: 'staging', operation: 'synthetic-smoke', releaseTrack: process.env.RELEASE_TRACK, expandMigration: process.env.EXPAND_MIGRATION, expandEvidenceRunId: process.env.EXPAND_EVIDENCE_RUN_ID, commit: process.env.GITHUB_SHA, projectRefHash: hash(process.env.PROJECT_REF), workerVersionId: process.env.WORKER_VERSION_ID, allPassed, scenarios: bound ? result.scenarios : {}, scriptEvidenceHash: scriptEvidence ? hash(scriptEvidence) : null, completedAt: new Date().toISOString() };
           fs.writeFileSync('artifacts/synthetic-smoke-evidence.json', `${JSON.stringify(evidence, null, 2)}\n`);
           if (!allPassed) process.exitCode = 1;
           NODE
