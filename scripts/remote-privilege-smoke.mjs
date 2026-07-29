@@ -32,14 +32,22 @@ export const rpcSurfaceMatchesPrivilegeContract = ({ anonRpcSurface, authenticat
 
 export const createTemporaryPassword = () => randomBytes(32).toString('base64url')
 
-const fetchRpcSurface = async (rest, roleHeaders) => {
+export const resolveRpcSurfaceResponse = ({ ok, status, body }, { deniedMeansEmpty = false } = {}) => {
+  if (!ok) {
+    if (deniedMeansEmpty && isDeniedStatus(status)) return new Set()
+    throw new Error('RPC_SURFACE_UNAVAILABLE')
+  }
+  if (!body?.paths || typeof body.paths !== 'object' || Array.isArray(body.paths)) {
+    throw new Error('RPC_SURFACE_UNAVAILABLE')
+  }
+  return new Set(Object.keys(body.paths))
+}
+
+const fetchRpcSurface = async (rest, roleHeaders, options) => {
   const response = await fetchJson(`${rest}/`, {
     headers: { ...roleHeaders, Accept: 'application/openapi+json' },
   })
-  if (!response.ok || !response.body?.paths || typeof response.body.paths !== 'object') {
-    throw new Error('RPC_SURFACE_UNAVAILABLE')
-  }
-  return new Set(Object.keys(response.body.paths))
+  return resolveRpcSurfaceResponse(response, options)
 }
 
 const writeArtifact = async (output, artifact) => {
@@ -95,8 +103,8 @@ export const runRemotePrivilegeSmoke = async (config) => {
     const authenticated = headers(process.env.SUPABASE_ANON_KEY, user.accessToken)
     const service = headers(process.env.SUPABASE_SERVICE_ROLE_KEY)
     const [anonRpcSurface, authenticatedRpcSurface, serviceRpcSurface] = await Promise.all([
-      fetchRpcSurface(rest, anon),
-      fetchRpcSurface(rest, authenticated),
+      fetchRpcSurface(rest, anon, { deniedMeansEmpty: true }),
+      fetchRpcSurface(rest, authenticated, { deniedMeansEmpty: true }),
       fetchRpcSurface(rest, service),
     ])
     const rpcSurfaceContract = rpcSurfaceMatchesPrivilegeContract({ anonRpcSurface, authenticatedRpcSurface, serviceRpcSurface })

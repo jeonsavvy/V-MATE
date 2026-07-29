@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import { buildArtifact, hashProjectRef, isDeniedStatus, isStorageWriteDeniedStatus, parseArguments, validateRemoteConfig } from '../scripts/remote-privilege-smoke-contracts.mjs'
-import { createTemporaryPassword, runRemotePrivilegeSmoke, V2_RPC_NAMES, rpcSurfaceMatchesPrivilegeContract } from '../scripts/remote-privilege-smoke.mjs'
+import { createTemporaryPassword, resolveRpcSurfaceResponse, runRemotePrivilegeSmoke, V2_RPC_NAMES, rpcSurfaceMatchesPrivilegeContract } from '../scripts/remote-privilege-smoke.mjs'
 
 const env = {
   SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co', SUPABASE_ANON_KEY: 'anon-test-key', SUPABASE_SERVICE_ROLE_KEY: 'service-test-key', PRODUCTION_SUPABASE_PROJECT_REF: 'zyxwvutsrqponmlkjihg',
@@ -69,6 +69,25 @@ test('remote probe temporary password stays below the bcrypt byte limit', () => 
   assert.match(password, /^[A-Za-z0-9_-]{43}$/)
   assert.equal(Buffer.byteLength(password, 'utf8'), 43)
   assert.ok(Buffer.byteLength(password, 'utf8') < 72)
+})
+
+test('remote probe accepts a gateway-hidden client RPC surface but fails closed for the service role', () => {
+  assert.deepEqual(resolveRpcSurfaceResponse(
+    { ok: false, status: 401, body: null },
+    { deniedMeansEmpty: true },
+  ), new Set())
+  assert.throws(
+    () => resolveRpcSurfaceResponse({ ok: false, status: 401, body: null }),
+    /RPC_SURFACE_UNAVAILABLE/,
+  )
+  assert.deepEqual(
+    resolveRpcSurfaceResponse({ ok: true, status: 200, body: { paths: { '/rpc/create_room_v2': {} } } }),
+    new Set(['/rpc/create_room_v2']),
+  )
+  assert.throws(
+    () => resolveRpcSurfaceResponse({ ok: true, status: 200, body: { paths: [] } }),
+    /RPC_SURFACE_UNAVAILABLE/,
+  )
 })
 
 test('remote probe deletes a created user when login fails and writes only sanitized cleanup evidence', async () => {
