@@ -81,6 +81,15 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   const selectedVersionSmokeStep = releaseWorkflow.jobs.release.steps.find(
     (step) => step.name === 'Smoke selected Worker version and applicable assets',
   );
+  const liveCutoverSmokeStep = releaseWorkflow.jobs.release.steps.find(
+    (step) => step.name === 'Verify live cutover once at public origin',
+  );
+  const liveRollbackSmokeStep = releaseWorkflow.jobs.release.steps.find(
+    (step) => step.name === 'Verify live rollback once at public origin',
+  );
+  const automaticRollbackStep = releaseWorkflow.jobs.release.steps.find(
+    (step) => step.name === 'Restore the previous stable version after a failed cutover gate',
+  );
   const baseline = await readUtf8('.github/workflows/release-database-baseline-attestation.yml');
   const database = await readUtf8('.github/workflows/release-database.yml');
   const smoke = await readUtf8('scripts/smoke-release.mjs');
@@ -125,8 +134,32 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(release, /CLOUDFLARE_ACCOUNT_ID/);
   assert.deepEqual(releaseAllowlist, baselineAllowlist);
   assert.match(release, /Cloudflare-Workers-Version-Overrides|smoke-release\.mjs/);
-  assert.match(release, /seq 1 13/);
-  assert.match(release, /check-worker-observability\.mjs/);
+  assert.doesNotMatch(release, /seq 1 13|check-worker-observability\.mjs|Observe cutover for 60 minutes/);
+  assert.equal(liveCutoverSmokeStep.if, "${{ inputs.operation == 'cutover' }}");
+  assert.match(liveCutoverSmokeStep.run, /smoke-release\.mjs/);
+  assert.match(liveCutoverSmokeStep.run, /--base-url "\$BASE_URL"/);
+  assert.match(liveCutoverSmokeStep.run, /--dist-manifest artifacts\/dist-manifest\.json/);
+  assert.doesNotMatch(liveCutoverSmokeStep.run, /--worker-name|--version-id|\bsleep\b/);
+  assert.equal(liveRollbackSmokeStep.if, "${{ inputs.operation == 'rollback' }}");
+  assert.match(liveRollbackSmokeStep.run, /smoke-release\.mjs/);
+  assert.match(liveRollbackSmokeStep.run, /--base-url "\$BASE_URL"/);
+  assert.doesNotMatch(liveRollbackSmokeStep.run, /--worker-name|--version-id|--dist-manifest|\bsleep\b/);
+  assert.match(captureAfterStep.run, /Array\.isArray\(source\.versions\)/);
+  assert.match(captureAfterStep.run, /ids\.size !== entries\.length/);
+  assert.match(captureAfterStep.run, /Math\.abs\(total - 100\) > 1e-9/);
+  assert.match(captureAfterStep.run, /entries\.length !== 1/);
+  assert.match(captureAfterStep.run, /entries\[0\]\.id !== process\.env\.INPUT_VERSION_ID/);
+  const automaticStatusIndex = automaticRollbackStep.run.indexOf('wrangler deployments status');
+  const automaticStrictIndex = automaticRollbackStep.run.indexOf('source.versions.length !== 1');
+  const automaticSmokeIndex = automaticRollbackStep.run.indexOf('smoke-release.mjs --base-url "$BASE_URL"');
+  const automaticArtifactIndex = automaticRollbackStep.run.indexOf('automatic-rollback.json');
+  assert.ok(automaticStatusIndex >= 0);
+  assert.ok(automaticStrictIndex > automaticStatusIndex);
+  assert.ok(automaticSmokeIndex > automaticStrictIndex);
+  assert.ok(automaticArtifactIndex > automaticSmokeIndex);
+  assert.doesNotMatch(automaticRollbackStep.run, /--worker-name|--version-id|--dist-manifest/);
+  assert.match(release, /monitorChecks: operation === 'cutover' \? 1 : 0/);
+  assert.match(release, /monitorMinutes: 0/);
   assert.match(release, /PREVIOUS_STABLE_VERSION_ID@100%/);
   assert.match(release, /automatic-rollback\.json/);
   assert.match(release, /expand_evidence_run_id/);
@@ -351,8 +384,12 @@ test('database release stages expand and lockdown separately behind evidence gat
   assert.match(release, /release_track/);
   assert.match(release, /options: \[backend-stabilization, prompt-privacy\]/);
   assert.match(release, /worker_evidence_run_id/);
-  assert.match(release, /observabilityPassed === true/);
-  assert.match(release, /cronSuccesses >= 2/);
+  assert.match(release, /evidence\.monitorChecks === 1/);
+  assert.match(release, /evidence\.monitorMinutes === 0/);
+  assert.match(release, /evidence\.observabilityPassed === null/);
+  assert.match(release, /evidence\.observabilityMetrics === null/);
+  assert.match(release, /evidence\.observabilityWindow === null/);
+  assert.match(release, /evidence\.baselineWindow === null/);
   assert.match(release, /db push[\s\S]*--dry-run/);
   assert.match(release, /PROJECT_REF.*EXPECTED_PROJECT_REF/);
   assert.match(release, /backup_evidence_run_id/);

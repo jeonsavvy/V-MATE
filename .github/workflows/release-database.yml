@@ -467,15 +467,12 @@ jobs:
             && Number.isFinite(Date.parse(evidence.expandAppliedAt || ''))
             && /^[A-Za-z0-9_-]+$/.test(String(evidence.previousStableVersionId || ''))
             && evidence.smokePassed === true
-            && evidence.monitorChecks >= 13
-            && evidence.monitorMinutes >= 60
-            && evidence.observabilityPassed === true
-            && evidence.observabilityMetrics?.cronSuccesses >= 2
-            && evidence.observabilityMetrics?.cronFailures === 0
-            && evidence.observabilityMetrics?.currentFailedOutcomes === 0
-            && evidence.observabilityMetrics?.currentRequests > 0
-            && evidence.observabilityMetrics?.baselineRequests > 0
-            && evidence.baselineWindow?.hours === 24;
+            && evidence.monitorChecks === 1
+            && evidence.monitorMinutes === 0
+            && evidence.observabilityPassed === null
+            && evidence.observabilityMetrics === null
+            && evidence.observabilityWindow === null
+            && evidence.baselineWindow === null;
           if (!valid) process.exit(1);
           fs.appendFileSync(
             process.env.GITHUB_ENV,

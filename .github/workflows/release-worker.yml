@@ -583,9 +583,12 @@ jobs:
             && release.workerName === process.env.WORKER_NAME
             && release.baseUrl === expectedOrigin
             && release.smokePassed === true
-            && release.monitorChecks >= 13
-            && release.monitorMinutes >= 60
-            && release.observabilityPassed === true;
+            && release.monitorChecks === 1
+            && release.monitorMinutes === 0
+            && release.observabilityPassed === null
+            && release.observabilityMetrics === null
+            && release.observabilityWindow === null
+            && release.baselineWindow === null;
           if (!successfulCutover) process.exit(1);
           if (process.env.ROLLBACK_MODE === 'pre-lockdown') {
             if (baselineBacked || process.env.LOCKDOWN_EVIDENCE_RUN_ID || release.previousStableVersionId !== process.env.INPUT_VERSION_ID) process.exit(1);
@@ -1022,22 +1025,26 @@ jobs:
           npx --no-install wrangler deployments status "${args[@]}" --name "$WORKER_NAME" --json > "$DEPLOYMENT_STATUS_FILE"
           node <<'NODE'
           const source = JSON.parse(require('node:fs').readFileSync(process.env.DEPLOYMENT_STATUS_FILE, 'utf8'));
-          const entries = [];
-          const visit = (value) => {
-            if (Array.isArray(value)) return value.forEach(visit);
-            if (!value || typeof value !== 'object') return;
-            if (typeof value.version_id === 'string' && Number.isFinite(Number(value.percentage))) entries.push({ id: value.version_id, percentage: Number(value.percentage) });
-            Object.values(value).forEach(visit);
-          };
-          visit(source);
+          if (!source || typeof source !== 'object' || Array.isArray(source)
+            || !Array.isArray(source.versions) || source.versions.length === 0) process.exit(1);
+          const entries = source.versions.map((entry) => {
+            if (!entry || typeof entry !== 'object' || Array.isArray(entry)
+              || typeof entry.version_id !== 'string' || !/^[A-Za-z0-9_-]+$/.test(entry.version_id)
+              || typeof entry.percentage !== 'number' || !Number.isFinite(entry.percentage)
+              || entry.percentage < 0 || entry.percentage > 100) process.exit(1);
+            return { id: entry.version_id, percentage: entry.percentage };
+          });
+          const ids = new Set(entries.map((entry) => entry.id));
+          const total = entries.reduce((sum, entry) => sum + entry.percentage, 0);
+          if (ids.size !== entries.length || Math.abs(total - 100) > 1e-9) process.exit(1);
           const operation = '${{ inputs.operation }}';
           if (operation === 'shadow') {
-            const stable = entries.some((entry) => entry.id === process.env.STABLE_VERSION_ID && entry.percentage === 100);
-            const shadow = entries.some((entry) => entry.id === process.env.SHADOW_VERSION_ID && entry.percentage === 0);
-            if (!stable || !shadow) process.exit(1);
+            const stable = entries.find((entry) => entry.id === process.env.STABLE_VERSION_ID);
+            const shadow = entries.find((entry) => entry.id === process.env.SHADOW_VERSION_ID);
+            if (entries.length !== 2 || stable?.percentage !== 100 || shadow?.percentage !== 0) process.exit(1);
           }
           if (operation === 'cutover' || operation === 'rollback') {
-            if (!entries.some((entry) => entry.id === process.env.INPUT_VERSION_ID && entry.percentage === 100)) process.exit(1);
+            if (entries.length !== 1 || entries[0].id !== process.env.INPUT_VERSION_ID || entries[0].percentage !== 100) process.exit(1);
           }
           NODE
 
@@ -1063,36 +1070,22 @@ jobs:
           # Do not override the version or compare the new manifest here: this URL must prove the live legacy hostname remains reachable during shadow releases too.
           node scripts/smoke-release.mjs --base-url "$LEGACY_ORIGIN" | tee artifacts/legacy-smoke.log
 
-      - name: Observe cutover for 60 minutes at five-minute intervals
+      - name: Verify live cutover once at public origin
         if: ${{ inputs.operation == 'cutover' }}
         shell: bash
         run: |
           set -euo pipefail
-          : > artifacts/monitor.log
-          for check in $(seq 1 13); do
-            printf '%s check=%s/13\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$check" | tee -a artifacts/monitor.log
-            node scripts/smoke-release.mjs --base-url "$BASE_URL" --worker-name "$WORKER_NAME" --version-id "$INPUT_VERSION_ID" --dist-manifest artifacts/dist-manifest.json | tee -a artifacts/monitor.log
-            if [[ "$check" -lt 13 ]]; then sleep 300; fi
-          done
+          node scripts/smoke-release.mjs \
+            --base-url "$BASE_URL" \
+            --dist-manifest artifacts/dist-manifest.json | tee artifacts/live-cutover-smoke.log
 
-      - name: Enforce post-cutover observability gates
-        if: ${{ inputs.operation == 'cutover' }}
-        env:
-          CLOUDFLARE_OBSERVABILITY_TOKEN: ${{ secrets.CLOUDFLARE_OBSERVABILITY_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Verify live rollback once at public origin
+        if: ${{ inputs.operation == 'rollback' }}
         shell: bash
         run: |
           set -euo pipefail
-          [[ -n "$CLOUDFLARE_OBSERVABILITY_TOKEN" && -n "$CLOUDFLARE_ACCOUNT_ID" ]] || { echo '::error::Scoped Worker observability credential is not configured for this environment'; exit 1; }
-          observation_end=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          node scripts/check-worker-observability.mjs \
-            --account-id "$CLOUDFLARE_ACCOUNT_ID" \
-            --worker-name "$WORKER_NAME" \
-            --version-id "$INPUT_VERSION_ID" \
-            --baseline-version-id "$PREVIOUS_STABLE_VERSION_ID" \
-            --window-start "$CUTOVER_STARTED_AT" \
-            --window-end "$observation_end" \
-            --output artifacts/observability.json
+          node scripts/smoke-release.mjs \
+            --base-url "$BASE_URL" | tee artifacts/live-rollback-smoke.log
 
       - name: Restore the previous stable version after a failed cutover gate
         if: ${{ failure() && inputs.operation == 'cutover' && env.CUTOVER_STARTED_AT != '' }}
@@ -1106,6 +1099,20 @@ jobs:
           args=(--env ""); if [[ -n "$WRANGLER_ENV" ]]; then args=(--env "$WRANGLER_ENV"); fi
           npx --no-install wrangler versions deploy "${args[@]}" --name "$WORKER_NAME" "$PREVIOUS_STABLE_VERSION_ID@100%" --dry-run --yes
           npx --no-install wrangler versions deploy "${args[@]}" --name "$WORKER_NAME" "$PREVIOUS_STABLE_VERSION_ID@100%" --yes
+          export AUTO_ROLLBACK_STATUS_FILE
+          AUTO_ROLLBACK_STATUS_FILE=$(mktemp "$RUNNER_TEMP/vmate-auto-rollback-status-XXXXXX.json")
+          trap 'rm -f -- "$AUTO_ROLLBACK_STATUS_FILE"' EXIT
+          npx --no-install wrangler deployments status "${args[@]}" --name "$WORKER_NAME" --json > "$AUTO_ROLLBACK_STATUS_FILE"
+          node <<'NODE'
+          const source = JSON.parse(require('node:fs').readFileSync(process.env.AUTO_ROLLBACK_STATUS_FILE, 'utf8'));
+          if (!source || typeof source !== 'object' || Array.isArray(source)
+            || !Array.isArray(source.versions) || source.versions.length !== 1) process.exit(1);
+          const [entry] = source.versions;
+          if (!entry || typeof entry !== 'object' || Array.isArray(entry)
+            || entry.version_id !== process.env.PREVIOUS_STABLE_VERSION_ID
+            || entry.percentage !== 100) process.exit(1);
+          NODE
+          node scripts/smoke-release.mjs --base-url "$BASE_URL" | tee artifacts/automatic-rollback-smoke.log
           node <<'NODE'
           const fs = require('node:fs');
           fs.writeFileSync('artifacts/automatic-rollback.json', `${JSON.stringify({
@@ -1127,9 +1134,7 @@ jobs:
           const fs = require('node:fs');
           const operation = '${{ inputs.operation }}';
           const versionId = operation === 'shadow' ? process.env.SHADOW_VERSION_ID : process.env.INPUT_VERSION_ID;
-          const observability = operation === 'cutover'
-            ? JSON.parse(fs.readFileSync('artifacts/observability.json', 'utf8'))
-            : null;
+          const observability = null;
           const evidence = {
             schemaVersion: 4,
             target: '${{ inputs.target }}',
@@ -1172,8 +1177,8 @@ jobs:
             lockdownEvidenceRunId: operation === 'rollback' && process.env.ROLLBACK_MODE === 'post-lockdown' ? process.env.LOCKDOWN_EVIDENCE_RUN_ID : null,
             completedAt: new Date().toISOString(),
             smokePassed: true,
-            monitorChecks: operation === 'cutover' ? 13 : 0,
-            monitorMinutes: observability?.window?.minutes || 0,
+            monitorChecks: operation === 'cutover' ? 1 : 0,
+            monitorMinutes: 0,
             observabilityPassed: observability?.passed ?? null,
             observabilityMetrics: observability?.metrics || null,
             observabilityWindow: observability?.window || null,

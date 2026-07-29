@@ -237,6 +237,12 @@ const validateWorkflow = (file, source) => {
       'workflow.path === expectedWorkflowPath',
       'run.workflow_id === workflow.id',
       'gh run download "$WORKER_EVIDENCE_RUN_ID"',
+      'evidence.monitorChecks === 1',
+      'evidence.monitorMinutes === 0',
+      'evidence.observabilityPassed === null',
+      'evidence.observabilityMetrics === null',
+      'evidence.observabilityWindow === null',
+      'evidence.baselineWindow === null',
     ]) {
       if (!String(cutoverEvidenceStep.run).includes(required)) fail(file, `Worker cutover evidence step is missing run binding: ${required}`)
     }
@@ -304,6 +310,48 @@ const validateWorkflow = (file, source) => {
     const rollbackSmokeBranch = String(selectedVersionSmokeStep?.run || '').match(/if \[\[ '\$\{\{ inputs\.operation \}\}' == 'rollback' \]\]; then([\s\S]*?)else/)?.[1] || ''
     if (!rollbackSmokeBranch.includes('smoke-release.mjs') || /--dist-manifest/.test(rollbackSmokeBranch)) {
       fail(file, 'historical rollback smoke must not compare the current asset manifest')
+    }
+    const liveCutoverSmokeStep = root.jobs?.release?.steps?.find((step) => step?.name === 'Verify live cutover once at public origin')
+    const liveCutoverSmoke = String(liveCutoverSmokeStep?.run || '')
+    if (liveCutoverSmokeStep?.if !== "${{ inputs.operation == 'cutover' }}"
+      || !liveCutoverSmoke.includes('smoke-release.mjs')
+      || !liveCutoverSmoke.includes('--base-url "$BASE_URL"')
+      || !liveCutoverSmoke.includes('--dist-manifest artifacts/dist-manifest.json')
+      || /--worker-name|--version-id|\bsleep\b/.test(liveCutoverSmoke)) {
+      fail(file, 'cutover must use one immediate public-origin smoke without a version override')
+    }
+    if (/Observe cutover for 60 minutes|seq 1 13|check-worker-observability\.mjs/.test(source)) {
+      fail(file, 'cutover must not use a delayed observation loop')
+    }
+    const liveRollbackSmokeStep = root.jobs?.release?.steps?.find((step) => step?.name === 'Verify live rollback once at public origin')
+    const liveRollbackSmoke = String(liveRollbackSmokeStep?.run || '')
+    if (liveRollbackSmokeStep?.if !== "${{ inputs.operation == 'rollback' }}"
+      || !liveRollbackSmoke.includes('smoke-release.mjs')
+      || !liveRollbackSmoke.includes('--base-url "$BASE_URL"')
+      || /--worker-name|--version-id|--dist-manifest|\bsleep\b/.test(liveRollbackSmoke)) {
+      fail(file, 'manual rollback must use one immediate public-origin smoke without current assets or a version override')
+    }
+    const deploymentAfterStep = root.jobs?.release?.steps?.find((step) => step?.name === 'Capture and verify deployment after operation')
+    const deploymentAfter = String(deploymentAfterStep?.run || '')
+    for (const required of [
+      'Array.isArray(source.versions)',
+      'ids.size !== entries.length',
+      'Math.abs(total - 100) > 1e-9',
+      'entries.length !== 1',
+      'entries[0].id !== process.env.INPUT_VERSION_ID',
+      'entries[0].percentage !== 100',
+    ]) {
+      if (!deploymentAfter.includes(required)) fail(file, `deployment verification is not strict at the root versions list: ${required}`)
+    }
+    const automaticRollbackStep = root.jobs?.release?.steps?.find((step) => step?.name === 'Restore the previous stable version after a failed cutover gate')
+    const automaticRollback = String(automaticRollbackStep?.run || '')
+    const statusIndex = automaticRollback.indexOf('wrangler deployments status')
+    const strictIndex = automaticRollback.indexOf('source.versions.length !== 1')
+    const smokeIndex = automaticRollback.indexOf('smoke-release.mjs --base-url "$BASE_URL"')
+    const artifactIndex = automaticRollback.indexOf('automatic-rollback.json')
+    if (statusIndex < 0 || strictIndex <= statusIndex || smokeIndex <= strictIndex || artifactIndex <= smokeIndex
+      || /--worker-name|--version-id|--dist-manifest/.test(automaticRollback)) {
+      fail(file, 'automatic rollback must verify exact root deployment state and the public origin before recording evidence')
     }
     const bridgeAllowlists = [...source.matchAll(/bridge_allowed_files=\$'([^']+)'/g)]
     if (bridgeAllowlists.length !== 1 || JSON.stringify(bridgeAllowlists[0][1].split('\\n')) !== JSON.stringify(expectedExpandBridgeFiles)) {
