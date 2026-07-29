@@ -1,3 +1,5 @@
+-- Local upgrade-test fixture only. Never apply this historical state remotely.
+
 -- Legacy chat storage
 -- 기존 채팅 메시지 테이블은 이전 데이터와 호환되도록 유지한다.
 create table if not exists public.chat_messages (

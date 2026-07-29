@@ -23,11 +23,6 @@ dist
 dist-ssr
 *.local
 
-# Temporary documentation files
-*.md
-!README.md
-!AGENTS.md
-
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

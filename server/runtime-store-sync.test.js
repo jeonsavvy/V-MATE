@@ -9,13 +9,13 @@ const repoRoot = path.resolve(dirname, '..');
 
 const readUtf8 = (relativePath) => readFile(path.join(repoRoot, relativePath), 'utf8');
 
-test('README documents runtime store mode flags and KV binding names', async () => {
-  const readme = await readUtf8('README.md');
+test('operations documentation records runtime store mode flags and KV binding names', async () => {
+  const operationsDoc = await readUtf8('docs/operations.md');
 
-  assert.ok(readme.includes('RATE_LIMIT_STORE'));
-  assert.ok(readme.includes('PROMPT_CACHE_STORE'));
-  assert.ok(readme.includes('V_MATE_RATE_LIMIT_KV'));
-  assert.ok(readme.includes('V_MATE_PROMPT_CACHE_KV'));
+  assert.ok(operationsDoc.includes('RATE_LIMIT_STORE'));
+  assert.ok(operationsDoc.includes('PROMPT_CACHE_STORE'));
+  assert.ok(operationsDoc.includes('V_MATE_RATE_LIMIT_KV'));
+  assert.ok(operationsDoc.includes('V_MATE_PROMPT_CACHE_KV'));
 });
 
 test('wrangler vars define default runtime store mode as memory', async () => {

@@ -1,3 +1,7 @@
+-- Fresh-install snapshot for an empty V-MATE database.
+-- Existing environments must use supabase/migrations in version order instead.
+-- Keep this final state aligned with the migration-chain result.
+
 -- Legacy chat storage
 -- 기존 채팅 메시지 테이블은 이전 데이터와 호환되도록 유지한다.
 create table if not exists public.chat_messages (

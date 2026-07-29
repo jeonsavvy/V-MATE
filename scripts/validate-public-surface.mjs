@@ -42,6 +42,7 @@ const files = [
   path.join(repositoryRoot, 'worker.js'),
   path.join(repositoryRoot, 'wrangler.jsonc'),
   ...(await collectFiles(path.join(repositoryRoot, 'docs'), (name) => name.endsWith('.md'))),
+  ...(await collectFiles(path.join(repositoryRoot, 'supabase'), (name) => name.endsWith('.md'))),
   ...(await collectFiles(path.join(repositoryRoot, '.github', 'workflows'), (name) => /\.ya?ml$/i.test(name))),
   ...(await collectFiles(path.join(repositoryRoot, 'src'), (name) => /\.tsx?$/i.test(name) && !/\.(?:test|spec)\.tsx?$/i.test(name))),
   ...(await collectFiles(path.join(repositoryRoot, 'server'), (name) => name.endsWith('.js') && !/\.(?:test|spec)\.js$/i.test(name))),

@@ -290,16 +290,16 @@ test('wrangler config enables Cloudflare cron trigger for Supabase keepalive', a
   assert.match(wranglerConfig, /"3,18,33,48 \* \* \* \*"/);
 });
 
-test('README documents manual approved release, runtime prerequisites, and version rollback', async () => {
-  const readme = await readUtf8('README.md');
+test('operations documentation records manual approved release, runtime prerequisites, and version rollback', async () => {
+  const operationsDoc = await readUtf8('docs/operations.md');
 
-  assert.match(readme, /main.*읽기 전용/i);
-  assert.match(readme, /workflow_dispatch/);
-  assert.match(readme, /CLOUDFLARE_API_TOKEN/);
-  assert.match(readme, /CLOUDFLARE_OBSERVABILITY_TOKEN/);
-  assert.match(readme, /CLOUDFLARE_ACCOUNT_ID/);
-  assert.match(readme, /VITE_SUPABASE_URL/);
-  assert.match(readme, /VITE_SUPABASE_ANON_KEY|VITE_SUPABASE_PUBLISHABLE_KEY/);
-  assert.match(readme, /VITE_CHAT_API_BASE_URL/);
-  assert.match(readme, /versions deploy/);
+  assert.match(operationsDoc, /main.*읽기 전용/i);
+  assert.match(operationsDoc, /workflow_dispatch/);
+  assert.match(operationsDoc, /CLOUDFLARE_API_TOKEN/);
+  assert.match(operationsDoc, /CLOUDFLARE_OBSERVABILITY_TOKEN/);
+  assert.match(operationsDoc, /CLOUDFLARE_ACCOUNT_ID/);
+  assert.match(operationsDoc, /VITE_SUPABASE_URL/);
+  assert.match(operationsDoc, /VITE_SUPABASE_ANON_KEY|VITE_SUPABASE_PUBLISHABLE_KEY/);
+  assert.match(operationsDoc, /VITE_CHAT_API_BASE_URL/);
+  assert.match(operationsDoc, /versions deploy/);
 });
