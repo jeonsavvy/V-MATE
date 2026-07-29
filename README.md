@@ -121,9 +121,6 @@ V-MATE는 긴 대화를 위해 시작 설정, 누적 요약, 최근 대화, 현�
 - Worker는 `window.__V_MATE_RUNTIME_ENV__`를 HTML에 주입합니다.
 - `wrangler.jsonc`는 `keep_vars: true`와 `run_worker_first`를 사용합니다.
 
-### 공식 주소
-- [v-mate.satinode.com](https://v-mate.satinode.com)
-
 ## 빠른 시작
 
 ### 1) 런타임 준비
