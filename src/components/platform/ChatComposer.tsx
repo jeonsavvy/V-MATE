@@ -53,7 +53,7 @@ export function ChatComposer({
         placeholder="메시지를 입력하세요…"
         rows={3}
         autoComplete="off"
-        className="min-h-[92px] max-h-[240px] w-full resize-y rounded-lg border border-[#dedede] bg-white px-4 py-3 text-[15px] leading-7 text-[#171717] transition placeholder:text-[#aaa] focus-visible:border-[#999] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2"
+        className="min-h-[92px] max-h-[240px] w-full resize-y rounded-lg border border-[#dedede] bg-white px-4 py-3 text-[15px] leading-7 text-[#171717] transition placeholder:text-[#707070] focus-visible:border-[#999] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2"
       />
       {needsRetry ? (
         <p role="status" className="rounded-lg border border-[#e7d9c8] bg-[#fffaf3] px-4 py-3 text-sm text-[#5f5551]">

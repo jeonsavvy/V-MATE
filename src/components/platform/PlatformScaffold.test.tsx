@@ -20,6 +20,54 @@ const baseEntity = {
 afterEach(cleanup)
 
 describe('PlatformShell combination dock', () => {
+  it('moves focus to the main content without adding a hash history entry', () => {
+    window.history.replaceState({}, '', '/')
+    render(
+      <PlatformShell
+        user={null}
+        authStatus="anonymous"
+        userAvatarInitial="V"
+        onNavigate={vi.fn()}
+        onAuthRequest={vi.fn()}
+        onSignOut={vi.fn()}
+        onDeleteAccount={vi.fn(async () => undefined)}
+        showCombinationDock={false}
+      >
+        <p>본문</p>
+      </PlatformShell>,
+    )
+
+    fireEvent.click(screen.getByRole('link', { name: '본문으로 건너뛰기' }))
+
+    expect(window.location.hash).toBe('')
+    expect(document.activeElement).toBe(document.querySelector('#platform-main'))
+  })
+
+  it('submits the global search form with its current value', () => {
+    const onSearchSubmit = vi.fn()
+    render(
+      <PlatformShell
+        user={null}
+        authStatus="anonymous"
+        userAvatarInitial="V"
+        searchValue="별빛"
+        onSearchChange={vi.fn()}
+        onSearchSubmit={onSearchSubmit}
+        onNavigate={vi.fn()}
+        onAuthRequest={vi.fn()}
+        onSignOut={vi.fn()}
+        onDeleteAccount={vi.fn(async () => undefined)}
+        showCombinationDock={false}
+      >
+        <p>본문</p>
+      </PlatformShell>,
+    )
+
+    expect((screen.getByRole('searchbox') as HTMLInputElement).maxLength).toBe(160)
+    fireEvent.submit(screen.getByRole('search'))
+    expect(onSearchSubmit).toHaveBeenCalledWith('별빛')
+  })
+
   it('renders one character slot, one optional world slot, and blocks an incomplete combination', () => {
     const onStart = vi.fn(async () => undefined)
     render(
@@ -153,7 +201,7 @@ describe('PlatformShell account dialog', () => {
   })
 
   it('keeps unavailable authentication distinct from the anonymous login CTA', () => {
-    render(
+    const { container } = render(
       <PlatformShell
         user={null}
         authStatus="unavailable"
@@ -169,8 +217,11 @@ describe('PlatformShell account dialog', () => {
     )
 
     expect(screen.queryByRole('button', { name: '로그인' })).toBeNull()
-    expect(screen.getAllByRole('alert').some((alert) => alert.textContent?.includes('현재 로그인 상태는 확인되지 않았습니다'))).toBe(true)
+    expect(screen.getAllByRole('alert').some((alert) => alert.textContent?.includes('인증을 다시 확인해 주세요.'))).toBe(true)
     expect(screen.getAllByRole('button', { name: '인증 다시 확인' }).length).toBeGreaterThan(0)
+    const mobileNavigation = container.querySelector('nav.grid-cols-5') as HTMLElement
+    expect(within(mobileNavigation).queryByRole('alert')).toBeNull()
+    expect(within(mobileNavigation).getByRole('button', { name: '인증 다시 확인' }).className).toContain('size-11')
   })
 
   it('shares an accessible account dialog across desktop and mobile triggers and restores focus', async () => {
@@ -221,6 +272,28 @@ describe('PlatformShell account dialog', () => {
 })
 
 describe('EntityCard artwork delivery', () => {
+  it('uses real links for entity navigation and preserves modified-click browser behavior', () => {
+    const onNavigate = vi.fn()
+    const item: CharacterSummary = {
+      ...baseEntity,
+      id: 'character-link',
+      entityType: 'character',
+      slug: 'character-link',
+      name: '링크 캐릭터',
+      coverImageUrl: '/starter/character-a.webp',
+      avatarImageUrl: '/starter/character-a.webp',
+    }
+
+    render(<EntityCard item={item} href="/characters/character-link" onNavigate={onNavigate} />)
+    const links = screen.getAllByRole('link')
+    expect(links[0].getAttribute('href')).toBe('/characters/character-link')
+    links[0].setAttribute('href', '#modified-click')
+    fireEvent.click(links[0], { ctrlKey: true })
+    expect(onNavigate).not.toHaveBeenCalled()
+    fireEvent.click(links[0])
+    expect(onNavigate).toHaveBeenCalledWith('/characters/character-link')
+  })
+
   it('uses responsive official starter variants and prioritizes the first card image', () => {
     const item: CharacterSummary = {
       ...baseEntity,

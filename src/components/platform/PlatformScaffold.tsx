@@ -29,6 +29,7 @@ interface PlatformShellProps {
   userAvatarInitial: string
   searchValue?: string
   onSearchChange?: (value: string) => void
+  onSearchSubmit?: (value: string) => void
   onNavigate: (path: string) => void
   onAuthRequest: () => void
   onSignOut: () => void | Promise<void>
@@ -59,12 +60,13 @@ const isNavActive = (path: string) => {
   return pathname.startsWith(path)
 }
 
-function NavigationLink({ path, onNavigate, className, children, ariaLabel }: {
+export function NavigationLink({ path, onNavigate, className, children, ariaLabel, ariaCurrent }: {
   path: string
   onNavigate: (path: string) => void
   className?: string
   children: ReactNode
   ariaLabel?: string
+  ariaCurrent?: 'page'
 }) {
   const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
     if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
@@ -72,7 +74,7 @@ function NavigationLink({ path, onNavigate, className, children, ariaLabel }: {
     onNavigate(path)
   }
 
-  return <a href={path} onClick={handleClick} className={className} aria-label={ariaLabel}>{children}</a>
+  return <a href={path} onClick={handleClick} className={className} aria-label={ariaLabel} aria-current={ariaCurrent}>{children}</a>
 }
 
 function AccountPanel({ user, authStatus, userAvatarInitial, onAuthRequest, onOpenAccount, compact = false }: Pick<PlatformShellProps, 'user' | 'authStatus' | 'userAvatarInitial' | 'onAuthRequest'> & { onOpenAccount: (trigger: HTMLButtonElement) => void; compact?: boolean }) {
@@ -80,7 +82,10 @@ function AccountPanel({ user, authStatus, userAvatarInitial, onAuthRequest, onOp
     return <div role="status" aria-label="로그인 상태 확인 중" className="flex min-h-11 w-full items-center justify-center rounded-lg text-[#777]"><Loader2 aria-hidden="true" className="size-4 animate-spin" /></div>
   }
   if (authStatus === 'unavailable') {
-    return <div role="alert" className="space-y-2 rounded-lg border border-[#f0c9c6] p-3 text-sm text-[#8a2d28]"><p>로그인 상태를 확인하지 못했습니다. 현재 로그인 상태는 확인되지 않았습니다.</p><Button onClick={onAuthRequest} variant="outline" className="min-h-11 w-full">인증 다시 확인</Button></div>
+    if (compact) {
+      return <button type="button" aria-label="인증 다시 확인" onClick={onAuthRequest} className="flex size-11 items-center justify-center rounded-full border border-[#f0c9c6] bg-white text-[#8a2d28] transition hover:border-[#dca9a5] hover:text-[#6f221d]"><UserRound aria-hidden="true" className="size-5" /></button>
+    }
+    return <div role="alert" className="space-y-2 rounded-lg border border-[#f0c9c6] p-3 text-sm text-[#8a2d28]"><p>로그인 상태를 확인하지 못했습니다. 인증을 다시 확인해 주세요.</p><Button onClick={onAuthRequest} variant="outline" className="min-h-11 w-full">인증 다시 확인</Button></div>
   }
   if (!user) {
     return <Button onClick={onAuthRequest} variant="outline" className="h-11 w-full rounded-md border-[#dcdcdc] bg-white text-[#171717] shadow-none hover:border-[#ff5148] hover:bg-white hover:text-[#ff5148]">로그인</Button>
@@ -151,7 +156,7 @@ function AccountDialog({ user, onNavigate, onSignOut, onDeleteAccount, open, onO
           {accountError ? <p role="alert" className="text-sm text-destructive">{accountError}</p> : null}
           <div className="grid gap-2"><Button className="min-h-11" variant="outline" disabled={isSigningOut} onClick={() => { onOpenChange(false); onNavigate('/library') }}>보관함</Button><Button className="min-h-11" variant="outline" disabled={isSigningOut} onClick={() => { onOpenChange(false); onNavigate('/ops') }}><Shield className="size-4" />운영실</Button><Button className="min-h-11" variant="outline" disabled={isSigningOut} onClick={() => void submitSignOut()}>{isSigningOut ? <Loader2 className="size-4 animate-spin" /> : null}{isSigningOut ? '로그아웃 중…' : '로그아웃'}</Button><Button className="min-h-11" variant="destructive" disabled={isSigningOut} onClick={() => { setConfirmation(''); setDeleteError(''); setAccountError(''); setView('delete') }}>계정 탈퇴</Button></div>
         </> : <>
-          <DialogHeader><DialogTitle>계정 탈퇴</DialogTitle><DialogDescription>계정과 생성 콘텐츠, 대화 기록, 업로드 이미지를 삭제합니다. 계속하려면 `탈퇴`를 입력하세요.</DialogDescription></DialogHeader>
+          <DialogHeader><DialogTitle>계정 탈퇴</DialogTitle><DialogDescription>계정과 생성 콘텐츠, 대화 기록, 업로드 이미지를 삭제합니다. 계속하려면 ‘탈퇴’를 입력하세요.</DialogDescription></DialogHeader>
           <Input className="h-11" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="탈퇴" aria-label="계정 탈퇴 확인 문구" />
           {deleteError ? <p role="alert" className="text-sm text-destructive">{deleteError}</p> : null}
           <DialogFooter><Button className="min-h-11" variant="outline" onClick={() => setView('overview')} disabled={isDeleting}>취소</Button><Button className="min-h-11" variant="destructive" onClick={submitDelete} disabled={confirmation !== '탈퇴' || isDeleting}>{isDeleting ? '처리 중…' : '영구 탈퇴'}</Button></DialogFooter>
@@ -222,6 +227,7 @@ export function PlatformShell({
   userAvatarInitial,
   searchValue = '',
   onSearchChange,
+  onSearchSubmit,
   onNavigate,
   onAuthRequest,
   onSignOut,
@@ -245,9 +251,15 @@ export function PlatformShell({
     setIsAccountOpen(nextOpen)
     if (!nextOpen) queueMicrotask(() => accountTriggerRef.current?.focus())
   }
+  const skipToContent = (event: MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault()
+    const main = document.getElementById('platform-main')
+    main?.focus({ preventScroll: true })
+    main?.scrollIntoView?.({ block: 'start' })
+  }
   return (
     <div className="min-h-dvh bg-white text-[#171717]">
-      <a href="#platform-main" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[70] focus:rounded-md focus:bg-[#d43a34] focus:px-4 focus:py-2 focus:text-white">본문으로 건너뛰기</a>
+      <a href="#platform-main" onClick={skipToContent} className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[70] focus:rounded-md focus:bg-[#d43a34] focus:px-4 focus:py-2 focus:text-white">본문으로 건너뛰기</a>
 
       <header className="fixed inset-x-0 top-0 z-50 h-16 border-b border-[#e7e7e7] bg-white">
         <div className="flex h-full items-center gap-3 px-4 sm:px-5">
@@ -259,10 +271,12 @@ export function PlatformShell({
               </NavigationLink>
             ))}
           </nav>
-          <label className="relative ml-auto block min-w-0 w-full max-w-[420px]" htmlFor="platform-search">
-            <Search aria-hidden="true" className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-[#888]" />
-            <Input id="platform-search" name="search" type="search" autoComplete="off" aria-label="캐릭터와 월드 검색" value={searchValue} onChange={(event) => onSearchChange?.(event.target.value)} placeholder="캐릭터, 월드 검색…" className="h-11 rounded-md border-[#dedede] bg-white pl-10 text-sm shadow-none placeholder:text-[#aaa]" />
-          </label>
+          <form role="search" className="ml-auto min-w-0 w-full max-w-[420px]" onSubmit={(event) => { event.preventDefault(); onSearchSubmit?.(searchValue) }}>
+            <label className="relative block w-full" htmlFor="platform-search">
+              <Search aria-hidden="true" className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-[#888]" />
+              <Input id="platform-search" name="search" type="search" autoComplete="off" maxLength={160} aria-label="캐릭터와 월드 검색" value={searchValue} onChange={(event) => onSearchChange?.(event.target.value)} placeholder="캐릭터, 월드 검색…" className="h-11 rounded-md border-[#dedede] bg-white pl-10 text-sm shadow-none placeholder:text-[#707070]" />
+            </label>
+          </form>
           {authStatus === 'checking'
             ? <div role="status" aria-label="로그인 상태 확인 중" className="flex size-11 shrink-0 items-center justify-center rounded-full border border-[#dedede] bg-white text-[#777]"><Loader2 aria-hidden="true" className="size-4 animate-spin" /></div>
             : authStatus === 'unavailable'
@@ -287,7 +301,7 @@ export function PlatformShell({
 
       <div className="min-h-dvh pt-16 lg:pl-[232px]">
 
-        <main id="platform-main" className={cn('mx-auto w-full max-w-[1280px] px-4 py-5 sm:px-6 sm:py-8 lg:px-10', showCombinationDock ? (showCombinationDockOnMobile ? 'pb-44 sm:pb-36 lg:pb-28' : 'pb-24 lg:pb-28') : 'pb-24 lg:pb-10')}>
+        <main id="platform-main" tabIndex={-1} className={cn('mx-auto w-full max-w-[1280px] px-4 py-5 sm:px-6 sm:py-8 lg:px-10', showCombinationDock ? (showCombinationDockOnMobile ? 'pb-44 sm:pb-36 lg:pb-28' : 'pb-24 lg:pb-28') : 'pb-24 lg:pb-10')}>
           {children}
         </main>
         <footer className={cn('border-t border-[#e9e9e9] px-4 py-7 text-center text-xs text-[#666]', showCombinationDock && (showCombinationDockOnMobile ? 'mb-[150px] lg:mb-[86px]' : 'lg:mb-[86px]'))}>
@@ -297,7 +311,7 @@ export function PlatformShell({
 
       <nav className="fixed inset-x-0 bottom-0 z-50 grid h-[calc(66px+env(safe-area-inset-bottom))] grid-cols-5 border-t border-[#dedede] bg-white pb-[env(safe-area-inset-bottom)] lg:hidden">
         {navItems.map(({ label, path, icon: Icon }) => (
-          <NavigationLink key={path} path={path} onNavigate={onNavigate} className={cn('flex min-h-11 flex-col items-center justify-center gap-1 text-[10px] font-semibold', isNavActive(path) ? 'text-[#ff5148]' : 'text-[#6b6b6b]')}><Icon className="size-[19px]" />{label}</NavigationLink>
+          <NavigationLink key={path} path={path} onNavigate={onNavigate} className={cn('flex min-h-11 flex-col items-center justify-center gap-1 text-[10px] font-semibold', isNavActive(path) ? 'text-[#c9342f]' : 'text-[#6b6b6b]')}><Icon className="size-[19px]" />{label}</NavigationLink>
         ))}
         <div className="flex items-center justify-center px-1"><div className="w-full [&_button]:p-1"><AccountPanel user={user} authStatus={authStatus} userAvatarInitial={userAvatarInitial} onAuthRequest={onAuthRequest} onOpenAccount={openAccount} compact /></div></div>
       </nav>
@@ -378,16 +392,22 @@ export const resolveEntityArtworkSources = (item: EntitySummary, usage: 'card' |
 
 export const resolveEntityArtwork = (item: EntitySummary) => resolveEntityArtworkSources(item).src
 
-export function EntityCard({ item, meta, onClick, onSelect, cta = '상세 보기', priority = false, selected = false }: { item: EntitySummary; meta?: string; onClick?: () => void; onSelect?: () => void; cta?: string; priority?: boolean; selected?: boolean }) {
+function EntityNavigationTarget({ href, onNavigate, onClick, className, children }: { href?: string; onNavigate?: (path: string) => void; onClick?: () => void; className: string; children: ReactNode }) {
+  if (href && onNavigate) return <NavigationLink path={href} onNavigate={onNavigate} className={className}>{children}</NavigationLink>
+  if (href) return <a href={href} className={className}>{children}</a>
+  return <button type="button" onClick={onClick} className={className}>{children}</button>
+}
+
+export function EntityCard({ item, meta, href, onNavigate, onClick, onSelect, cta = '상세 보기', priority = false, selected = false }: { item: EntitySummary; meta?: string; href?: string; onNavigate?: (path: string) => void; onClick?: () => void; onSelect?: () => void; cta?: string; priority?: boolean; selected?: boolean }) {
   const artwork = resolveEntityArtworkSources(item)
   return (
     <article className="group flex h-full min-w-0 flex-col bg-white">
-      <button type="button" onClick={onClick} className={cn('relative block w-full overflow-hidden rounded-lg bg-[#f1f1f1] text-left ring-offset-2 transition', selected && 'ring-2 ring-[#ff5148]')}>
+      <EntityNavigationTarget href={href} onNavigate={onNavigate} onClick={onClick} className={cn('relative block w-full overflow-hidden rounded-lg bg-[#f1f1f1] text-left ring-offset-2 transition', selected && 'ring-2 ring-[#ff5148]')}>
         <ArtworkFrame src={artwork.src} srcSet={artwork.srcSet} sizes="(min-width: 1024px) 520px, 50vw" alt={item.name} aspectClassName={item.entityType === 'world' ? 'aspect-[16/9]' : 'aspect-[4/5]'} imageClassName="transition duration-500 group-hover:scale-[1.02]" priority={priority} />
         <span className="absolute left-2.5 top-2.5 rounded bg-black/68 px-2 py-1 text-[10px] font-bold text-white backdrop-blur-sm">{item.entityType === 'character' ? '캐릭터' : '월드'}</span>
-      </button>
+      </EntityNavigationTarget>
       <div className="flex flex-1 flex-col pt-3">
-        <button type="button" onClick={onClick} className="text-left"><h3 className="line-clamp-1 text-[1.02rem] font-bold tracking-[-0.025em] text-[#171717]">{item.name}</h3><p className="mt-1 line-clamp-2 min-h-10 text-sm leading-5 text-[#666]">{item.headline || item.summary}</p></button>
+        <EntityNavigationTarget href={href} onNavigate={onNavigate} onClick={onClick} className="text-left"><h3 className="line-clamp-1 text-[1.02rem] font-bold tracking-[-0.025em] text-[#171717]">{item.name}</h3><p className="mt-1 line-clamp-2 min-h-10 text-sm leading-5 text-[#666]">{item.headline || item.summary}</p></EntityNavigationTarget>
         <div className="mt-2 flex flex-wrap gap-x-2 gap-y-1">{item.tags.slice(0, 3).map((tag) => <span key={tag} className="text-[11px] font-medium text-[#666]">#{tag}</span>)}</div>
         <div className="mt-auto flex items-center justify-between gap-2 pt-3"><span className="truncate text-[11px] text-[#707070]">{meta || `제작자 ${item.creator.name}`}</span>{onSelect ? <Button size="sm" variant={selected ? 'default' : 'outline'} onClick={onSelect} className={cn('h-11 rounded-md px-3 text-xs shadow-none', selected ? 'bg-[#d43a34] hover:bg-[#c9342f]' : 'border-[#d8d8d8] bg-white hover:border-[#ff5148] hover:bg-white hover:text-[#c9342f]')}>{selected ? '선택됨' : '선택'}</Button> : <span className="text-xs font-bold text-[#c9342f]">{cta}</span>}</div>
       </div>

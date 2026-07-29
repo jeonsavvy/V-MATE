@@ -1,5 +1,5 @@
 import { handler as chatHandler } from "./server/chat-handler.js";
-import { buildHeaders, isOriginAllowed } from "./server/modules/http-policy.js";
+import { buildHeaders, CORS_ALLOWED_METHODS, isOriginAllowed } from "./server/modules/http-policy.js";
 import { buildApiErrorResult } from "./server/modules/http-response.js";
 import { mergeChatHandlerContexts, resolveChatHandlerContext } from "./server/modules/chat-handler-context.js";
 import { getRequestBodyLimitBytes } from "./server/modules/runtime-config.js";
@@ -336,6 +336,7 @@ const toEvent = async (request, maxBodyBytes) => {
 
   return {
     httpMethod: request.method,
+    requestContext: { trustedProxy: true },
     headers: {
       ...Object.fromEntries(request.headers.entries()),
       'x-v-mate-request-origin': url.origin,
@@ -365,7 +366,7 @@ const handleChatApi = async (request, env, chatHandlerImpl, chatHandlerContext) 
   const origin = request.headers.get("origin");
   const originAllowed = isOriginAllowed(origin, new URL(request.url).origin, request.headers);
   const headers = {
-    ...buildHeaders(originAllowed, origin),
+    ...buildHeaders(originAllowed, origin, { allowedMethods: CORS_ALLOWED_METHODS.chat }),
     "X-V-MATE-Trace-Id": requestTraceId,
   };
 
@@ -434,7 +435,7 @@ const handlePlatformApiRequest = async (request, env) => {
   const origin = request.headers.get("origin");
   const originAllowed = isOriginAllowed(origin, new URL(request.url).origin, request.headers);
   const headers = {
-    ...buildHeaders(originAllowed, origin),
+    ...buildHeaders(originAllowed, origin, { allowedMethods: CORS_ALLOWED_METHODS.platform }),
     "X-V-MATE-Trace-Id": requestTraceId,
   };
 

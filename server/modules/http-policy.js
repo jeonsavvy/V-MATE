@@ -121,10 +121,9 @@ export const isOriginAllowed = (origin, requestOrigin = '', requestHeaders = und
 const resolveClientIp = (event) => {
     const headers = event?.headers || {};
     const trustProxyHeaders = shouldTrustProxyHeaders();
-    const cfRay = headers['cf-ray'] || headers['CF-Ray'];
-    const fromCloudflareEdge = Boolean(String(cfRay || '').trim());
+    const trustedAdapter = event?.requestContext?.trustedProxy === true;
     const cfConnectingIp = headers['cf-connecting-ip'] || headers['CF-Connecting-IP'];
-    if (cfConnectingIp && (fromCloudflareEdge || trustProxyHeaders)) {
+    if (cfConnectingIp && (trustedAdapter || trustProxyHeaders)) {
         return String(cfConnectingIp).trim();
     }
 
@@ -219,7 +218,12 @@ export const resetAllowedOriginCacheForTests = () => {
     cachedAllowedOrigins = null;
 };
 
-export const buildHeaders = (originAllowed, origin) => {
+export const CORS_ALLOWED_METHODS = Object.freeze({
+    chat: 'POST, OPTIONS',
+    platform: 'GET, POST, PATCH, DELETE, OPTIONS',
+});
+
+export const buildHeaders = (originAllowed, origin, { allowedMethods = CORS_ALLOWED_METHODS.chat } = {}) => {
     const resolvedOrigin = originAllowed ? (origin || '*') : 'null';
     const exposedHeaders = [
         'X-V-MATE-Trace-Id',
@@ -236,8 +240,8 @@ export const buildHeaders = (originAllowed, origin) => {
 
     return {
         'Access-Control-Allow-Origin': resolvedOrigin,
-        'Access-Control-Allow-Headers': 'Content-Type, X-V-MATE-API-Version',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-V-MATE-API-Version',
+        'Access-Control-Allow-Methods': allowedMethods,
         'Access-Control-Expose-Headers': exposedHeaders,
         'Vary': 'Origin',
         'Cache-Control': 'no-store, max-age=0',

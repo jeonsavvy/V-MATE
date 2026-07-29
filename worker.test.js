@@ -56,6 +56,61 @@ test('routes /api/chat OPTIONS preflight request to chat handler', async () => {
 
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('access-control-allow-origin'), 'http://localhost:5173');
+  assert.match(response.headers.get('access-control-allow-headers') || '', /Authorization/i);
+  assert.equal(response.headers.get('access-control-allow-methods'), 'POST, OPTIONS');
+});
+
+test('advertises authenticated CRUD methods on platform API preflight', async () => {
+  const request = new Request('https://example.com/api/characters/character-a', {
+    method: 'OPTIONS',
+    headers: {
+      Origin: 'http://localhost:5173',
+      'Access-Control-Request-Method': 'PATCH',
+      'Access-Control-Request-Headers': 'Authorization, Content-Type',
+    },
+  });
+
+  const response = await worker.fetch(request, {
+    ALLOWED_ORIGINS: 'http://localhost:5173',
+    ALLOW_ALL_ORIGINS: 'false',
+    ALLOW_NON_BROWSER_ORIGIN: 'false',
+  });
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('access-control-allow-headers') || '', /Authorization/i);
+  assert.equal(response.headers.get('access-control-allow-methods'), 'GET, POST, PATCH, DELETE, OPTIONS');
+});
+
+test('marks Worker adapter events as trusted before resolving Cloudflare client IP headers', async () => {
+  let observedEvent = null;
+  const isolatedWorker = createWorker({
+    chatHandlerImpl: async (event) => {
+      observedEvent = event;
+      return {
+        statusCode: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ok: true }),
+      };
+    },
+  });
+  const request = new Request('https://example.com/api/chat', {
+    method: 'POST',
+    headers: {
+      Origin: 'http://localhost:5173',
+      'Content-Type': 'application/json',
+      'CF-Connecting-IP': '198.51.100.10',
+    },
+    body: '{}',
+  });
+
+  const response = await isolatedWorker.fetch(request, {
+    ALLOWED_ORIGINS: 'http://localhost:5173',
+    ALLOW_ALL_ORIGINS: 'false',
+    ALLOW_NON_BROWSER_ORIGIN: 'false',
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(observedEvent?.requestContext?.trustedProxy, true);
 });
 
 test('serves platform home api payload from /api/home', async () => {

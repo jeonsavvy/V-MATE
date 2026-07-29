@@ -259,7 +259,7 @@ test('creates and reads a room payload through platform room routes', async () =
     assert.equal(created.room?.character?.slug, character.slug);
     assert.equal(created.room?.world?.slug, world.slug);
     assert.equal(created.room?.userAlias, '유민');
-    assert.equal(typeof created.room?.bridgeProfile?.meetingTrigger, 'string');
+    assert.equal(Object.hasOwn(created.room || {}, 'bridgeProfile'), false);
 
     const getResponse = await fetch(`${baseUrl}/api/rooms/${created.room.id}`, {
       headers: {
@@ -272,6 +272,7 @@ test('creates and reads a room payload through platform room routes', async () =
     assert.equal(fetched.room?.id, created.room.id);
     assert.equal(Array.isArray(fetched.room?.messages), true);
     assert.equal(typeof fetched.room?.state?.relationshipState, 'string');
+    assert.equal(Object.hasOwn(fetched.room || {}, 'bridgeProfile'), false);
   } finally {
     await close();
   }

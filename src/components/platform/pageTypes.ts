@@ -7,7 +7,10 @@ export interface PlatformPageChromeProps {
   userAvatarInitial: string
   searchQuery: string
   onSearchChange: (value: string) => void
+  onSearchSubmit: (value: string) => void
   onNavigate: (path: string) => void
+  onEditorDirtyChange?: (isDirty: boolean) => void
+  getNavigationGeneration?: () => number
   onAuthRequest: () => void
   onSignOut: () => void
   onDeleteAccount: () => Promise<void>

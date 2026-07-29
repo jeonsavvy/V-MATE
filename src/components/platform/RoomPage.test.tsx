@@ -16,6 +16,9 @@ vi.mock('@/lib/platform/apiClient', async (importOriginal) => ({
   platformApi: api,
 }))
 
+const scrollIntoView = vi.fn()
+const originalScrollIntoView = HTMLElement.prototype.scrollIntoView
+
 const baseEntity = {
   headline: '테스트',
   summary: '테스트 콘텐츠',
@@ -52,17 +55,6 @@ const room: RoomSummary = {
     coverImageUrl: '/starter/world-a.webp',
     imageSlots: [],
   },
-  bridgeProfile: {
-    entryMode: 'in_world',
-    characterRoleInWorld: '등장인물',
-    userRoleInWorld: '대화 상대',
-    meetingTrigger: '첫 만남',
-    relationshipDistance: '초면',
-    currentGoal: '대화하기',
-    startingLocation: '지하철 입구',
-    worldTerms: [],
-    firstScenePressure: '비가 막 그쳤다',
-  },
   state: {
     currentSituation: '비가 막 그친 밤이다.',
     location: '지하철 입구',
@@ -95,6 +87,7 @@ const chrome: PlatformPageChromeProps = {
   userAvatarInitial: '사',
   searchQuery: '',
   onSearchChange: vi.fn(),
+  onSearchSubmit: vi.fn(),
   onNavigate: vi.fn(),
   onAuthRequest: vi.fn(),
   onSignOut: vi.fn(),
@@ -110,10 +103,13 @@ const chrome: PlatformPageChromeProps = {
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+  if (originalScrollIntoView) HTMLElement.prototype.scrollIntoView = originalScrollIntoView
+  else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView')
 })
 
 beforeEach(() => {
   vi.clearAllMocks()
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scrollIntoView })
   api.fetchRoom.mockResolvedValue({ room })
   api.fetchChatQuota.mockResolvedValue({
     quota: { limit: 30, remaining: 28, resetAt: '2026-07-22T00:00:00+09:00' },
@@ -121,6 +117,64 @@ beforeEach(() => {
 })
 
 describe('RoomPage artwork hierarchy', () => {
+  it('positions an opened room at the latest message', async () => {
+    render(<RoomPage chrome={chrome} roomId={room.id} />)
+
+    await screen.findByText('안녕하세요.')
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ block: 'end', behavior: 'auto' }))
+  })
+
+  it('does not pull the viewport down for a reply after the reader scrolls away from the bottom', async () => {
+    const repliedRoom: RoomSummary = {
+      ...room,
+      messages: [
+        ...room.messages,
+        { id: 'user-2', role: 'user', createdAt: '2026-07-21T00:00:01.000Z', content: '계속 말해 주세요.' },
+        { id: 'assistant-2', role: 'assistant', createdAt: '2026-07-21T00:00:02.000Z', content: { emotion: 'normal', inner_heart: '', response: '이어진 답변입니다.' } },
+      ],
+    }
+    api.sendRoomMessage.mockResolvedValueOnce({ room: repliedRoom, quota: { limit: 30, remaining: 27, resetAt: '2026-07-22T00:00:00+09:00' } })
+    render(<RoomPage chrome={chrome} roomId={room.id} />)
+    await screen.findByText('안녕하세요.')
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
+    scrollIntoView.mockClear()
+    vi.spyOn(document.documentElement, 'scrollHeight', 'get').mockReturnValue(2400)
+    vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(700)
+    vi.spyOn(window, 'scrollY', 'get').mockReturnValue(200)
+    fireEvent.scroll(window)
+
+    fireEvent.change(screen.getByRole('textbox', { name: '메시지' }), { target: { value: '계속 말해 주세요.' } })
+    fireEvent.click(screen.getByRole('button', { name: '보내기' }))
+    expect(await screen.findByText('이어진 답변입니다.')).toBeTruthy()
+    await new Promise((resolve) => window.setTimeout(resolve, 30))
+    expect(scrollIntoView).not.toHaveBeenCalled()
+  })
+
+  it('follows a new reply while the reader remains near the bottom', async () => {
+    const repliedRoom: RoomSummary = {
+      ...room,
+      messages: [
+        ...room.messages,
+        { id: 'user-3', role: 'user', createdAt: '2026-07-21T00:00:01.000Z', content: '다음 이야기' },
+        { id: 'assistant-3', role: 'assistant', createdAt: '2026-07-21T00:00:02.000Z', content: { emotion: 'normal', inner_heart: '', response: '다음 답변입니다.' } },
+      ],
+    }
+    api.sendRoomMessage.mockResolvedValueOnce({ room: repliedRoom, quota: { limit: 30, remaining: 27, resetAt: '2026-07-22T00:00:00+09:00' } })
+    render(<RoomPage chrome={chrome} roomId={room.id} />)
+    await screen.findByText('안녕하세요.')
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
+    scrollIntoView.mockClear()
+    vi.spyOn(document.documentElement, 'scrollHeight', 'get').mockReturnValue(2000)
+    vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(700)
+    vi.spyOn(window, 'scrollY', 'get').mockReturnValue(1250)
+    fireEvent.scroll(window)
+
+    fireEvent.change(screen.getByRole('textbox', { name: '메시지' }), { target: { value: '다음 이야기' } })
+    fireEvent.click(screen.getByRole('button', { name: '보내기' }))
+    expect(await screen.findByText('다음 답변입니다.')).toBeTruthy()
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ block: 'end', behavior: 'smooth' }))
+  })
+
   it('keeps the character portrait as the primary desktop artwork when a world is selected', async () => {
     render(<RoomPage chrome={chrome} roomId={room.id} />)
 

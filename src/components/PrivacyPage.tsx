@@ -58,6 +58,7 @@ export function PrivacyPage({ chrome }: { chrome: PlatformPageChromeProps }) {
       userAvatarInitial={chrome.userAvatarInitial}
       searchValue={chrome.searchQuery}
       onSearchChange={chrome.onSearchChange}
+      onSearchSubmit={chrome.onSearchSubmit}
       onNavigate={chrome.onNavigate}
       onAuthRequest={chrome.onAuthRequest}
       onSignOut={chrome.onSignOut}

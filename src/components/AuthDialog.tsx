@@ -227,76 +227,80 @@ export function AuthDialog({ open, onOpenChange, onSuccess, initialMode = "signi
 
           <TabsContent value="signin">
             <form onSubmit={handleSignIn} className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="email" className="text-sm font-semibold text-foreground">이메일</Label>
-                    <Input
-                      id="email"
-                      name="email"
-                      type="email"
-                      placeholder="hello@example.com"
-                      value={signInEmail}
-                      onChange={(e) => setSignInEmail(e.target.value)}
-                      required
-                      autoComplete="email"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="password" className="text-sm font-semibold text-foreground">비밀번호</Label>
-                    <Input
-                      id="password"
-                      name="password"
-                      type="password"
-                      value={signInPassword}
-                      onChange={(e) => setSignInPassword(e.target.value)}
-                      required
-                      autoComplete="current-password"
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleOpenResetForm}
-                    disabled={isResetLoading || isLoading}
-                    className="inline-flex min-h-11 items-center text-xs font-semibold text-muted-foreground underline-offset-2 transition hover:text-primary hover:underline disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    비밀번호를 잊으셨나요?
-                  </button>
-
-                  {isResetFormOpen && (
-                    <div className="space-y-3 rounded-xl border border-border bg-secondary p-4 shadow-inner-line">
-                      <div className="space-y-2">
-                        <Label htmlFor="reset-email" className="text-sm font-semibold text-foreground">이메일</Label>
-                        <Input
-                          id="reset-email"
-                          name="reset-email"
-                          type="email"
-                          placeholder="hello@example.com"
-                          value={resetEmail}
-                          onChange={(event) => setResetEmail(event.target.value)}
-                          disabled={isResetLoading || isLoading}
-                          autoComplete="email"
-                        />
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <Button type="button" onClick={handleResetPassword} disabled={isResetLoading || isLoading}>
-                          {isResetLoading ? "발송 중…" : "재설정 메일 발송"}
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          onClick={() => setIsResetFormOpen(false)}
-                          disabled={isResetLoading || isLoading}
-                        >
-                          취소
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-
-                  <Button type="submit" className="w-full" disabled={isLoading}>
-                    {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                    {isLoading ? "로그인 중…" : "로그인"}
-                  </Button>
+              <div className="space-y-2">
+                <Label htmlFor="email" className="text-sm font-semibold text-foreground">이메일</Label>
+                <Input
+                  id="email"
+                  name="email"
+                  type="email"
+                  placeholder="hello@example.com"
+                  value={signInEmail}
+                  onChange={(e) => setSignInEmail(e.target.value)}
+                  required
+                  autoComplete="email"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="password" className="text-sm font-semibold text-foreground">비밀번호</Label>
+                <Input
+                  id="password"
+                  name="password"
+                  type="password"
+                  value={signInPassword}
+                  onChange={(e) => setSignInPassword(e.target.value)}
+                  required
+                  autoComplete="current-password"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={handleOpenResetForm}
+                disabled={isResetLoading || isLoading}
+                className="inline-flex min-h-11 items-center text-xs font-semibold text-muted-foreground underline-offset-2 transition hover:text-primary hover:underline disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                비밀번호를 잊으셨나요?
+              </button>
+              <Button type="submit" className="w-full" disabled={isLoading}>
+                {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {isLoading ? "로그인 중…" : "로그인"}
+              </Button>
             </form>
+
+            {isResetFormOpen && (
+              <form
+                aria-label="비밀번호 재설정"
+                className="mt-4 space-y-3 rounded-xl border border-border bg-secondary p-4 shadow-inner-line"
+                onSubmit={(event) => { event.preventDefault(); void handleResetPassword() }}
+              >
+                <div className="space-y-2">
+                  <Label htmlFor="reset-email" className="text-sm font-semibold text-foreground">이메일</Label>
+                  <Input
+                    id="reset-email"
+                    name="reset-email"
+                    type="email"
+                    placeholder="hello@example.com"
+                    value={resetEmail}
+                    onChange={(event) => setResetEmail(event.target.value)}
+                    disabled={isResetLoading || isLoading}
+                    autoComplete="email"
+                    required
+                  />
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button type="submit" disabled={isResetLoading || isLoading}>
+                    {isResetLoading ? "발송 중…" : "재설정 메일 발송"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setIsResetFormOpen(false)}
+                    disabled={isResetLoading || isLoading}
+                  >
+                    취소
+                  </Button>
+                </div>
+              </form>
+            )}
           </TabsContent>
 
           <TabsContent value="signup">

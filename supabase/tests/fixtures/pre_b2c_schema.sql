@@ -680,14 +680,28 @@ insert into public.characters (
 ) values (
   '92000000-0000-4000-8000-000000000002', '91000000-0000-4000-8000-000000000001',
   'sequence-upgrade-character', 'Sequence upgrade character', '', 'private', 'draft',
-  'original', '{}'::text[], '{}'::jsonb, '{}'::jsonb, '{}'::jsonb
+  'original', '{}'::text[],
+  '{"privateNote":"upgrade profile secret"}'::jsonb,
+  '{"privateNote":"upgrade speech secret"}'::jsonb,
+  '{"masterPrompt":"upgrade character prompt secret"}'::jsonb
+) on conflict (id) do nothing;
+
+insert into public.worlds (
+  id, owner_user_id, slug, name, summary, visibility, display_status,
+  source_type, tags, world_rules_markdown, prompt_profile_json
+) values (
+  '92500000-0000-4000-8000-000000000025', '91000000-0000-4000-8000-000000000001',
+  'sequence-upgrade-world', 'Sequence upgrade world', '', 'private', 'draft',
+  'original', '{}'::text[], 'upgrade world rules secret',
+  '{"masterPrompt":"upgrade world prompt secret"}'::jsonb
 ) on conflict (id) do nothing;
 
 insert into public.rooms (
   id, user_id, character_id, title, bridge_profile_json, resolved_prompt_snapshot_json
 ) values (
   '93000000-0000-4000-8000-000000000003', '91000000-0000-4000-8000-000000000001',
-  '92000000-0000-4000-8000-000000000002', 'Sequence upgrade room', '{}'::jsonb, '{}'::jsonb
+  '92000000-0000-4000-8000-000000000002', 'Sequence upgrade room', '{}'::jsonb,
+  '{"basePromptSnapshot":"upgrade room prompt secret"}'::jsonb
 ) on conflict (id) do nothing;
 
 alter table public.room_messages add column if not exists sequence_no bigint;

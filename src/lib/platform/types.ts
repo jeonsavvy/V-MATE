@@ -2,6 +2,7 @@ export type EntityType = 'character' | 'world'
 export type Visibility = 'private' | 'unlisted' | 'public'
 export type DisplayStatus = 'visible' | 'hidden' | 'draft'
 export type ModerationStatus = 'clear' | 'quarantined' | 'blocked'
+export type CatalogFilter = 'new' | 'popular' | ''
 
 export interface ChatQuota {
   limit: number
@@ -52,10 +53,13 @@ export interface WorldSummary extends EntitySummary {
 export interface CharacterImageSlot {
   id: string
   slot: string
-  usage: string
-  trigger: string
-  priority: number
+  // Public reads expose artwork only; owner detail reads add authoring metadata.
+  usage?: string
+  trigger?: string
+  priority?: number
   thumbUrl?: string
+  feedUrl?: string
+  feedWidth?: number
   cardUrl?: string
   detailUrl?: string
 }
@@ -95,16 +99,18 @@ export interface WorldDetail extends WorldSummary {
   promptProfileJson?: Record<string, unknown>
 }
 
-export interface BridgeProfile {
-  entryMode: 'direct_character' | 'in_world'
-  characterRoleInWorld: string
-  userRoleInWorld: string
-  meetingTrigger: string
-  relationshipDistance: string
-  currentGoal: string
-  startingLocation: string
-  worldTerms: string[]
-  firstScenePressure: string
+export interface DetailViewer {
+  bookmarked: boolean | null
+}
+
+export interface CharacterDetailPayload {
+  item: CharacterDetail
+  viewer: DetailViewer
+}
+
+export interface WorldDetailPayload {
+  item: WorldDetail
+  viewer: DetailViewer
 }
 
 export interface RoomStateSummary {
@@ -138,7 +144,6 @@ export interface RoomSummary {
   userAlias: string
   character: CharacterSummary
   world: WorldSummary | null
-  bridgeProfile: BridgeProfile
   state: RoomStateSummary
   messages: RoomMessage[]
   createdAt: string

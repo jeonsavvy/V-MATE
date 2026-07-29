@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { handler as chatHandler } from './chat-handler.js';
-import { buildHeaders, isOriginAllowed } from './modules/http-policy.js';
+import { buildHeaders, CORS_ALLOWED_METHODS, isOriginAllowed } from './modules/http-policy.js';
 import { buildApiErrorResult } from './modules/http-response.js';
 import { mergeChatHandlerContexts, resolveChatHandlerContext } from './modules/chat-handler-context.js';
 import { getRequestBodyLimitBytes } from './modules/runtime-config.js';
@@ -135,7 +135,9 @@ export const createCloudRunServer = ({
         const origin = req.headers?.origin;
         const originAllowed = isOriginAllowed(origin, url.origin, req.headers);
         const responseHeaders = {
-            ...buildHeaders(originAllowed, origin),
+            ...buildHeaders(originAllowed, origin, {
+                allowedMethods: isChatPath ? CORS_ALLOWED_METHODS.chat : CORS_ALLOWED_METHODS.platform,
+            }),
             'X-V-MATE-Trace-Id': requestTraceId,
         };
 

@@ -39,6 +39,6 @@ describe('public runtime configuration', () => {
     const { platformApi } = await import('@/lib/platform/apiClient')
     await platformApi.fetchHome()
 
-    expect(fetchMock.mock.calls[0]?.[0]).toBe('/runtime-gateway/api/home?tab=characters&search=&filter=')
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/runtime-gateway/api/home?tab=characters&search=&characterFilter=&worldFilter=')
   })
 })

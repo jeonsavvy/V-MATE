@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { afterEach, test } from 'node:test';
 import {
   buildAssetStoragePath,
@@ -6,10 +7,22 @@ import {
   buildWorldWritePayload,
   collectContentAssetUrls,
   commitRoomTurn,
+  createCharacter as createPersistentCharacter,
+  createWorld as createPersistentWorld,
   deleteAccount,
   deleteOwnedContent,
+  getBookmarkStatus,
+  getCharacterDetail,
+  getLibraryPayload,
+  getOpsDashboard,
+  getRoomHistoryForModel,
+  getRoomPromptContext,
+  getWorldDetail,
   incrementChatStartCountsBestEffort,
+  listCharacters,
   listOwnedStoragePaths,
+  listRecentRooms,
+  listWorlds,
   mapLibraryEntriesToResolvedItems,
   persistRecentView,
   prepareAssetUploads,
@@ -21,6 +34,8 @@ import {
   resolveStoragePathFromPublicUrl,
   reconcileExpiredChatReservations,
   reconcileStorageDeletionOutbox,
+  updateCharacter as updatePersistentCharacter,
+  updateWorld as updatePersistentWorld,
 } from './supabase-platform-repository.js';
 
 const ORIGINAL_FETCH = globalThis.fetch;
@@ -135,13 +150,14 @@ test('commitRoomTurn returns the committed local snapshot without a post-RPC rea
     if (request.url.includes('/rest/v1/rpc/commit_room_turn_v2') && request.method === 'POST') {
       return new Response(JSON.stringify({ room_id: roomId, version: 8 }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
+    if (request.url.includes('/rest/v1/owned_room_summaries') && request.method === 'GET') {
+      return new Response(JSON.stringify(roomRow), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
     if (request.url.includes('/rest/v1/rooms') && request.method === 'GET') {
-      const data = request.url.includes('resolved_prompt_snapshot_json')
-        ? { resolved_prompt_snapshot_json: storedSnapshot, bridge_profile_json: {} }
-        : roomRow;
+      const data = { resolved_prompt_snapshot_json: storedSnapshot, bridge_profile_json: {} };
       return new Response(JSON.stringify(data), { status: 200, headers: { 'content-type': 'application/json' } });
     }
-    if (request.url.includes('/rest/v1/characters') && request.method === 'GET') {
+    if ((request.url.includes('/rest/v1/public_character_catalog') || request.url.includes('/rest/v1/owned_character_details')) && request.method === 'GET') {
       return new Response(JSON.stringify([characterRow]), { status: 200, headers: { 'content-type': 'application/json' } });
     }
     if (request.url.includes('/rest/v1/room_state_summaries') && request.method === 'GET') {
@@ -164,6 +180,8 @@ test('commitRoomTurn returns the committed local snapshot without a post-RPC rea
     userMessage: 'continue',
     assistantMessage,
     response: { message: assistantMessage, trace_id: 'trace-1' },
+    room: { id: roomId, version: 6 },
+    promptContext: { storedPromptSnapshot: { basePromptSnapshot: 'stale prompt' } },
   });
 
   const commitIndex = requests.findIndex((request) => request.url.includes('/rest/v1/rpc/commit_room_turn_v2'));
@@ -190,6 +208,296 @@ test('commitRoomTurn returns the committed local snapshot without a post-RPC rea
   assert.match(room.messages.at(-1).id, /^assistant-[0-9a-f]{24}$/);
   assert.equal(room.lastMessageAt, room.updatedAt);
   assert.equal(Number.isNaN(Date.parse(room.updatedAt)), false);
+  assert.equal(Object.hasOwn(room, 'resolvedPromptSnapshotJson'), false);
+});
+
+test('commitRoomTurn reuses matching room and prompt snapshots without pre-commit reads', async () => {
+  process.env.SUPABASE_URL = 'https://project.supabase.co';
+  process.env.SUPABASE_ANON_KEY = 'anon-test-key';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-test-key';
+  const userId = '11111111-1111-4111-8111-111111111111';
+  const roomId = '22222222-2222-4222-8222-222222222222';
+  const requestId = `room:${roomId}:matching-snapshot`;
+  const storedPromptSnapshot = { basePromptSnapshot: 'base prompt', runningSummary: '', compactedUserTurns: 0 };
+  const roomSnapshot = {
+    id: roomId,
+    title: 'Matching snapshot room',
+    userAlias: '나',
+    character: { id: 'character-1', entityType: 'character', slug: 'snapshot-character', name: 'Snapshot Character' },
+    world: null,
+    bridgeProfile: {},
+    state: {
+      currentSituation: 'before', location: 'room', relationshipState: 'neutral',
+      inventory: [], appearance: [], pose: [], futurePromises: [], worldNotes: [],
+    },
+    messages: [{
+      id: 'greeting-1', role: 'assistant', createdAt: '2026-07-27T00:00:00.000Z',
+      content: { emotion: 'normal', inner_heart: '', response: 'hello' },
+    }],
+    createdAt: '2026-07-27T00:00:00.000Z',
+    updatedAt: '2026-07-27T00:00:00.000Z',
+    lastMessageAt: '2026-07-27T00:00:00.000Z',
+    version: 7,
+  };
+  const requests = [];
+  globalThis.fetch = async (url, options = {}) => {
+    const request = { url: decodeURIComponent(String(url)), method: String(options.method || 'GET').toUpperCase() };
+    requests.push(request);
+    if (request.url.includes('/rest/v1/rpc/commit_room_turn_v2') && request.method === 'POST') {
+      return new Response(JSON.stringify({ room_id: roomId, version: 8 }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response('{}', { status: 500, headers: { 'content-type': 'application/json' } });
+  };
+  const assistantMessage = { emotion: 'normal', inner_heart: '', response: 'done', narration: 'after' };
+
+  const room = await commitRoomTurn({
+    event: { headers: { authorization: 'Bearer user-token' } },
+    userId,
+    roomId,
+    requestId,
+    requestFingerprint: 'b'.repeat(64),
+    expectedVersion: 7,
+    userMessage: 'continue',
+    assistantMessage,
+    response: { message: assistantMessage, trace_id: 'trace-matching' },
+    room: roomSnapshot,
+    promptContext: { storedPromptSnapshot },
+  });
+
+  assert.equal(requests.length, 1);
+  assert.match(requests[0].url, /\/rest\/v1\/rpc\/commit_room_turn_v2/);
+  assert.equal(room.version, 8);
+  assert.equal(room.messages.length, 3);
+});
+
+test('public details use safe catalog views while owner details retain private authoring fields', async () => {
+  process.env.SUPABASE_URL = 'https://project.supabase.co';
+  process.env.SUPABASE_ANON_KEY = 'anon-test-key';
+  const ownerId = '11111111-1111-4111-8111-111111111111';
+  const publicCharacter = {
+    id: '22222222-2222-4222-8222-222222222222', owner_user_id: ownerId,
+    slug: 'safe-public-character', name: 'Safe character', headline: 'Safe headline', summary: 'Safe summary',
+    cover_image_url: '', avatar_image_url: '', visibility: 'public', display_status: 'visible',
+    source_type: 'original', tags: [], favorite_count: 0, chat_start_count: 0,
+    creator_name: 'Safe creator', personality: 'Safe personality', voice: 'Safe voice', relationship: 'Safe relationship',
+    hero_image_url: '', image_slots: [{ id: 'main', slot: 'main', detailUrl: 'https://safe.example/character.webp' }],
+  };
+  const publicWorld = {
+    id: '33333333-3333-4333-8333-333333333333', owner_user_id: ownerId,
+    slug: 'safe-public-world', name: 'Safe world', headline: 'Safe headline', summary: 'Safe summary',
+    cover_image_url: '', visibility: 'public', display_status: 'visible', source_type: 'original', tags: [],
+    favorite_count: 0, chat_start_count: 0, creator_name: 'Safe creator', image_slots: [{ id: 'main', slot: 'main', detailUrl: 'https://safe.example/world.webp' }],
+  };
+  const ownerCharacter = {
+    ...publicCharacter,
+    profile_json: { personality: 'Safe personality', privateNote: 'profile secret' },
+    speech_style_json: { voice: 'Safe voice', privateNote: 'speech secret' },
+    prompt_profile_json: {
+      masterPrompt: 'character master secret',
+      imageSlots: [{ id: 'main', slot: 'main', usage: 'owner character usage', trigger: 'owner character trigger', priority: 91, detailUrl: 'https://safe.example/character.webp' }],
+    },
+  };
+  const ownerWorld = {
+    ...publicWorld,
+    world_rules_markdown: 'world rules secret',
+    prompt_profile_json: {
+      masterPrompt: 'world master secret',
+      imageSlots: [{ id: 'main', slot: 'main', usage: 'owner world usage', trigger: 'owner world trigger', priority: 92, detailUrl: 'https://safe.example/world.webp' }],
+    },
+  };
+  const requests = [];
+  globalThis.fetch = async (url) => {
+    const requestUrl = decodeURIComponent(String(url));
+    requests.push(requestUrl);
+    if (requestUrl.includes('/rest/v1/public_character_catalog')) return new Response(JSON.stringify(publicCharacter), { status: 200, headers: { 'content-type': 'application/json' } });
+    if (requestUrl.includes('/rest/v1/public_world_catalog')) return new Response(JSON.stringify(publicWorld), { status: 200, headers: { 'content-type': 'application/json' } });
+    if (requestUrl.includes('/rest/v1/owned_character_details')) return new Response(JSON.stringify(ownerCharacter), { status: 200, headers: { 'content-type': 'application/json' } });
+    if (requestUrl.includes('/rest/v1/owned_world_details')) return new Response(JSON.stringify(ownerWorld), { status: 200, headers: { 'content-type': 'application/json' } });
+    if (requestUrl.includes('/rest/v1/character_assets') || requestUrl.includes('/rest/v1/world_assets')) return new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } });
+    return new Response('{}', { status: 500, headers: { 'content-type': 'application/json' } });
+  };
+
+  const anonymousCharacter = await getCharacterDetail({ slug: publicCharacter.slug, userId: '' });
+  const anonymousWorld = await getWorldDetail({ slug: publicWorld.slug, userId: '' });
+  assert.equal(Object.hasOwn(anonymousCharacter, 'profileJson'), false);
+  assert.equal(Object.hasOwn(anonymousCharacter, 'speechStyleJson'), false);
+  assert.equal(Object.hasOwn(anonymousCharacter, 'promptProfileJson'), false);
+  assert.equal(Object.hasOwn(anonymousCharacter.imageSlots[0], 'usage'), false);
+  assert.deepEqual(
+    anonymousCharacter.profileSections.map((section) => section.body),
+    ['Safe personality', 'Safe voice', 'Safe relationship'],
+    'personality, voice, and relationship are intentional public display fields, not raw authoring JSON',
+  );
+  assert.equal(Object.hasOwn(anonymousWorld, 'worldRulesMarkdown'), false);
+  assert.equal(Object.hasOwn(anonymousWorld, 'promptProfileJson'), false);
+  assert.equal(Object.hasOwn(anonymousWorld.imageSlots[0], 'usage'), false);
+
+  const event = { headers: { authorization: 'Bearer owner-token' } };
+  const editableCharacter = await getCharacterDetail({ event, slug: publicCharacter.slug, userId: ownerId });
+  const editableWorld = await getWorldDetail({ event, slug: publicWorld.slug, userId: ownerId });
+  assert.equal(editableCharacter.promptProfileJson.masterPrompt, 'character master secret');
+  assert.equal(editableCharacter.imageSlots[0].usage, 'owner character usage');
+  assert.equal(editableCharacter.imageSlots[0].trigger, 'owner character trigger');
+  assert.equal(editableCharacter.imageSlots[0].priority, 91);
+  assert.equal(editableCharacter.profileJson.privateNote, 'profile secret');
+  assert.equal(editableWorld.promptProfileJson.masterPrompt, 'world master secret');
+  assert.equal(editableWorld.imageSlots[0].usage, 'owner world usage');
+  assert.equal(editableWorld.imageSlots[0].trigger, 'owner world trigger');
+  assert.equal(editableWorld.imageSlots[0].priority, 92);
+  assert.equal(editableWorld.worldRulesMarkdown, 'world rules secret');
+  assert.equal(requests.some((url) => url.includes('/rest/v1/characters?') || url.includes('/rest/v1/worlds?')), false);
+});
+
+test('room prompt context uses service-role base reads with an explicit user ownership predicate', async () => {
+  process.env.SUPABASE_URL = 'https://project.supabase.co';
+  process.env.SUPABASE_ANON_KEY = 'anon-test-key';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-test-key';
+  const userId = '11111111-1111-4111-8111-111111111111';
+  const roomId = '22222222-2222-4222-8222-222222222222';
+  const requests = [];
+  globalThis.fetch = async (url, options = {}) => {
+    const requestUrl = decodeURIComponent(String(url));
+    const headers = new Headers(options.headers || {});
+    requests.push({ url: requestUrl, apikey: headers.get('apikey') });
+    if (requestUrl.includes('/rest/v1/rooms')) {
+      const owned = requestUrl.includes(`user_id=eq.${userId}`);
+      return new Response(JSON.stringify(owned ? {
+        resolved_prompt_snapshot_json: { basePromptSnapshot: 'private base prompt' },
+        bridge_profile_json: {},
+      } : null), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (requestUrl.includes('/rest/v1/room_state_summaries')) {
+      return new Response(JSON.stringify({ current_situation: 'safe state' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response('{}', { status: 500, headers: { 'content-type': 'application/json' } });
+  };
+
+  const context = await getRoomPromptContext({ event: { headers: { authorization: 'Bearer user-token' } }, roomId, userId });
+  assert.match(context.promptSnapshot, /private base prompt/);
+  const roomRequest = requests.find((request) => request.url.includes('/rest/v1/rooms'));
+  assert.equal(roomRequest.apikey, 'service-role-test-key');
+  assert.match(roomRequest.url, new RegExp(`id=eq\\.${roomId}`));
+  assert.match(roomRequest.url, new RegExp(`user_id=eq\\.${userId}`));
+
+  const denied = await getRoomPromptContext({ roomId, userId: '33333333-3333-4333-8333-333333333333' });
+  assert.equal(denied, null);
+});
+
+test('service-role content writes prove ownership and return only safe summary columns', async () => {
+  process.env.SUPABASE_URL = 'https://project.supabase.co';
+  process.env.SUPABASE_ANON_KEY = 'anon-test-key';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-test-key';
+  const userId = '11111111-1111-4111-8111-111111111111';
+  const characterRow = {
+    id: '22222222-2222-4222-8222-222222222222',
+    owner_user_id: userId,
+    slug: 'owned-character',
+    name: 'Owned character',
+    headline: 'Safe headline',
+    summary: 'Safe summary',
+    visibility: 'private',
+    display_status: 'draft',
+    tags: [],
+  };
+  const worldRow = {
+    id: '33333333-3333-4333-8333-333333333333',
+    owner_user_id: userId,
+    slug: 'owned-world',
+    name: 'Owned world',
+    headline: 'Safe world headline',
+    summary: 'Safe world summary',
+    visibility: 'private',
+    display_status: 'draft',
+    tags: [],
+  };
+  const requests = [];
+  globalThis.fetch = async (url, options = {}) => {
+    const requestUrl = decodeURIComponent(String(url));
+    const method = String(options.method || 'GET').toUpperCase();
+    const headers = new Headers(options.headers || {});
+    requests.push({ url: requestUrl, method, apikey: headers.get('apikey') });
+    if (requestUrl.includes('/rest/v1/characters')) {
+      if (method === 'GET') {
+        return new Response(JSON.stringify({
+          id: characterRow.id,
+          profile_json: { creatorName: 'Character creator' },
+          speech_style_json: { voice: 'Private voice note' },
+          prompt_profile_json: { masterPrompt: 'character secret' },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify(characterRow), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (requestUrl.includes('/rest/v1/worlds')) {
+      if (method === 'GET') {
+        return new Response(JSON.stringify({
+          id: worldRow.id,
+          prompt_profile_json: { creatorName: 'World creator', masterPrompt: 'world secret' },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify(worldRow), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response('{}', { status: 500, headers: { 'content-type': 'application/json' } });
+  };
+
+  const createdCharacter = await createPersistentCharacter({
+    userId,
+    payload: {
+      name: characterRow.name,
+      headline: characterRow.headline,
+      summary: characterRow.summary,
+      tags: [],
+      visibility: 'private',
+      profileJson: { creatorName: 'Character creator' },
+      promptProfileJson: { masterPrompt: 'character create secret' },
+    },
+  });
+  const updatedCharacter = await updatePersistentCharacter({
+    userId,
+    slug: characterRow.slug,
+    payload: { summary: 'Updated safe summary' },
+  });
+  const createdWorld = await createPersistentWorld({
+    userId,
+    payload: {
+      name: worldRow.name,
+      headline: worldRow.headline,
+      summary: worldRow.summary,
+      tags: [],
+      visibility: 'private',
+      worldRulesMarkdown: 'world rules secret',
+      promptProfileJson: { creatorName: 'World creator', masterPrompt: 'world create secret' },
+    },
+  });
+  const updatedWorld = await updatePersistentWorld({
+    userId,
+    slug: worldRow.slug,
+    payload: { summary: 'Updated safe world summary' },
+  });
+
+  assert.equal(createdCharacter.creator.name, 'Character creator');
+  assert.equal(updatedCharacter.creator.name, 'Character creator');
+  assert.equal(createdWorld.creator.name, 'World creator');
+  assert.equal(updatedWorld.creator.name, 'World creator');
+  assert.equal(requests.every((request) => request.apikey === 'service-role-test-key'), true);
+
+  const authoringReads = requests.filter((request) => request.method === 'GET');
+  assert.equal(authoringReads.length, 2);
+  for (const request of authoringReads) {
+    assert.match(request.url, new RegExp(`owner_user_id=eq\\.${userId}`));
+    assert.match(request.url, /slug=eq\.owned-(?:character|world)/);
+  }
+  const writeReturns = requests.filter((request) => ['POST', 'PATCH'].includes(request.method));
+  assert.equal(writeReturns.length, 4);
+  for (const request of writeReturns) {
+    assert.doesNotMatch(
+      request.url,
+      /profile_json|speech_style_json|prompt_profile_json|world_rules_markdown/,
+      'write responses must project only safe summary columns',
+    );
+  }
+  for (const request of writeReturns.filter((request) => request.method === 'PATCH')) {
+    assert.match(request.url, new RegExp(`owner_user_id=eq\\.${userId}`));
+  }
 });
 
 test('collectContentAssetUrls gathers cover and slot urls for storage cleanup', () => {
@@ -813,7 +1121,7 @@ test('resolveEntityByRef can resolve owner content even when it is not public', 
                   return {
                     async maybeSingle() {
                       return {
-                        data: table === 'characters'
+                        data: table === 'owned_character_details'
                           ? {
                               id: 'character-1',
                               owner_user_id: 'user-1',
@@ -889,7 +1197,7 @@ test('resolveEntityById can resolve owner content even when it is not public', a
                   return {
                     async maybeSingle() {
                       return {
-                        data: table === 'worlds'
+                        data: table === 'owned_world_details'
                           ? {
                               id,
                               owner_user_id: 'user-1',
@@ -959,6 +1267,233 @@ test('resolveAsyncOrFallback returns fallback when async task throws', async () 
   });
 
   assert.deepEqual(value, []);
+});
+
+test('catalog queries push escaped search, deterministic ordering, and the row cap into PostgREST', async () => {
+  process.env.SUPABASE_URL = 'https://project.supabase.co';
+  process.env.SUPABASE_ANON_KEY = 'anon-test-key';
+  const requests = [];
+  const characterRows = [
+    { id: 'character-2', slug: 'second', name: 'Second', summary: '', tags: [], favorite_count: 0, chat_start_count: 0 },
+    { id: 'character-1', slug: 'first', name: 'First', summary: '', tags: [], favorite_count: 0, chat_start_count: 0 },
+  ];
+  globalThis.fetch = async (url) => {
+    const requestUrl = decodeURIComponent(String(url));
+    requests.push(requestUrl);
+    const data = requestUrl.includes('/rest/v1/public_character_catalog') ? characterRows : [];
+    return new Response(JSON.stringify(data), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+
+  const characters = await listCharacters({ search: '50%_off', filter: 'new' });
+  await listWorlds({ search: '50%_off', filter: 'popular' });
+  await listCharacters({ search: 'x'.repeat(300), filter: 'popular' });
+
+  assert.deepEqual(characters.map((item) => item.id), ['character-2', 'character-1'], 'database order is preserved without a second JS sort');
+  const characterRequest = requests.find((url) => url.includes('/rest/v1/public_character_catalog'));
+  const worldRequest = requests.find((url) => url.includes('/rest/v1/public_world_catalog'));
+  assert.match(characterRequest, /search_text=ilike\./);
+  assert.ok(characterRequest.includes('\\%') && characterRequest.includes('\\_'), 'LIKE wildcards must be escaped');
+  assert.match(characterRequest, /order=updated_at\.desc,id\.asc/);
+  assert.match(worldRequest, /order=chat_start_count\.desc,favorite_count\.desc,updated_at\.desc,id\.asc/);
+  assert.match(characterRequest, /limit=200/);
+  assert.match(worldRequest, /limit=200/);
+  const boundedSearchRequest = requests.filter((url) => url.includes('/rest/v1/public_character_catalog')).at(-1);
+  assert.ok(boundedSearchRequest.includes('x'.repeat(160)));
+  assert.equal(boundedSearchRequest.includes('x'.repeat(161)), false, 'catalog search work must stay bounded');
+});
+
+test('recent rooms batch hydrate in at most seven queries and omit message reads for summaries', async () => {
+  process.env.SUPABASE_URL = 'https://project.supabase.co';
+  process.env.SUPABASE_ANON_KEY = 'anon-test-key';
+  const userId = '11111111-1111-4111-8111-111111111111';
+  const characterId = '22222222-2222-4222-8222-222222222222';
+  const worldId = '33333333-3333-4333-8333-333333333333';
+  const roomRows = [1, 2].map((index) => ({
+    id: `44444444-4444-4444-8444-44444444444${index}`,
+    user_id: userId,
+    character_id: characterId,
+    world_id: worldId,
+    title: `Room ${index}`,
+    user_alias: '나',
+    bridge_profile_json: {},
+    created_at: `2026-07-2${index}T00:00:00.000Z`,
+    updated_at: `2026-07-2${index}T00:00:00.000Z`,
+    last_message_at: `2026-07-2${index}T00:00:00.000Z`,
+    version: index,
+  }));
+  const characterRow = {
+    id: characterId, owner_user_id: 'creator', slug: 'batch-character', name: 'Batch Character', summary: '',
+    visibility: 'public', display_status: 'visible', source_type: 'original', tags: [], favorite_count: 0, chat_start_count: 0,
+  };
+  const worldRow = {
+    id: worldId, owner_user_id: 'creator', slug: 'batch-world', name: 'Batch World', summary: '',
+    visibility: 'public', display_status: 'visible', source_type: 'original', tags: [], favorite_count: 0, chat_start_count: 0,
+  };
+  let requests = [];
+  globalThis.fetch = async (url) => {
+    const requestUrl = decodeURIComponent(String(url));
+    requests.push(requestUrl);
+    let data = [];
+    if (requestUrl.includes('/rest/v1/owned_room_summaries')) data = roomRows;
+    else if (requestUrl.includes('/rest/v1/public_character_catalog')) data = [characterRow];
+    else if (requestUrl.includes('/rest/v1/public_world_catalog')) data = [worldRow];
+    else if (requestUrl.includes('/rest/v1/room_state_summaries')) data = roomRows.map((room) => ({ room_id: room.id, current_situation: room.title }));
+    else if (requestUrl.includes('/rest/v1/room_messages')) data = roomRows.map((room, index) => ({
+      id: `message-${index}`, room_id: room.id, role: 'assistant', sequence_no: 1,
+      created_at: room.created_at, content_json: { emotion: 'normal', inner_heart: '', response: room.title },
+    }));
+    return new Response(JSON.stringify(data), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+
+  const hydrated = await listRecentRooms({ event: { headers: { authorization: 'Bearer user-token' } }, userId, limit: 2 });
+  assert.equal(requests.length, 7);
+  assert.equal(hydrated.length, 2);
+  assert.equal(hydrated[0].messages[0].content.response, 'Room 1');
+  assert.match(requests.find((url) => url.includes('/rest/v1/owned_room_summaries')), /limit=2/);
+
+  requests = [];
+  const summaries = await listRecentRooms({
+    event: { headers: { authorization: 'Bearer user-token' } }, userId, limit: 200, includeMessages: false,
+  });
+  assert.equal(requests.length, 6);
+  assert.equal(requests.some((url) => url.includes('/rest/v1/room_messages')), false);
+  assert.ok(summaries.every((room) => room.messages.length === 0));
+  assert.match(requests.find((url) => url.includes('/rest/v1/owned_room_summaries')), /limit=20/);
+
+  globalThis.fetch = async (url) => {
+    const requestUrl = decodeURIComponent(String(url));
+    let data = [];
+    if (requestUrl.includes('/rest/v1/owned_room_summaries')) data = roomRows;
+    else if (requestUrl.includes('/rest/v1/public_character_catalog')) data = [characterRow];
+    else if (requestUrl.includes('/rest/v1/public_world_catalog')) data = [worldRow];
+    else if (requestUrl.includes('/rest/v1/room_state_summaries')) {
+      return new Response(JSON.stringify({ message: 'state unavailable' }), { status: 503, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify(data), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  await assert.rejects(
+    listRecentRooms({ event: { headers: { authorization: 'Bearer user-token' } }, userId, includeMessages: false }),
+    (error) => error?.message === 'state unavailable',
+    'a failed hydrate must not be presented to the user as an empty room list',
+  );
+});
+
+test('model history reads only the newest twelve rows and restores chronological order', async () => {
+  process.env.SUPABASE_URL = 'https://project.supabase.co';
+  process.env.SUPABASE_ANON_KEY = 'anon-test-key';
+  const requests = [];
+  const descendingRows = Array.from({ length: 12 }, (_, offset) => {
+    const sequence = 12 - offset;
+    const role = sequence % 2 === 1 ? 'user' : 'assistant';
+    return {
+      role,
+      sequence_no: sequence,
+      created_at: `2026-07-27T00:00:${String(sequence).padStart(2, '0')}.000Z`,
+      content_json: role === 'user' ? { text: `message-${sequence}` } : { response: `message-${sequence}` },
+    };
+  });
+  globalThis.fetch = async (url) => {
+    const requestUrl = decodeURIComponent(String(url));
+    requests.push(requestUrl);
+    const data = requestUrl.includes('/rest/v1/owned_room_summaries') ? { id: 'room-1' } : descendingRows;
+    return new Response(JSON.stringify(data), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+
+  const history = await getRoomHistoryForModel({
+    event: { headers: { authorization: 'Bearer user-token' } }, roomId: 'room-1', userId: 'user-1',
+  });
+  const messageRequest = requests.find((url) => url.includes('/rest/v1/room_messages'));
+  assert.match(messageRequest, /order=sequence_no\.desc,created_at\.desc/);
+  assert.match(messageRequest, /limit=12/);
+  assert.deepEqual(history.map((item) => item.content), Array.from({ length: 12 }, (_, index) => `message-${index + 1}`));
+});
+
+test('bookmark status is query-free for anonymous users and library can omit recent rooms', async () => {
+  process.env.SUPABASE_URL = 'https://project.supabase.co';
+  process.env.SUPABASE_ANON_KEY = 'anon-test-key';
+  let requests = [];
+  globalThis.fetch = async (url) => {
+    const requestUrl = decodeURIComponent(String(url));
+    requests.push(requestUrl);
+    const data = requestUrl.includes('/rest/v1/bookmarks') && requestUrl.includes('target_id=eq.character-1')
+      ? { id: 'bookmark-1' }
+      : [];
+    return new Response(JSON.stringify(data), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+
+  assert.equal(await getBookmarkStatus({ event: {}, userId: '', entityType: 'character', targetId: 'character-1' }), false);
+  assert.equal(requests.length, 0);
+  assert.equal(await getBookmarkStatus({
+    event: { headers: { authorization: 'Bearer user-token' } }, userId: 'user-1', entityType: 'character', targetId: 'character-1',
+  }), true);
+  assert.equal(requests.length, 1);
+
+  requests = [];
+  const library = await getLibraryPayload({
+    event: { headers: { authorization: 'Bearer user-token' } }, userId: 'user-1', includeRecentRooms: false,
+  });
+  assert.deepEqual(library.recentRooms, []);
+  assert.equal(requests.some((url) => url.includes('/rest/v1/owned_room_summaries')), false);
+  assert.equal(requests.length, 4);
+});
+
+test('library read failures reject instead of presenting user data as empty', async () => {
+  process.env.SUPABASE_URL = 'https://project.supabase.co';
+  process.env.SUPABASE_ANON_KEY = 'anon-test-key';
+  globalThis.fetch = async (url) => {
+    const requestUrl = decodeURIComponent(String(url));
+    if (requestUrl.includes('/rest/v1/bookmarks')) {
+      return new Response(JSON.stringify({ message: 'permission denied' }), {
+        status: 500,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify([]), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+
+  await assert.rejects(getLibraryPayload({
+    event: { headers: { authorization: 'Bearer user-token' } }, userId: 'user-1', includeRecentRooms: false,
+  }));
+});
+
+test('operations dashboard rejects unavailable owner capability and query failures', async () => {
+  process.env.SUPABASE_URL = 'https://project.supabase.co';
+  process.env.SUPABASE_ANON_KEY = 'anon-test-key';
+  delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  globalThis.fetch = async (url) => {
+    const requestUrl = decodeURIComponent(String(url));
+    if (requestUrl.includes('/rest/v1/rpc/is_owner_user')) {
+      return new Response(JSON.stringify(true), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify([]), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+
+  await assert.rejects(
+    getOpsDashboard({ event: { headers: { authorization: 'Bearer user-token' } }, userId: 'owner-1' }),
+    (error) => error?.code === 'OPS_DASHBOARD_UNAVAILABLE',
+    'an owner dashboard must not become a successful null payload without its global read capability',
+  );
+
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-test-key';
+  globalThis.fetch = async (url) => {
+    const requestUrl = decodeURIComponent(String(url));
+    if (requestUrl.includes('/rest/v1/rpc/is_owner_user')) {
+      return new Response(JSON.stringify(true), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (requestUrl.includes('/rest/v1/characters')) {
+      return new Response(JSON.stringify({ message: 'permission denied' }), { status: 500, headers: { 'content-type': 'application/json' } });
+    }
+    if (requestUrl.includes('/rest/v1/app_settings')) {
+      return new Response(JSON.stringify(null), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify([]), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+
+  await assert.rejects(
+    getOpsDashboard({ event: { headers: { authorization: 'Bearer user-token' } }, userId: 'owner-1' }),
+    (error) => error?.code === 'OPS_DASHBOARD_UNAVAILABLE',
+    'permission or network errors must not be presented as an empty operations dashboard',
+  );
 });
 
 test('persistRecentView falls back to replace flow when upsert conflict target is unavailable', async () => {
@@ -1036,4 +1571,106 @@ test('mapLibraryEntriesToResolvedItems prefers owned entities before public enti
       createdAt: '2026-03-09T00:00:01.000Z',
     },
   ]);
+});
+
+test('repository source keeps base prompt reads off authenticated wildcard queries', async () => {
+  const source = await readFile(new URL('./supabase-platform-repository.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(
+    source,
+    /\.from\(['"](?:characters|worlds|rooms)['"]\)\s*\.select\(['"]\*['"]\)/,
+    'lockdown-compatible code must not issue wildcard reads against protected base tables',
+  );
+  assert.match(source, /const ROOM_SAFE_VIEW_COLUMNS =/);
+  const roomSafeColumnsSource = source.slice(
+    source.indexOf('const ROOM_SAFE_VIEW_COLUMNS ='),
+    source.indexOf('const CHARACTER_ROOM_CONTEXT_COLUMNS ='),
+  );
+  assert.doesNotMatch(roomSafeColumnsSource, /bridge_profile_json/);
+  assert.doesNotMatch(
+    source,
+    /\.from\(OWNED_ROOM_SUMMARY_VIEW\)\s*\.select\(['"]\*['"]\)/,
+    'room summaries must remain an explicit allowlist even if the view expands later',
+  );
+
+  const createRoomSource = source.slice(
+    source.indexOf('export const createRoom ='),
+    source.indexOf('export const getRoom ='),
+  );
+  assert.match(createRoomSource, /createSupabaseAdminClient\(\)/);
+  assert.match(createRoomSource, /select\(CHARACTER_ROOM_CONTEXT_COLUMNS\)/);
+  assert.match(createRoomSource, /target\.row\.owner_user_id === userId/);
+  assert.match(createRoomSource, /content_moderation/);
+
+  const appendSource = source.slice(
+    source.indexOf('export const appendRoomMessages ='),
+    source.indexOf('export const commitRoomTurn ='),
+  );
+  assert.match(appendSource, /const admin = await createSupabaseAdminClient\(\)/);
+  assert.match(appendSource, /\.eq\('user_id', userId\)/);
+  assert.doesNotMatch(appendSource, /client\.from\('rooms'\)/);
+
+  const opsSource = source.slice(
+    source.indexOf('export const getOpsDashboard ='),
+    source.indexOf('export const setContentVisibility ='),
+  );
+  assert.match(opsSource, /ownerMode \? await createSupabaseAdminClient\(\) : null/);
+  assert.match(opsSource, /OWNED_CONTENT_VIEWS\.character/);
+  assert.match(opsSource, /CHARACTER_BASE_SUMMARY_COLUMNS/);
+  assert.doesNotMatch(opsSource, /select\(['"]\*['"]\)/);
+});
+
+test('prompt privacy migrations preserve expand-to-lockdown rollout compatibility', async () => {
+  const normalizeSql = (value) => value.replace(/\r\n/g, '\n').trim();
+  const [schemaSource, expandSource, lockdownSource] = await Promise.all([
+    readFile(new URL('../../supabase/schema.sql', import.meta.url), 'utf8'),
+    readFile(
+      new URL('../../supabase/migrations/20260729000000_prompt_read_views_expand.sql', import.meta.url),
+      'utf8',
+    ),
+    readFile(
+      new URL('../../supabase/migrations/20260729010000_private_prompt_reads_lockdown.sql', import.meta.url),
+      'utf8',
+    ),
+  ]);
+  const schema = normalizeSql(schemaSource);
+  const expand = normalizeSql(expandSource);
+  const lockdown = normalizeSql(lockdownSource);
+
+  for (const phase of [expand, lockdown]) {
+    assert.match(phase, /set local lock_timeout = '[^']+'/i);
+    assert.match(phase, /set local statement_timeout = '[^']+'/i);
+  }
+  assert.match(expand, /create view public\.public_character_catalog/i);
+  assert.match(expand, /create view public\.owned_room_summaries/i);
+  const ownedRoomView = expand.slice(
+    expand.indexOf('create view public.owned_room_summaries'),
+    expand.indexOf('revoke all on table', expand.indexOf('create view public.owned_room_summaries')),
+  );
+  assert.doesNotMatch(ownedRoomView, /bridge_profile_json/i);
+  assert.match(expand, /create or replace function public\.to_public_image_slots/i);
+  assert.match(expand, /public\.to_public_image_slots\(c\.prompt_profile_json\) as image_slots/i);
+  assert.doesNotMatch(expand, /then c\.prompt_profile_json -> 'imageSlots'/i);
+  assert.doesNotMatch(
+    expand,
+    /revoke select on table public\.(?:characters|worlds|rooms)/i,
+    'expand must leave old Worker base-table reads intact',
+  );
+  assert.match(
+    lockdown,
+    /revoke select on table public\.characters, public\.worlds from public, anon, authenticated/i,
+  );
+  assert.match(lockdown, /revoke select \(bridge_profile_json, resolved_prompt_snapshot_json\)/i);
+  assert.match(lockdown, /update public\.room_state_summaries[\s\S]*world_notes_json = '\[\]'::jsonb/i);
+  assert.match(
+    lockdown,
+    /update public\.room_messages[\s\S]*where role = 'assistant' and sequence_no = 1/i,
+  );
+  const roomGrant = lockdown.match(/grant select \([\s\S]*?\) on public\.rooms to authenticated;/i)?.[0] || '';
+  assert.doesNotMatch(roomGrant, /bridge_profile_json/i);
+  assert.ok(schema.includes(expand), 'fresh schema must include the exact expand phase');
+  assert.ok(schema.endsWith(lockdown), 'fresh schema must end in the exact lockdown state');
+  assert.ok(
+    schema.indexOf(expand) < schema.indexOf(lockdown),
+    'fresh schema must preserve expand-before-lockdown ordering',
+  );
 });

@@ -30,6 +30,59 @@ const STORAGE_BUCKET = process.env.PUBLIC_ASSETS_BUCKET || 'vmate-assets';
 const STORAGE_SCAN_LIMITS = Object.freeze({ maxEntries: 10_000, maxFolders: 1_000, maxDepth: 8, maxPages: 2_000 });
 const CONTENT_REFERENCE_SCAN_LIMITS = Object.freeze({ maxRows: 10_000, maxAssets: 10_000, pageSize: 100, idBatchSize: 100 });
 const ACCOUNT_STORAGE_CLEANUP_TABLE = 'account_storage_cleanup_fences';
+const PUBLIC_CONTENT_VIEWS = Object.freeze({
+  character: 'public_character_catalog',
+  world: 'public_world_catalog',
+});
+const OWNED_CONTENT_VIEWS = Object.freeze({
+  character: 'owned_character_details',
+  world: 'owned_world_details',
+});
+const OWNED_ROOM_SUMMARY_VIEW = 'owned_room_summaries';
+const CATALOG_LIMIT = 200;
+const CATALOG_SEARCH_LIMIT = 160;
+const RECENT_ROOM_LIMIT = 20;
+const CHARACTER_BASE_SUMMARY_COLUMNS = [
+  'id', 'owner_user_id', 'slug', 'name', 'headline', 'summary',
+  'cover_image_url', 'avatar_image_url', 'visibility', 'display_status',
+  'source_type', 'source_url', 'tags', 'favorite_count', 'chat_start_count',
+  'rights_attested_at', 'published_at', 'created_at', 'updated_at',
+].join(', ');
+const WORLD_BASE_SUMMARY_COLUMNS = [
+  'id', 'owner_user_id', 'slug', 'name', 'headline', 'summary',
+  'cover_image_url', 'visibility', 'display_status', 'source_type',
+  'source_url', 'tags', 'favorite_count', 'chat_start_count',
+  'rights_attested_at', 'published_at', 'created_at', 'updated_at',
+].join(', ');
+const CHARACTER_SAFE_VIEW_COLUMNS = [
+  CHARACTER_BASE_SUMMARY_COLUMNS,
+  'creator_name', 'personality', 'voice', 'relationship',
+  'hero_image_url', 'image_slots',
+].join(', ');
+const WORLD_SAFE_VIEW_COLUMNS = [
+  WORLD_BASE_SUMMARY_COLUMNS,
+  'creator_name', 'image_slots',
+].join(', ');
+const CHARACTER_OWNER_DETAIL_COLUMNS = [
+  CHARACTER_SAFE_VIEW_COLUMNS,
+  'profile_json', 'speech_style_json', 'prompt_profile_json',
+].join(', ');
+const WORLD_OWNER_DETAIL_COLUMNS = [
+  WORLD_SAFE_VIEW_COLUMNS,
+  'world_rules_markdown', 'prompt_profile_json',
+].join(', ');
+const ROOM_SAFE_VIEW_COLUMNS = [
+  'id', 'user_id', 'character_id', 'world_id', 'user_alias', 'title',
+  'last_message_at', 'created_at', 'updated_at', 'version',
+].join(', ');
+const CHARACTER_ROOM_CONTEXT_COLUMNS = [
+  'id', 'owner_user_id', 'slug', 'name', 'headline', 'summary',
+  'visibility', 'display_status', 'prompt_profile_json',
+].join(', ');
+const WORLD_ROOM_CONTEXT_COLUMNS = [
+  'id', 'owner_user_id', 'slug', 'name', 'headline', 'summary',
+  'visibility', 'display_status', 'prompt_profile_json',
+].join(', ');
 const SIGNED_UPLOAD_URL_TTL_MS = 2 * 60 * 60 * 1000;
 const ACCOUNT_STORAGE_CLEANUP_BUFFER_MS = 10 * 60 * 1000;
 
@@ -174,16 +227,6 @@ export const resolveAsyncOrFallback = async ({ label, promise, fallback }) => {
   }
 };
 
-const buildEmptyLibraryPayload = () => ({
-  bookmarks: [],
-  recentViews: [],
-  recentRooms: [],
-  owned: {
-    characters: [],
-    worlds: [],
-  },
-});
-
 const dedupeRecentViewRows = (rows) => {
   const seen = new Set();
   return (rows || []).filter((row) => {
@@ -240,18 +283,20 @@ const summarizeCharacter = (row) => ({
   creator: {
     id: row.owner_user_id,
     slug: String(row.owner_user_id || ''),
-    name: row.profile_json?.creatorName || row.creator_name || '크리에이터',
+    name: row.creator_name || row.profile_json?.creatorName || row.prompt_profile_json?.creatorName || '크리에이터',
   },
   visibility: row.visibility,
   displayStatus: row.display_status,
   sourceType: row.source_type,
   sourceUrl: row.source_url || '',
   rightsAttestedAt: row.rights_attested_at || '',
-  heroImageUrl: row.prompt_profile_json?.heroImageUrl || '',
+  heroImageUrl: row.hero_image_url || row.prompt_profile_json?.heroImageUrl || '',
   favoriteCount: Number(row.favorite_count || 0),
   chatStartCount: Number(row.chat_start_count || 0),
   updatedAt: row.updated_at || nowIso(),
-  imageSlots: Array.isArray(row.prompt_profile_json?.imageSlots) ? clone(row.prompt_profile_json.imageSlots) : [],
+  imageSlots: Array.isArray(row.image_slots)
+    ? clone(row.image_slots)
+    : Array.isArray(row.prompt_profile_json?.imageSlots) ? clone(row.prompt_profile_json.imageSlots) : [],
 });
 
 const summarizeWorld = (row) => ({
@@ -266,7 +311,7 @@ const summarizeWorld = (row) => ({
   creator: {
     id: row.owner_user_id,
     slug: String(row.owner_user_id || ''),
-    name: row.prompt_profile_json?.creatorName || row.creator_name || '크리에이터',
+    name: row.creator_name || row.prompt_profile_json?.creatorName || '크리에이터',
   },
   visibility: row.visibility,
   displayStatus: row.display_status,
@@ -276,42 +321,57 @@ const summarizeWorld = (row) => ({
   favoriteCount: Number(row.favorite_count || 0),
   chatStartCount: Number(row.chat_start_count || 0),
   updatedAt: row.updated_at || nowIso(),
-  imageSlots: Array.isArray(row.prompt_profile_json?.imageSlots) ? clone(row.prompt_profile_json.imageSlots) : [],
+  imageSlots: Array.isArray(row.image_slots)
+    ? clone(row.image_slots)
+    : Array.isArray(row.prompt_profile_json?.imageSlots) ? clone(row.prompt_profile_json.imageSlots) : [],
 });
 
-const basePublicContentQuery = (client, table) => client
-  .from(table)
-  .select('*')
-  .eq('visibility', 'public')
-  .eq('display_status', 'visible');
-
-const applySearchFilter = (items, search) => {
-  const query = String(search || '').trim().toLowerCase();
-  if (!query) return items;
-  return items.filter((item) => JSON.stringify(item).toLowerCase().includes(query));
+const resolveRequiredRows = async (queryPromise) => {
+  const result = await queryPromise;
+  if (result?.error) throw result.error;
+  return Array.isArray(result?.data) ? result.data : [];
 };
 
-const sortByFilter = (items, filter) => {
-  if (filter === 'new') {
-    return [...items].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+const basePublicContentQuery = (client, entityType) => client
+  .from(PUBLIC_CONTENT_VIEWS[entityType])
+  .select(entityType === 'character' ? CHARACTER_SAFE_VIEW_COLUMNS : WORLD_SAFE_VIEW_COLUMNS);
+
+const escapeLikePattern = (value) => String(value || '').replace(/[\\%_]/g, (character) => `\\${character}`);
+
+const buildCatalogQuery = (client, entityType, { search = '', filter = '' } = {}) => {
+  let query = basePublicContentQuery(client, entityType);
+  const normalizedSearch = String(search || '').trim().slice(0, CATALOG_SEARCH_LIMIT);
+  if (normalizedSearch) {
+    query = query.ilike('search_text', `%${escapeLikePattern(normalizedSearch)}%`);
   }
-  return [...items].sort((a, b) => b.chatStartCount - a.chatStartCount || b.favoriteCount - a.favoriteCount || Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  if (filter === 'new') {
+    query = query
+      .order('updated_at', { ascending: false })
+      .order('id', { ascending: true });
+  } else {
+    query = query
+      .order('chat_start_count', { ascending: false })
+      .order('favorite_count', { ascending: false })
+      .order('updated_at', { ascending: false })
+      .order('id', { ascending: true });
+  }
+  return query.limit(CATALOG_LIMIT);
 };
 
 export const listCharacters = async ({ search = '', filter = '' } = {}) => {
   const client = await publicClient();
   if (!client) return [];
-  const { data, error } = await basePublicContentQuery(client, 'characters').limit(200);
+  const { data, error } = await buildCatalogQuery(client, 'character', { search, filter });
   if (error) throw error;
-  return sortByFilter(applySearchFilter((data || []).map(summarizeCharacter), search), filter);
+  return (data || []).map(summarizeCharacter);
 };
 
 export const listWorlds = async ({ search = '', filter = '' } = {}) => {
   const client = await publicClient();
   if (!client) return [];
-  const { data, error } = await basePublicContentQuery(client, 'worlds').limit(200);
+  const { data, error } = await buildCatalogQuery(client, 'world', { search, filter });
   if (error) throw error;
-  return sortByFilter(applySearchFilter((data || []).map(summarizeWorld), search), filter);
+  return (data || []).map(summarizeWorld);
 };
 
 const getSetting = async (client, key) => {
@@ -568,12 +628,18 @@ export const incrementChatStartCountsBestEffort = async ({ client, character, wo
   }
 };
 
-export const getHomePayload = async ({ tab = 'characters', search = '', filter = '' } = {}) => {
+export const getHomePayload = async ({
+  tab = 'characters',
+  search = '',
+  filter = '',
+  characterFilter = filter,
+  worldFilter = filter,
+} = {}) => {
   const client = await publicClient();
   if (!client) return null;
   const [characters, worlds, heroSetting] = await Promise.all([
-    listCharacters({ search, filter }),
-    listWorlds({ search, filter }),
+    listCharacters({ search, filter: characterFilter }),
+    listWorlds({ search, filter: worldFilter }),
     getSetting(client, 'home.hero'),
   ]);
   const heroMode = heroSetting?.mode === 'manual' ? 'manual' : 'auto';
@@ -596,81 +662,83 @@ export const getHomePayload = async ({ tab = 'characters', search = '', filter =
 };
 
 const getCharacterRowBySlug = async (client, slug) => {
-  const { data, error } = await basePublicContentQuery(client, 'characters').eq('slug', slug).maybeSingle();
+  const { data, error } = await basePublicContentQuery(client, 'character').eq('slug', slug).maybeSingle();
   if (error) throw error;
   return data;
 };
 
 const getCharacterRowById = async (client, id) => {
-  const { data, error } = await basePublicContentQuery(client, 'characters').eq('id', id).maybeSingle();
+  const { data, error } = await basePublicContentQuery(client, 'character').eq('id', id).maybeSingle();
   if (error) throw error;
   return data;
 };
 
 const getWorldRowBySlug = async (client, slug) => {
-  const { data, error } = await basePublicContentQuery(client, 'worlds').eq('slug', slug).maybeSingle();
+  const { data, error } = await basePublicContentQuery(client, 'world').eq('slug', slug).maybeSingle();
   if (error) throw error;
   return data;
 };
 
 const getWorldRowById = async (client, id) => {
-  const { data, error } = await basePublicContentQuery(client, 'worlds').eq('id', id).maybeSingle();
+  const { data, error } = await basePublicContentQuery(client, 'world').eq('id', id).maybeSingle();
   if (error) throw error;
   return data;
 };
 
-const getOwnedCharacterRowBySlug = async (client, slug, userId) => {
+const getOwnedCharacterRowBySlug = async (client, slug, userId, { includeAuthoring = false } = {}) => {
   if (!client || !userId) return null;
-  const { data, error } = await client.from('characters').select('*').eq('owner_user_id', userId).eq('slug', slug).maybeSingle();
+  const columns = includeAuthoring ? CHARACTER_OWNER_DETAIL_COLUMNS : CHARACTER_SAFE_VIEW_COLUMNS;
+  const { data, error } = await client.from(OWNED_CONTENT_VIEWS.character).select(columns).eq('owner_user_id', userId).eq('slug', slug).maybeSingle();
   if (error) throw error;
   return data;
 };
 
 const getOwnedCharacterRowById = async (client, id, userId) => {
   if (!client || !userId) return null;
-  const { data, error } = await client.from('characters').select('*').eq('owner_user_id', userId).eq('id', id).maybeSingle();
+  const { data, error } = await client.from(OWNED_CONTENT_VIEWS.character).select(CHARACTER_SAFE_VIEW_COLUMNS).eq('owner_user_id', userId).eq('id', id).maybeSingle();
   if (error) throw error;
   return data;
 };
 
-const getOwnedWorldRowBySlug = async (client, slug, userId) => {
+const getOwnedWorldRowBySlug = async (client, slug, userId, { includeAuthoring = false } = {}) => {
   if (!client || !userId) return null;
-  const { data, error } = await client.from('worlds').select('*').eq('owner_user_id', userId).eq('slug', slug).maybeSingle();
+  const columns = includeAuthoring ? WORLD_OWNER_DETAIL_COLUMNS : WORLD_SAFE_VIEW_COLUMNS;
+  const { data, error } = await client.from(OWNED_CONTENT_VIEWS.world).select(columns).eq('owner_user_id', userId).eq('slug', slug).maybeSingle();
   if (error) throw error;
   return data;
 };
 
 const getOwnedWorldRowById = async (client, id, userId) => {
   if (!client || !userId) return null;
-  const { data, error } = await client.from('worlds').select('*').eq('owner_user_id', userId).eq('id', id).maybeSingle();
+  const { data, error } = await client.from(OWNED_CONTENT_VIEWS.world).select(WORLD_SAFE_VIEW_COLUMNS).eq('owner_user_id', userId).eq('id', id).maybeSingle();
   if (error) throw error;
   return data;
 };
 
 const getWorldRowsByIds = async (client, ids) => {
   if (!ids.length) return [];
-  const { data, error } = await basePublicContentQuery(client, 'worlds').in('id', ids);
+  const { data, error } = await basePublicContentQuery(client, 'world').in('id', ids);
   if (error) throw error;
   return data || [];
 };
 
 const getCharacterRowsByIds = async (client, ids) => {
   if (!ids.length) return [];
-  const { data, error } = await basePublicContentQuery(client, 'characters').in('id', ids);
+  const { data, error } = await basePublicContentQuery(client, 'character').in('id', ids);
   if (error) throw error;
   return data || [];
 };
 
 const getOwnedWorldRowsByIds = async (client, ids, userId) => {
   if (!client || !ids.length || !userId) return [];
-  const { data, error } = await client.from('worlds').select('*').eq('owner_user_id', userId).in('id', ids);
+  const { data, error } = await client.from(OWNED_CONTENT_VIEWS.world).select(WORLD_SAFE_VIEW_COLUMNS).eq('owner_user_id', userId).in('id', ids);
   if (error) throw error;
   return data || [];
 };
 
 const getOwnedCharacterRowsByIds = async (client, ids, userId) => {
   if (!client || !ids.length || !userId) return [];
-  const { data, error } = await client.from('characters').select('*').eq('owner_user_id', userId).in('id', ids);
+  const { data, error } = await client.from(OWNED_CONTENT_VIEWS.character).select(CHARACTER_SAFE_VIEW_COLUMNS).eq('owner_user_id', userId).in('id', ids);
   if (error) throw error;
   return data || [];
 };
@@ -697,26 +765,32 @@ export const getCharacterDetail = async (input) => {
   const client = await publicClient();
   const authenticatedClient = userId ? await userClient(event) : null;
   if (!client) return null;
-  const character = await getOwnedCharacterRowBySlug(authenticatedClient, slug, userId)
+  const character = await getOwnedCharacterRowBySlug(authenticatedClient, slug, userId, { includeAuthoring: true })
     || await getCharacterRowBySlug(client, slug);
   if (!character) return null;
   const readClient = character.owner_user_id === userId && authenticatedClient ? authenticatedClient : client;
   const { data: assets, error: assetError } = await readClient.from('character_assets').select('url').eq('character_id', character.id).order('created_at', { ascending: true });
   if (assetError) throw assetError;
-  const profileJson = character.profile_json || {};
-  const speechJson = character.speech_style_json || {};
+  const isOwner = Boolean(userId) && character.owner_user_id === userId;
+  const profileJson = isOwner ? character.profile_json || {} : {};
+  const speechJson = isOwner ? character.speech_style_json || {} : {};
   const sections = [
-    profileJson.personality ? { title: '성격', body: String(profileJson.personality) } : null,
-    speechJson.voice ? { title: '말투', body: String(speechJson.voice) } : null,
-    profileJson.relationship ? { title: '관계감', body: String(profileJson.relationship) } : null,
+    (isOwner ? profileJson.personality : character.personality) ? { title: '성격', body: String(isOwner ? profileJson.personality : character.personality) } : null,
+    (isOwner ? speechJson.voice : character.voice) ? { title: '말투', body: String(isOwner ? speechJson.voice : character.voice) } : null,
+    (isOwner ? profileJson.relationship : character.relationship) ? { title: '관계감', body: String(isOwner ? profileJson.relationship : character.relationship) } : null,
   ].filter(Boolean);
   return {
     ...summarizeCharacter(character),
     profileSections: sections.length ? sections : [{ title: '설정', body: character.summary }],
     gallery: (assets || []).map((item) => item.url),
-    profileJson,
-    speechStyleJson: speechJson,
-    promptProfileJson: character.prompt_profile_json || {},
+    ...(isOwner ? {
+      imageSlots: Array.isArray(character.prompt_profile_json?.imageSlots)
+        ? clone(character.prompt_profile_json.imageSlots.slice(0, 6))
+        : [],
+      profileJson,
+      speechStyleJson: speechJson,
+      promptProfileJson: character.prompt_profile_json || {},
+    } : {}),
   };
 };
 
@@ -727,9 +801,10 @@ export const getWorldDetail = async (input) => {
   const client = await publicClient();
   const authenticatedClient = userId ? await userClient(event) : null;
   if (!client) return null;
-  const world = await getOwnedWorldRowBySlug(authenticatedClient, slug, userId)
+  const world = await getOwnedWorldRowBySlug(authenticatedClient, slug, userId, { includeAuthoring: true })
     || await getWorldRowBySlug(client, slug);
   if (!world) return null;
+  const isOwner = Boolean(userId) && world.owner_user_id === userId;
   const readClient = world.owner_user_id === userId && authenticatedClient ? authenticatedClient : client;
   const { data: assets, error: assetError } = await readClient.from('world_assets').select('url').eq('world_id', world.id).order('created_at', { ascending: true });
   if (assetError) throw assetError;
@@ -738,7 +813,13 @@ export const getWorldDetail = async (input) => {
     worldSections: [{ title: '월드 소개', body: world.summary }],
     gallery: (assets || []).map((item) => item.url),
     characters: [],
-    promptProfileJson: world.prompt_profile_json || {},
+    ...(isOwner ? {
+      imageSlots: Array.isArray(world.prompt_profile_json?.imageSlots)
+        ? clone(world.prompt_profile_json.imageSlots.slice(0, 6))
+        : [],
+      worldRulesMarkdown: world.world_rules_markdown || '',
+      promptProfileJson: world.prompt_profile_json || {},
+    } : {}),
   };
 };
 
@@ -819,6 +900,21 @@ export const addRecentView = async ({ event, userId, entityType, ref }) => {
   });
 };
 
+export const getBookmarkStatus = async ({ event, userId, entityType, targetId }) => {
+  if (!userId || !['character', 'world'].includes(entityType) || !targetId) return false;
+  const client = await userClient(event);
+  if (!client) return false;
+  const { data, error } = await client
+    .from('bookmarks')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('target_type', entityType)
+    .eq('target_id', targetId)
+    .maybeSingle();
+  if (error) throw error;
+  return Boolean(data?.id);
+};
+
 export const toggleBookmark = async ({ event, userId, entityType, ref }) => {
   const client = await userClient(event);
   const publicReadClient = await publicClient();
@@ -844,6 +940,32 @@ export const removeBookmark = async ({ event, bookmarkId }) => {
   return true;
 };
 
+const mapRoomMessage = (message) => ({
+  id: message.id,
+  role: message.role,
+  createdAt: message.created_at,
+  content: message.role === 'user'
+    ? String(message.content_json?.text || '')
+    : message.content_json,
+});
+
+const toHydratedRoom = ({ row, characterRow, worldRow = null, stateRow = {}, messageRows = [] }) => {
+  if (!characterRow) return null;
+  return {
+    id: row.id,
+    title: row.title,
+    userAlias: row.user_alias || '나',
+    character: summarizeCharacter(characterRow),
+    world: worldRow ? summarizeWorld(worldRow) : null,
+    state: toRoomStateSummary(stateRow),
+    messages: messageRows.map(mapRoomMessage),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    lastMessageAt: row.last_message_at,
+    version: Number(row.version || 0),
+  };
+};
+
 const hydrateRoom = async ({ client, publicClientInstance, row }) => {
   const [publicCharacterRows, ownedCharacterRows, publicWorldRows, ownedWorldRows, stateRows, messageRows] = await Promise.all([
     getCharacterRowsByIds(publicClientInstance, [row.character_id]),
@@ -853,96 +975,101 @@ const hydrateRoom = async ({ client, publicClientInstance, row }) => {
     client.from('room_state_summaries').select('*').eq('room_id', row.id).maybeSingle(),
     client.from('room_messages').select('*').eq('room_id', row.id).order('sequence_no', { ascending: true }).order('created_at', { ascending: true }),
   ]);
+  if (stateRows.error) throw stateRows.error;
+  if (messageRows.error) throw messageRows.error;
 
   const characterRows = mergeRowsById(publicCharacterRows, ownedCharacterRows);
   const worldRows = mergeRowsById(publicWorldRows, ownedWorldRows);
-
-  if (!characterRows[0]) {
-    return null;
-  }
-
-  const character = summarizeCharacter(characterRows[0]);
-  const world = worldRows[0] ? summarizeWorld(worldRows[0]) : null;
-  const stateRow = stateRows.data || {};
-  const messages = (messageRows.data || []).map((message) => ({
-    id: message.id,
-    role: message.role,
-    createdAt: message.created_at,
-    content: message.role === 'user'
-      ? String(message.content_json?.text || '')
-      : message.content_json,
-  }));
-
-  return {
-    id: row.id,
-    title: row.title,
-    userAlias: row.user_alias || '나',
-    character,
-    world,
-    bridgeProfile: row.bridge_profile_json,
-    state: toRoomStateSummary(stateRow),
-    messages,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    lastMessageAt: row.last_message_at,
-    version: Number(row.version || 0),
-  };
+  return toHydratedRoom({
+    row,
+    characterRow: characterRows[0],
+    worldRow: worldRows[0],
+    stateRow: stateRows.data || {},
+    messageRows: messageRows.data || [],
+  });
 };
 
-export const listRecentRooms = async ({ event, userId }) => {
+const normalizeRecentRoomLimit = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed)
+    ? Math.max(1, Math.min(RECENT_ROOM_LIMIT, Math.floor(parsed)))
+    : RECENT_ROOM_LIMIT;
+};
+
+const hydrateRoomsBatch = async ({ client, publicClientInstance, rows, userId, includeMessages }) => {
+  if (!rows.length) return [];
+  const characterIds = Array.from(new Set(rows.map((row) => row.character_id).filter(Boolean)));
+  const worldIds = Array.from(new Set(rows.map((row) => row.world_id).filter(Boolean)));
+  const roomIds = rows.map((row) => row.id);
+  const [publicCharacterRows, ownedCharacterRows, publicWorldRows, ownedWorldRows, stateResult, messageResult] = await Promise.all([
+    getCharacterRowsByIds(publicClientInstance, characterIds),
+    getOwnedCharacterRowsByIds(client, characterIds, userId),
+    getWorldRowsByIds(publicClientInstance, worldIds),
+    getOwnedWorldRowsByIds(client, worldIds, userId),
+    client.from('room_state_summaries').select('*').in('room_id', roomIds),
+    includeMessages
+      ? client.from('room_messages').select('*').in('room_id', roomIds).order('room_id', { ascending: true }).order('sequence_no', { ascending: true }).order('created_at', { ascending: true })
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+  if (stateResult.error) throw stateResult.error;
+  if (messageResult.error) throw messageResult.error;
+
+  const characterById = new Map(mergeRowsById(publicCharacterRows, ownedCharacterRows).map((row) => [row.id, row]));
+  const worldById = new Map(mergeRowsById(publicWorldRows, ownedWorldRows).map((row) => [row.id, row]));
+  const stateByRoomId = new Map((stateResult.data || []).map((row) => [row.room_id, row]));
+  const messagesByRoomId = new Map();
+  for (const message of messageResult.data || []) {
+    if (!messagesByRoomId.has(message.room_id)) messagesByRoomId.set(message.room_id, []);
+    messagesByRoomId.get(message.room_id).push(message);
+  }
+
+  return rows.flatMap((row) => {
+    const room = toHydratedRoom({
+      row,
+      characterRow: characterById.get(row.character_id),
+      worldRow: worldById.get(row.world_id),
+      stateRow: stateByRoomId.get(row.id) || {},
+      messageRows: includeMessages ? messagesByRoomId.get(row.id) || [] : [],
+    });
+    return room ? [room] : [];
+  });
+};
+
+export const listRecentRooms = async ({ event, userId, limit = RECENT_ROOM_LIMIT, includeMessages = true }) => {
   const client = await userClient(event);
   const publicReadClient = await publicClient();
   if (!client || !publicReadClient) return [];
-  const { data, error } = await client.from('rooms').select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(20);
+  const boundedLimit = normalizeRecentRoomLimit(limit);
+  const { data, error } = await client.from(OWNED_ROOM_SUMMARY_VIEW).select(ROOM_SAFE_VIEW_COLUMNS).eq('user_id', userId).order('updated_at', { ascending: false }).limit(boundedLimit);
   if (error) throw error;
-  const rooms = [];
-  for (const row of data || []) {
-    try {
-      const hydrated = await hydrateRoom({ client, publicClientInstance: publicReadClient, row });
-      if (hydrated) {
-        rooms.push(hydrated);
-      }
-    } catch (hydrateError) {
-      logServerWarn('[V-MATE] Skipping recent room hydrate failure', {
-        ...toSafeErrorMeta(hydrateError),
-      });
-    }
+  try {
+    return await hydrateRoomsBatch({
+      client,
+      publicClientInstance: publicReadClient,
+      rows: data || [],
+      userId,
+      includeMessages: includeMessages !== false,
+    });
+  } catch (hydrateError) {
+    logServerWarn('[V-MATE] Recent room batch hydrate failed', {
+      ...toSafeErrorMeta(hydrateError),
+    });
+    throw hydrateError;
   }
-  return rooms;
 };
 
-export const getLibraryPayload = async ({ event, userId }) => {
+export const getLibraryPayload = async ({ event, userId, includeRecentRooms = true }) => {
   const client = await userClient(event);
   const publicReadClient = await publicClient();
   if (!client || !publicReadClient) return null;
 
   try {
     const [bookmarks, recentViewsRaw, recentRooms, ownedCharacters, ownedWorlds] = await Promise.all([
-      resolveDataOrFallback({
-        label: 'library.bookmarks',
-        queryPromise: client.from('bookmarks').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
-        fallback: [],
-      }),
-      resolveDataOrFallback({
-        label: 'library.recent_views',
-        queryPromise: client.from('recent_views').select('*').eq('user_id', userId).order('viewed_at', { ascending: false }).limit(20),
-        fallback: [],
-      }),
-      resolveAsyncOrFallback({
-        label: 'library.recentRooms',
-        promise: listRecentRooms({ event, userId }),
-        fallback: [],
-      }),
-      resolveDataOrFallback({
-        label: 'library.ownedCharacters',
-        queryPromise: client.from('characters').select('*').eq('owner_user_id', userId).order('updated_at', { ascending: false }),
-        fallback: [],
-      }),
-      resolveDataOrFallback({
-        label: 'library.ownedWorlds',
-        queryPromise: client.from('worlds').select('*').eq('owner_user_id', userId).order('updated_at', { ascending: false }),
-        fallback: [],
-      }),
+      resolveRequiredRows(client.from('bookmarks').select('*').eq('user_id', userId).order('created_at', { ascending: false })),
+      resolveRequiredRows(client.from('recent_views').select('*').eq('user_id', userId).order('viewed_at', { ascending: false }).limit(20)),
+      includeRecentRooms ? listRecentRooms({ event, userId }) : Promise.resolve([]),
+      resolveRequiredRows(client.from(OWNED_CONTENT_VIEWS.character).select(CHARACTER_SAFE_VIEW_COLUMNS).eq('owner_user_id', userId).order('updated_at', { ascending: false })),
+      resolveRequiredRows(client.from(OWNED_CONTENT_VIEWS.world).select(WORLD_SAFE_VIEW_COLUMNS).eq('owner_user_id', userId).order('updated_at', { ascending: false })),
     ]);
 
     const recentViews = dedupeRecentViewRows(recentViewsRaw);
@@ -961,10 +1088,10 @@ export const getLibraryPayload = async ({ event, userId }) => {
       .map((item) => item.target_id);
 
     const [publicBookmarkCharacters, publicBookmarkWorlds, publicRecentCharacters, publicRecentWorlds] = await Promise.all([
-      resolveAsyncOrFallback({ label: 'library.publicBookmarkCharacters', promise: getCharacterRowsByIds(publicReadClient, unresolvedBookmarkCharacterIds), fallback: [] }),
-      resolveAsyncOrFallback({ label: 'library.publicBookmarkWorlds', promise: getWorldRowsByIds(publicReadClient, unresolvedBookmarkWorldIds), fallback: [] }),
-      resolveAsyncOrFallback({ label: 'library.publicRecentCharacters', promise: getCharacterRowsByIds(publicReadClient, unresolvedRecentCharacterIds), fallback: [] }),
-      resolveAsyncOrFallback({ label: 'library.publicRecentWorlds', promise: getWorldRowsByIds(publicReadClient, unresolvedRecentWorldIds), fallback: [] }),
+      getCharacterRowsByIds(publicReadClient, unresolvedBookmarkCharacterIds),
+      getWorldRowsByIds(publicReadClient, unresolvedBookmarkWorldIds),
+      getCharacterRowsByIds(publicReadClient, unresolvedRecentCharacterIds),
+      getWorldRowsByIds(publicReadClient, unresolvedRecentWorldIds),
     ]);
 
     const resolvedBookmarks = mapLibraryEntriesToResolvedItems({
@@ -995,10 +1122,10 @@ export const getLibraryPayload = async ({ event, userId }) => {
       },
     };
   } catch (error) {
-    logServerWarn('[V-MATE] Returning empty library payload after unexpected failure', {
+    logServerWarn('[V-MATE] Library read failed', {
       ...toSafeErrorMeta(error),
     });
-    return buildEmptyLibraryPayload();
+    throw error;
   }
 };
 
@@ -1027,7 +1154,14 @@ export const buildCharacterWritePayload = ({ payload, existing = null, create = 
     if (create || hasOwn(payload, source)) output[target] = source === 'sourceUrl' ? payload[source] || null : payload[source];
   }
   if (create && !output.avatar_image_url) output.avatar_image_url = output.cover_image_url || '';
-  const creatorName = String(payload.creatorName ?? existing?.profile_json?.creatorName ?? existing?.prompt_profile_json?.creatorName ?? '').trim();
+  const creatorName = String(
+    payload.creatorName
+    ?? payload.profileJson?.creatorName
+    ?? payload.promptProfileJson?.creatorName
+    ?? existing?.profile_json?.creatorName
+    ?? existing?.prompt_profile_json?.creatorName
+    ?? ''
+  ).trim();
   if (create || hasOwn(payload, 'profileJson') || hasOwn(payload, 'creatorName')) {
     output.profile_json = {
       ...(create ? { personality: payload.summary, relationship: '처음 대화를 시작하는 거리감' } : {}),
@@ -1083,7 +1217,12 @@ export const buildWorldWritePayload = ({ payload, existing = null, create = fals
   for (const [source, target] of Object.entries(map)) {
     if (create || hasOwn(payload, source)) output[target] = source === 'sourceUrl' ? payload[source] || null : payload[source];
   }
-  const creatorName = String(payload.creatorName ?? existing?.prompt_profile_json?.creatorName ?? '').trim();
+  const creatorName = String(
+    payload.creatorName
+    ?? payload.promptProfileJson?.creatorName
+    ?? existing?.prompt_profile_json?.creatorName
+    ?? ''
+  ).trim();
   if (create || hasOwn(payload, 'promptProfileJson') || hasOwn(payload, 'creatorName')) {
     output.prompt_profile_json = {
       ...(create ? {
@@ -1110,24 +1249,35 @@ export const createCharacter = async ({ userId, payload }) => {
   const client = await createSupabaseAdminClient();
   if (!client) return null;
   const insertPayload = buildCharacterWritePayload({ payload, create: true, userId });
-  const { data, error } = await client.from('characters').insert(insertPayload).select('*').single();
+  const { data, error } = await client.from('characters').insert(insertPayload).select(CHARACTER_BASE_SUMMARY_COLUMNS).single();
   if (error) throw error;
   if (Array.isArray(payload.assets) && payload.assets.length > 0) {
     const assetRows = payload.assets.map((asset) => ({ character_id: data.id, asset_kind: assetKindForRow(asset), url: asset.url, width: asset.width, height: asset.height }));
     const { error: assetError } = await client.from('character_assets').insert(assetRows);
     if (assetError) throw assetError;
   }
-  return summarizeCharacter(data);
+  return summarizeCharacter({ ...insertPayload, ...data });
 };
 
 export const updateCharacter = async ({ userId, slug, payload }) => {
   const client = await createSupabaseAdminClient();
   if (!client) return null;
-  const { data: existing, error: existingError } = await client.from('characters').select('*').eq('owner_user_id', userId).eq('slug', slug).maybeSingle();
+  const { data: existing, error: existingError } = await client
+    .from('characters')
+    .select('id, profile_json, speech_style_json, prompt_profile_json')
+    .eq('owner_user_id', userId)
+    .eq('slug', slug)
+    .maybeSingle();
   if (existingError) throw existingError;
   if (!existing) return null;
   const updatePayload = buildCharacterWritePayload({ payload, existing, userId });
-  const { data, error } = await client.from('characters').update(updatePayload).eq('owner_user_id', userId).eq('slug', slug).select('*').maybeSingle();
+  const { data, error } = await client
+    .from('characters')
+    .update(updatePayload)
+    .eq('owner_user_id', userId)
+    .eq('slug', slug)
+    .select(CHARACTER_BASE_SUMMARY_COLUMNS)
+    .maybeSingle();
   if (error) throw error;
   if (!data) return null;
   if (Array.isArray(payload.assets) && payload.assets.length > 0) {
@@ -1135,31 +1285,42 @@ export const updateCharacter = async ({ userId, slug, payload }) => {
     const { error: assetError } = await client.from('character_assets').insert(assetRows);
     if (assetError) throw assetError;
   }
-  return summarizeCharacter(data);
+  return summarizeCharacter({ ...existing, ...updatePayload, ...data });
 };
 
 export const createWorld = async ({ userId, payload }) => {
   const client = await createSupabaseAdminClient();
   if (!client) return null;
   const insertPayload = buildWorldWritePayload({ payload, create: true, userId });
-  const { data, error } = await client.from('worlds').insert(insertPayload).select('*').single();
+  const { data, error } = await client.from('worlds').insert(insertPayload).select(WORLD_BASE_SUMMARY_COLUMNS).single();
   if (error) throw error;
   if (Array.isArray(payload.assets) && payload.assets.length > 0) {
     const assetRows = payload.assets.map((asset) => ({ world_id: data.id, asset_kind: assetKindForRow(asset), url: asset.url, width: asset.width, height: asset.height }));
     const { error: assetError } = await client.from('world_assets').insert(assetRows);
     if (assetError) throw assetError;
   }
-  return summarizeWorld(data);
+  return summarizeWorld({ ...insertPayload, ...data });
 };
 
 export const updateWorld = async ({ userId, slug, payload }) => {
   const client = await createSupabaseAdminClient();
   if (!client) return null;
-  const { data: existing, error: existingError } = await client.from('worlds').select('*').eq('owner_user_id', userId).eq('slug', slug).maybeSingle();
+  const { data: existing, error: existingError } = await client
+    .from('worlds')
+    .select('id, prompt_profile_json')
+    .eq('owner_user_id', userId)
+    .eq('slug', slug)
+    .maybeSingle();
   if (existingError) throw existingError;
   if (!existing) return null;
   const updatePayload = buildWorldWritePayload({ payload, existing, userId });
-  const { data, error } = await client.from('worlds').update(updatePayload).eq('owner_user_id', userId).eq('slug', slug).select('*').maybeSingle();
+  const { data, error } = await client
+    .from('worlds')
+    .update(updatePayload)
+    .eq('owner_user_id', userId)
+    .eq('slug', slug)
+    .select(WORLD_BASE_SUMMARY_COLUMNS)
+    .maybeSingle();
   if (error) throw error;
   if (!data) return null;
   if (Array.isArray(payload.assets) && payload.assets.length > 0) {
@@ -1167,7 +1328,7 @@ export const updateWorld = async ({ userId, slug, payload }) => {
     const { error: assetError } = await client.from('world_assets').insert(assetRows);
     if (assetError) throw assetError;
   }
-  return summarizeWorld(data);
+  return summarizeWorld({ ...existing, ...updatePayload, ...data });
 };
 
 const buildGreetingMessage = ({ userAlias, characterName, bridgeProfile }) => ({
@@ -1182,41 +1343,17 @@ const buildGreetingMessage = ({ userAlias, characterName, bridgeProfile }) => ({
   },
 });
 
-const buildRoomSummaryFromContext = ({
-  roomRow,
-  character,
-  world,
-  bridgeProfile,
-  state,
-  greetingRow,
-  greeting,
-  userAlias,
-}) => ({
-  id: roomRow.id,
-  title: roomRow.title,
-  userAlias: userAlias || '나',
-  character: summarizeCharacter(character),
-  world: world ? summarizeWorld(world) : null,
-  bridgeProfile,
-  state,
-  messages: [{
-    id: greetingRow?.id || `assistant-${randomUUID()}`,
-    role: 'assistant',
-    createdAt: greetingRow?.created_at || nowIso(),
-    content: greeting.content_json,
-  }],
-  createdAt: roomRow.created_at,
-  updatedAt: roomRow.updated_at,
-  lastMessageAt: roomRow.last_message_at,
-});
-
 export const createRoom = async ({ event, userId, characterSlug, worldSlug = null, userAlias = '나' }) => {
   const client = await createSupabaseAdminClient();
   if (!client) return null;
-  const { data: character, error: characterError } = await client.from('characters').select('*').eq('slug', characterSlug).maybeSingle();
+  const { data: character, error: characterError } = await client
+    .from('characters')
+    .select(CHARACTER_ROOM_CONTEXT_COLUMNS)
+    .eq('slug', characterSlug)
+    .maybeSingle();
   if (characterError) throw characterError;
   const { data: world, error: worldError } = worldSlug
-    ? await client.from('worlds').select('*').eq('slug', worldSlug).maybeSingle()
+    ? await client.from('worlds').select(WORLD_ROOM_CONTEXT_COLUMNS).eq('slug', worldSlug).maybeSingle()
     : { data: null, error: null };
   if (worldError) throw worldError;
   if (!character || (worldSlug && !world)) {
@@ -1291,7 +1428,7 @@ export const getRoom = async ({ event, roomId, userId }) => {
   const client = await userClient(event);
   const publicReadClient = await publicClient();
   if (!client || !publicReadClient) return null;
-  let query = client.from('rooms').select('*').eq('id', roomId);
+  let query = client.from(OWNED_ROOM_SUMMARY_VIEW).select(ROOM_SAFE_VIEW_COLUMNS).eq('id', roomId);
   if (userId) query = query.eq('user_id', userId);
   const { data: row, error } = await query.maybeSingle();
   if (error) throw error;
@@ -1303,13 +1440,19 @@ export const getRoomHistoryForModel = async ({ event, roomId, userId }) => {
   const client = await userClient(event);
   if (!client) return [];
   if (userId) {
-    const { data: ownedRoom, error: roomError } = await client.from('rooms').select('id').eq('id', roomId).eq('user_id', userId).maybeSingle();
+    const { data: ownedRoom, error: roomError } = await client.from(OWNED_ROOM_SUMMARY_VIEW).select('id').eq('id', roomId).eq('user_id', userId).maybeSingle();
     if (roomError) throw roomError;
     if (!ownedRoom) return [];
   }
-  const { data, error } = await client.from('room_messages').select('*').eq('room_id', roomId).order('sequence_no', { ascending: true }).order('created_at', { ascending: true });
+  const { data, error } = await client
+    .from('room_messages')
+    .select('role, content_json, sequence_no, created_at')
+    .eq('room_id', roomId)
+    .order('sequence_no', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(12);
   if (error) throw error;
-  const history = (data || []).map((item) => ({
+  const history = [...(data || [])].reverse().map((item) => ({
     role: item.role,
     content: item.role === 'user' ? String(item.content_json?.text || '') : String(item.content_json?.response || ''),
   })).filter((item) => item.content);
@@ -1317,17 +1460,21 @@ export const getRoomHistoryForModel = async ({ event, roomId, userId }) => {
 };
 
 export const getRoomPromptContext = async ({ event, roomId, userId }) => {
-  const client = await userClient(event);
+  if (!userId) return null;
+  const client = await createSupabaseAdminClient();
   if (!client) return null;
-  const [roomResult, stateResult] = await Promise.all([
-    userId
-      ? client.from('rooms').select('resolved_prompt_snapshot_json, bridge_profile_json').eq('id', roomId).eq('user_id', userId).maybeSingle()
-      : client.from('rooms').select('resolved_prompt_snapshot_json, bridge_profile_json').eq('id', roomId).maybeSingle(),
-    client.from('room_state_summaries').select('*').eq('room_id', roomId).maybeSingle(),
-  ]);
+  // The prompt snapshot never crosses the authenticated client grant. The
+  // service-role read still proves room ownership in the same DB query.
+  const roomResult = await client
+    .from('rooms')
+    .select('resolved_prompt_snapshot_json')
+    .eq('id', roomId)
+    .eq('user_id', userId)
+    .maybeSingle();
   if (roomResult.error) throw roomResult.error;
-  if (stateResult.error) throw stateResult.error;
   if (!roomResult.data) return null;
+  const stateResult = await client.from('room_state_summaries').select('*').eq('room_id', roomId).maybeSingle();
+  if (stateResult.error) throw stateResult.error;
 
   const state = toRoomStateSummary(stateResult.data || {});
   return {
@@ -1336,18 +1483,25 @@ export const getRoomPromptContext = async ({ event, roomId, userId }) => {
       state,
     }),
     storedPromptSnapshot: roomResult.data.resolved_prompt_snapshot_json,
-    bridgeProfile: roomResult.data.bridge_profile_json,
+    state,
   };
 };
 
-export const appendRoomMessages = async ({ event, roomId, userMessage, assistantMessage }) => {
+export const appendRoomMessages = async ({ event, userId, roomId, userMessage, assistantMessage }) => {
+  if (!userId) return null;
   const client = await userClient(event);
-  const publicReadClient = await publicClient();
-  if (!client || !publicReadClient) return null;
-  const room = await getRoom({ event, roomId });
+  const admin = await createSupabaseAdminClient();
+  if (!client || !admin) return null;
+  const room = await getRoom({ event, roomId, userId });
   if (!room) return null;
-  const { data: roomRow, error: roomRowError } = await client.from('rooms').select('resolved_prompt_snapshot_json').eq('id', roomId).single();
+  const { data: roomRow, error: roomRowError } = await admin
+    .from('rooms')
+    .select('resolved_prompt_snapshot_json')
+    .eq('id', roomId)
+    .eq('user_id', userId)
+    .maybeSingle();
   if (roomRowError) throw roomRowError;
+  if (!roomRow) return null;
   const nextState = updateRoomStateFromMessages({ state: clone(room.state), assistantMessage, userMessage });
   const nextMessages = [
     ...room.messages,
@@ -1385,17 +1539,17 @@ export const appendRoomMessages = async ({ event, roomId, userMessage, assistant
     updated_at: nowIso(),
   }).eq('room_id', roomId);
   if (stateError) throw stateError;
-  const { error: roomUpdateError } = await client
+  const { error: roomUpdateError } = await admin
     .from('rooms')
     .update({
       updated_at: nowIso(),
       last_message_at: nowIso(),
       resolved_prompt_snapshot_json: nextStoredPromptSnapshot,
     })
-    .eq('id', roomId);
+    .eq('id', roomId)
+    .eq('user_id', userId);
   if (roomUpdateError) throw roomUpdateError;
-  const { data: nextRoomRow } = await client.from('rooms').select('*').eq('id', roomId).single();
-  return hydrateRoom({ client, publicClientInstance: publicReadClient, row: nextRoomRow });
+  return getRoom({ event, roomId, userId });
 };
 
 export const commitRoomTurn = async ({
@@ -1408,19 +1562,34 @@ export const commitRoomTurn = async ({
   userMessage,
   assistantMessage,
   response,
+  room: providedRoom = null,
+  promptContext: providedPromptContext = null,
 }) => {
-  const room = await getRoom({ event, roomId, userId });
+  const normalizedExpectedVersion = Number(expectedVersion);
+  const canReuseSnapshot = Boolean(providedRoom)
+    && String(providedRoom.id || '') === String(roomId || '')
+    && Number.isFinite(normalizedExpectedVersion)
+    && Number(providedRoom.version) === normalizedExpectedVersion;
+  const room = canReuseSnapshot
+    ? providedRoom
+    : await getRoom({ event, roomId, userId });
   if (!room) return null;
   const admin = await createSupabaseAdminClient();
   if (!admin) return null;
-  const nextState = updateRoomStateFromMessages({ state: clone(room.state), assistantMessage, userMessage });
+  const promptContext = canReuseSnapshot && providedPromptContext
+    ? providedPromptContext
+    : await getRoomPromptContext({ event, roomId, userId });
+  const nextState = updateRoomStateFromMessages({
+    state: clone(promptContext?.state || room.state),
+    assistantMessage,
+    userMessage,
+  });
   const nextMessages = [
     ...room.messages,
     { role: 'user', content: userMessage },
     { role: 'assistant', content: assistantMessage },
   ];
   const turns = buildConversationTurns(nextMessages);
-  const promptContext = await getRoomPromptContext({ event, roomId, userId });
   const storedPromptSnapshot = normalizeStoredPromptSnapshot(
     promptContext?.storedPromptSnapshot || room.resolvedPromptSnapshotJson || {}
   );
@@ -1474,39 +1643,72 @@ export const commitRoomTurn = async ({
 
 export const getOpsDashboard = async ({ event, userId }) => {
   const client = await userClient(event);
-  if (!client) return null;
-  const ownerMode = await isOwnerUser({ event, userId });
-  const characterVisibleQuery = ownerMode
-    ? client.from('characters').select('*').eq('display_status', 'visible')
-    : client.from('characters').select('*').eq('owner_user_id', userId).eq('display_status', 'visible');
-  const characterHiddenQuery = ownerMode
-    ? client.from('characters').select('*').eq('display_status', 'hidden')
-    : client.from('characters').select('*').eq('owner_user_id', userId).eq('display_status', 'hidden');
-  const worldVisibleQuery = ownerMode
-    ? client.from('worlds').select('*').eq('display_status', 'visible')
-    : client.from('worlds').select('*').eq('owner_user_id', userId).eq('display_status', 'visible');
-  const worldHiddenQuery = ownerMode
-    ? client.from('worlds').select('*').eq('display_status', 'hidden')
-    : client.from('worlds').select('*').eq('owner_user_id', userId).eq('display_status', 'hidden');
-  const [charactersVisible, charactersHidden, worldsVisible, worldsHidden, heroSetting] = await Promise.all([
-    characterVisibleQuery,
-    characterHiddenQuery,
-    worldVisibleQuery,
-    worldHiddenQuery,
-    getSetting(client, 'home.hero'),
-  ]);
-  return {
-    items: {
-      visibleCharacters: (charactersVisible.data || []).map(summarizeCharacter),
-      hiddenCharacters: (charactersHidden.data || []).map(summarizeCharacter),
-      visibleWorlds: (worldsVisible.data || []).map(summarizeWorld),
-      hiddenWorlds: (worldsHidden.data || []).map(summarizeWorld),
-    },
-    home: {
-      heroMode: heroSetting?.mode === 'manual' ? 'manual' : 'auto',
-      heroTargetPath: typeof heroSetting?.targetPath === 'string' ? heroSetting.targetPath : '',
-    },
+  const unavailable = (cause) => {
+    logServerWarn('[V-MATE] Operations dashboard read failed', {
+      ...toSafeErrorMeta(cause),
+    });
+    const error = new Error('OPS_DASHBOARD_UNAVAILABLE');
+    error.code = 'OPS_DASHBOARD_UNAVAILABLE';
+    error.cause = cause;
+    return error;
   };
+  if (!client) throw unavailable(new Error('Authenticated database client is unavailable'));
+
+  try {
+    const ownerResult = await client.rpc('is_owner_user');
+    if (ownerResult?.error) throw ownerResult.error;
+    const ownerMode = ownerResult?.data === true;
+    const admin = ownerMode ? await createSupabaseAdminClient() : null;
+    if (ownerMode && !admin) throw new Error('Owner read capability is unavailable');
+    // Platform owners may inspect global moderation rows through service_role,
+    // but even that projection is limited to the public summary columns. Regular
+    // creators stay on the auth.uid()-scoped owner views.
+    const characterReadClient = ownerMode ? admin : client;
+    const worldReadClient = ownerMode ? admin : client;
+    const characterTable = ownerMode ? 'characters' : OWNED_CONTENT_VIEWS.character;
+    const worldTable = ownerMode ? 'worlds' : OWNED_CONTENT_VIEWS.world;
+    const characterColumns = ownerMode ? CHARACTER_BASE_SUMMARY_COLUMNS : CHARACTER_SAFE_VIEW_COLUMNS;
+    const worldColumns = ownerMode ? WORLD_BASE_SUMMARY_COLUMNS : WORLD_SAFE_VIEW_COLUMNS;
+    const characterVisibleQuery = ownerMode
+      ? characterReadClient.from(characterTable).select(characterColumns).eq('display_status', 'visible')
+      : characterReadClient.from(characterTable).select(characterColumns).eq('owner_user_id', userId).eq('display_status', 'visible');
+    const characterHiddenQuery = ownerMode
+      ? characterReadClient.from(characterTable).select(characterColumns).eq('display_status', 'hidden')
+      : characterReadClient.from(characterTable).select(characterColumns).eq('owner_user_id', userId).eq('display_status', 'hidden');
+    const worldVisibleQuery = ownerMode
+      ? worldReadClient.from(worldTable).select(worldColumns).eq('display_status', 'visible')
+      : worldReadClient.from(worldTable).select(worldColumns).eq('owner_user_id', userId).eq('display_status', 'visible');
+    const worldHiddenQuery = ownerMode
+      ? worldReadClient.from(worldTable).select(worldColumns).eq('display_status', 'hidden')
+      : worldReadClient.from(worldTable).select(worldColumns).eq('owner_user_id', userId).eq('display_status', 'hidden');
+    const heroSettingQuery = client.from('app_settings').select('value_json').eq('key', 'home.hero').maybeSingle();
+    const [charactersVisible, charactersHidden, worldsVisible, worldsHidden, heroSettingResult] = await Promise.all([
+      characterVisibleQuery,
+      characterHiddenQuery,
+      worldVisibleQuery,
+      worldHiddenQuery,
+      heroSettingQuery,
+    ]);
+    for (const result of [charactersVisible, charactersHidden, worldsVisible, worldsHidden, heroSettingResult]) {
+      if (result?.error) throw result.error;
+    }
+    const heroSetting = heroSettingResult.data?.value_json || null;
+    return {
+      items: {
+        visibleCharacters: (charactersVisible.data || []).map(summarizeCharacter),
+        hiddenCharacters: (charactersHidden.data || []).map(summarizeCharacter),
+        visibleWorlds: (worldsVisible.data || []).map(summarizeWorld),
+        hiddenWorlds: (worldsHidden.data || []).map(summarizeWorld),
+      },
+      home: {
+        heroMode: heroSetting?.mode === 'manual' ? 'manual' : 'auto',
+        heroTargetPath: typeof heroSetting?.targetPath === 'string' ? heroSetting.targetPath : '',
+      },
+    };
+  } catch (error) {
+    if (error?.code === 'OPS_DASHBOARD_UNAVAILABLE') throw error;
+    throw unavailable(error);
+  }
 };
 
 export const setContentVisibility = async ({ event, userId, entityType, id, status }) => {

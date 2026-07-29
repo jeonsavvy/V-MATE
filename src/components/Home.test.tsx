@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Home } from '@/components/Home'
 import type { CharacterSummary, HomeFeedPayload, WorldSummary } from '@/lib/platform/types'
@@ -62,6 +62,7 @@ const props = {
   userAvatarInitial: 'V',
   searchQuery: '',
   onSearchChange: vi.fn(),
+  onSearchSubmit: vi.fn(),
   onNavigate: vi.fn(),
   onAuthRequest: vi.fn(),
   onSignOut: vi.fn(),
@@ -125,5 +126,32 @@ describe('Home catalog states', () => {
     expect(api.fetchCharacters).not.toHaveBeenCalled()
     expect(api.fetchWorlds).not.toHaveBeenCalled()
     expect(api.fetchRecentRooms).toHaveBeenCalledTimes(1)
+    expect(api.fetchRecentRooms).toHaveBeenCalledWith({ limit: 3, includeMessages: false })
+    expect(api.fetchHome).toHaveBeenCalledWith('characters', '', 'popular', 'new')
+  })
+
+  it('refetches the combined home payload with independent character and world filters', async () => {
+    render(<Home {...props} />)
+    await waitFor(() => expect(api.fetchHome).toHaveBeenCalledWith('characters', '', 'popular', 'new'))
+
+    fireEvent.click(screen.getAllByRole('button', { name: '신작' })[0])
+    await waitFor(() => expect(api.fetchHome).toHaveBeenLastCalledWith('characters', '', 'new', 'new'))
+
+    fireEvent.click(screen.getAllByRole('button', { name: '인기순' })[1])
+    await waitFor(() => expect(api.fetchHome).toHaveBeenLastCalledWith('characters', '', 'new', 'popular'))
+  })
+
+  it('distinguishes a recent-room load failure from an empty conversation list and retries', async () => {
+    api.fetchRecentRooms
+      .mockRejectedValueOnce(new Error('temporary failure'))
+      .mockResolvedValueOnce({ items: [] })
+    render(<Home {...props} user={{ id: 'user-1' } as never} />)
+
+    expect(await screen.findByText('대화 목록을 불러오지 못했습니다')).toBeTruthy()
+    expect(screen.queryByText('아직 시작한 대화가 없습니다')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '다시 불러오기' }))
+
+    await waitFor(() => expect(api.fetchRecentRooms).toHaveBeenCalledTimes(2))
+    expect(await screen.findByText('아직 시작한 대화가 없습니다')).toBeTruthy()
   })
 })

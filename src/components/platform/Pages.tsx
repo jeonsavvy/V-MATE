@@ -8,8 +8,9 @@ import { CHARACTER_VARIANTS, createImageVariants, type ResizedImageAsset, WORLD_
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { ArtworkFrame, EmptyState, EntityCard, LinkCard, LoadingState, PageSection, PlatformShell, resolveEntityArtworkSources } from '@/components/platform/PlatformScaffold'
+import { ArtworkFrame, EmptyState, EntityCard, LinkCard, LoadingState, NavigationLink, PageSection, PlatformShell, resolveEntityArtworkSources } from '@/components/platform/PlatformScaffold'
 import { ChatComposer } from '@/components/platform/ChatComposer'
+import { UnsavedChangesDialog } from '@/components/platform/UnsavedChangesDialog'
 import type { PlatformPageChromeProps } from '@/components/platform/pageTypes'
 
 // 상세, 시작, 대화, 제작, 운영 화면을 한 파일에 두고 공통 흐름을 재사용한다.
@@ -23,6 +24,7 @@ const PageFrame = ({ chrome, children, showCombinationDock = true, showCombinati
     userAvatarInitial={chrome.userAvatarInitial}
     searchValue={chrome.searchQuery}
     onSearchChange={chrome.onSearchChange}
+    onSearchSubmit={chrome.onSearchSubmit}
     onNavigate={chrome.onNavigate}
     onAuthRequest={chrome.onAuthRequest}
     onSignOut={chrome.onSignOut}
@@ -41,7 +43,7 @@ const PageFrame = ({ chrome, children, showCombinationDock = true, showCombinati
 
 const ProtectedGate = ({ chrome, title, description }: { chrome: PlatformPageChromeProps; title: string; description: string }) => (
   <PageFrame chrome={chrome} showCombinationDock={false}>
-    {chrome.authStatus === 'checking' ? <LoadingState label="로그인 상태 확인 중…" /> : chrome.authStatus === 'unavailable' ? <EmptyState title="로그인 상태를 확인하지 못했습니다" description="현재 로그인 상태는 확인되지 않았습니다. 인증을 다시 확인한 뒤 계속해 주세요." action={<Button onClick={chrome.onAuthRequest}>인증 다시 확인</Button>} /> : <EmptyState title={title} description={description} action={<Button onClick={chrome.onAuthRequest}>로그인</Button>} />}
+    {chrome.authStatus === 'checking' ? <LoadingState label="로그인 상태 확인 중…" /> : chrome.authStatus === 'unavailable' ? <EmptyState title="로그인 상태를 확인하지 못했습니다" description="인증을 다시 확인한 뒤 계속해 주세요." action={<Button onClick={chrome.onAuthRequest}>인증 다시 확인</Button>} /> : <EmptyState title={title} description={description} action={<Button onClick={chrome.onAuthRequest}>로그인</Button>} />}
   </PageFrame>
 )
 
@@ -63,12 +65,12 @@ const CharacterWorldPicker = ({
   onSelect: (value: string | null) => void
 }) => (
   <Dialog open={open} onOpenChange={onOpenChange}>
-    <DialogContent className="max-w-3xl rounded-xl bg-white text-[#171717]">
+    <DialogContent className="grid max-h-[calc(100dvh-1.5rem)] max-w-3xl grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-xl bg-white text-[#171717]">
       <DialogHeader>
         <DialogTitle className="text-[#171717]">{title}</DialogTitle>
         <DialogDescription className="text-[#737373]">{description}</DialogDescription>
       </DialogHeader>
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className="grid min-h-0 gap-4 overflow-y-auto overscroll-contain pr-1 md:grid-cols-2">
         {emptyOption ? <LinkCard title={emptyOption.title} body={emptyOption.body} onClick={() => onSelect(null)} /> : null}
         {items.map((item) => (
           <LinkCard key={item.id} title={item.title} body={item.body} onClick={() => onSelect(item.value)} />
@@ -125,7 +127,7 @@ const ReportDialog = ({ open, onOpenChange, entityType, entityId, entityName }: 
       .catch((error) => toast.error(safeActionError(error, '신고를 접수하지 못했습니다. 입력한 내용은 유지됩니다. 다시 시도해 주세요.')))
       .finally(() => setIsSubmitting(false))
   }
-  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="rounded-xl border-[#e7e7e7] bg-white sm:max-w-md"><DialogHeader><DialogTitle>{entityName} 신고</DialogTitle><DialogDescription>신고 사유를 선택해 주세요. 같은 콘텐츠는 한 번만 신고할 수 있습니다.</DialogDescription></DialogHeader><label className="space-y-2 text-sm font-semibold text-[#555]" htmlFor="report-reason"><span>신고 사유</span><select id="report-reason" name="report-reason" value={reason} onChange={(event) => setReason(event.target.value)} className="h-11 w-full rounded-lg border border-[#d8d8d8] bg-white px-3 text-sm font-normal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2"><option value="sexual_content">노골적인 성적 콘텐츠</option><option value="minor_safety">미성년자 안전</option><option value="hate_or_harassment">혐오·괴롭힘</option><option value="copyright">저작권·권리 침해</option><option value="spam">스팸·기만</option><option value="other">기타</option></select></label><label className="space-y-2 text-sm font-semibold text-[#555]" htmlFor="report-details"><span>상세 내용 <span className="font-normal text-[#888]">(선택)</span></span><textarea id="report-details" name="report-details" value={details} onChange={(event) => setDetails(event.target.value)} placeholder="검토에 필요한 내용을 적어 주세요." className="min-h-28 w-full rounded-lg border border-[#d8d8d8] bg-white px-4 py-3 text-sm font-normal text-[#171717] placeholder:text-[#aaaaaa] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2" maxLength={1000} /></label><DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>취소</Button><Button onClick={submit} disabled={isSubmitting} className="bg-[#d43a34] text-white hover:bg-[#c9342f]">{isSubmitting ? <Loader2 className="size-4 animate-spin" /> : <Flag className="size-4" />}{isSubmitting ? '접수 중…' : '신고 접수'}</Button></DialogFooter></DialogContent></Dialog>
+  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="rounded-xl border-[#e7e7e7] bg-white sm:max-w-md"><DialogHeader><DialogTitle>{entityName} 신고</DialogTitle><DialogDescription>신고 사유를 선택해 주세요. 같은 콘텐츠는 한 번만 신고할 수 있습니다.</DialogDescription></DialogHeader><label className="space-y-2 text-sm font-semibold text-[#555]" htmlFor="report-reason"><span>신고 사유</span><select id="report-reason" name="report-reason" value={reason} onChange={(event) => setReason(event.target.value)} className="h-11 w-full rounded-lg border border-[#d8d8d8] bg-white px-3 text-sm font-normal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2"><option value="sexual_content">노골적인 성적 콘텐츠</option><option value="minor_safety">미성년자 안전</option><option value="hate_or_harassment">혐오·괴롭힘</option><option value="copyright">저작권·권리 침해</option><option value="spam">스팸·기만</option><option value="other">기타</option></select></label><label className="space-y-2 text-sm font-semibold text-[#555]" htmlFor="report-details"><span>상세 내용 <span className="font-normal text-[#888]">(선택)</span></span><textarea id="report-details" name="report-details" value={details} onChange={(event) => setDetails(event.target.value)} placeholder="검토에 필요한 내용을 적어 주세요." className="min-h-28 w-full rounded-lg border border-[#d8d8d8] bg-white px-4 py-3 text-sm font-normal text-[#171717] placeholder:text-[#707070] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2" maxLength={1000} /></label><DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>취소</Button><Button onClick={submit} disabled={isSubmitting} className="bg-[#d43a34] text-white hover:bg-[#c9342f]">{isSubmitting ? <Loader2 className="size-4 animate-spin" /> : <Flag className="size-4" />}{isSubmitting ? '접수 중…' : '신고 접수'}</Button></DialogFooter></DialogContent></Dialog>
 }
 
 // 상세 화면은 공개 조회와 새 방 진입을 함께 책임진다.
@@ -138,7 +140,7 @@ export function CharacterDetailPage({ chrome, slug }: { chrome: PlatformPageChro
   const [pickerOpen, setPickerOpen] = useState(false)
   const [isStartingRoom, setIsStartingRoom] = useState(false)
   const isStartingRoomRef = useRef(false)
-  const [isBookmarked, setIsBookmarked] = useState(false)
+  const [isBookmarked, setIsBookmarked] = useState<boolean | null>(false)
   const [reportOpen, setReportOpen] = useState(false)
 
   useEffect(() => {
@@ -147,7 +149,11 @@ export function CharacterDetailPage({ chrome, slug }: { chrome: PlatformPageChro
     setLoadError('')
     setSecondaryError('')
     void platformApi.fetchCharacter(slug)
-      .then((character) => { if (mounted) setItem(character.item) })
+      .then(({ item: character, viewer }) => {
+        if (!mounted) return
+        setItem(character)
+        setIsBookmarked(viewer?.bookmarked === null ? null : Boolean(viewer?.bookmarked))
+      })
       .catch(() => { if (mounted) setLoadError('네트워크 연결을 확인한 뒤 다시 시도해 주세요.') })
     void platformApi.fetchWorlds('', 'popular')
       .then((worlds) => { if (mounted) setAvailableWorlds(worlds.items) })
@@ -161,16 +167,7 @@ export function CharacterDetailPage({ chrome, slug }: { chrome: PlatformPageChro
       return
     }
 
-    let mounted = true
     void platformApi.addRecentView('character', item.slug).catch(() => undefined)
-    void platformApi.fetchLibrary()
-      .then((data) => {
-        if (!mounted) return
-        setIsBookmarked(data.bookmarks.some((entry) => entry.entityType === 'character' && entry.item.slug === item.slug))
-      })
-      .catch(() => undefined)
-
-    return () => { mounted = false }
   }, [chrome.user, item])
 
   const startRoom = (worldSlug?: string | null) => {
@@ -194,6 +191,10 @@ export function CharacterDetailPage({ chrome, slug }: { chrome: PlatformPageChro
 
   const handleBookmarkToggle = () => {
     if (!item) return
+    if (isBookmarked === null) {
+      setReloadVersion((value) => value + 1)
+      return
+    }
     if (!chrome.user) {
       chrome.onAuthRequest()
       return
@@ -256,7 +257,7 @@ export function CharacterDetailPage({ chrome, slug }: { chrome: PlatformPageChro
             <Button onClick={() => handleStart(null)} disabled={isStartingRoom} className="bg-[#d43a34] text-white hover:bg-[#c9342f]">{isStartingRoom ? <Loader2 className="h-4 w-4 animate-spin" /> : <MessageCircle className="h-4 w-4" />}{isStartingRoom ? '대화 여는 중…' : '바로 대화'}</Button>
             <Button variant="outline" onClick={() => setPickerOpen(true)} disabled={isStartingRoom}>월드와 시작</Button>
             <Button variant="ghost" onClick={() => chrome.onSelectEntity(item)}><PlusCircle className="h-4 w-4" />{chrome.selectedCharacter?.id === item.id ? '조합에 담김' : '조합에 담기'}</Button>
-            <Button variant="outline" onClick={handleBookmarkToggle}><BookMarked className="h-4 w-4" />{isBookmarked ? '즐겨찾기 해제' : '즐겨찾기 저장'}</Button>
+            <Button variant="outline" onClick={handleBookmarkToggle}><BookMarked className="h-4 w-4" />{isBookmarked === null ? '즐겨찾기 다시 확인' : isBookmarked ? '즐겨찾기 해제' : '즐겨찾기 저장'}</Button>
             {chrome.user?.id === item.creator.id ? <Button variant="outline" onClick={() => chrome.onNavigate(`/edit/character/${item.slug}`)}>수정</Button> : null}
             {chrome.user?.id !== item.creator.id ? <Button variant="ghost" onClick={() => chrome.user ? setReportOpen(true) : chrome.onAuthRequest()}><Flag className="h-4 w-4" />신고</Button> : null}
           </div>
@@ -283,7 +284,7 @@ export function WorldDetailPage({ chrome, slug }: { chrome: PlatformPageChromePr
   const [pickerOpen, setPickerOpen] = useState(false)
   const [isStartingRoom, setIsStartingRoom] = useState(false)
   const isStartingRoomRef = useRef(false)
-  const [isBookmarked, setIsBookmarked] = useState(false)
+  const [isBookmarked, setIsBookmarked] = useState<boolean | null>(false)
   const [reportOpen, setReportOpen] = useState(false)
 
   useEffect(() => {
@@ -292,7 +293,11 @@ export function WorldDetailPage({ chrome, slug }: { chrome: PlatformPageChromePr
     setLoadError('')
     setSecondaryError('')
     void platformApi.fetchWorld(slug)
-      .then((world) => { if (mounted) setItem(world.item) })
+      .then(({ item: world, viewer }) => {
+        if (!mounted) return
+        setItem(world)
+        setIsBookmarked(viewer?.bookmarked === null ? null : Boolean(viewer?.bookmarked))
+      })
       .catch(() => { if (mounted) setLoadError('네트워크 연결을 확인한 뒤 다시 시도해 주세요.') })
     void platformApi.fetchCharacters('', 'popular')
       .then((characters) => { if (mounted) setAvailableCharacters(characters.items) })
@@ -306,16 +311,7 @@ export function WorldDetailPage({ chrome, slug }: { chrome: PlatformPageChromePr
       return
     }
 
-    let mounted = true
     void platformApi.addRecentView('world', item.slug).catch(() => undefined)
-    void platformApi.fetchLibrary()
-      .then((data) => {
-        if (!mounted) return
-        setIsBookmarked(data.bookmarks.some((entry) => entry.entityType === 'world' && entry.item.slug === item.slug))
-      })
-      .catch(() => undefined)
-
-    return () => { mounted = false }
   }, [chrome.user, item])
 
   const startRoom = (character: CharacterSummary) => {
@@ -339,6 +335,10 @@ export function WorldDetailPage({ chrome, slug }: { chrome: PlatformPageChromePr
 
   const handleBookmarkToggle = () => {
     if (!item) return
+    if (isBookmarked === null) {
+      setReloadVersion((value) => value + 1)
+      return
+    }
     if (!chrome.user) {
       chrome.onAuthRequest()
       return
@@ -398,7 +398,7 @@ export function WorldDetailPage({ chrome, slug }: { chrome: PlatformPageChromePr
             <div className="flex flex-wrap gap-3">
               <Button onClick={() => setPickerOpen(true)} disabled={isStartingRoom} className="bg-[#d43a34] text-white hover:bg-[#c9342f]">{isStartingRoom ? <Loader2 className="h-4 w-4 animate-spin" /> : <MessageCircle className="h-4 w-4" />}{isStartingRoom ? '대화 여는 중…' : '캐릭터 선택'}</Button>
               <Button variant="ghost" onClick={() => chrome.onSelectEntity(item)}><PlusCircle className="h-4 w-4" />{chrome.selectedWorld?.id === item.id ? '조합에 담김' : '조합에 담기'}</Button>
-              <Button variant="outline" onClick={handleBookmarkToggle}><BookMarked className="h-4 w-4" />{isBookmarked ? '즐겨찾기 해제' : '즐겨찾기 저장'}</Button>
+              <Button variant="outline" onClick={handleBookmarkToggle}><BookMarked className="h-4 w-4" />{isBookmarked === null ? '즐겨찾기 다시 확인' : isBookmarked ? '즐겨찾기 해제' : '즐겨찾기 저장'}</Button>
               {chrome.user?.id === item.creator.id ? <Button variant="outline" onClick={() => chrome.onNavigate(`/edit/world/${item.slug}`)}>수정</Button> : null}
               {chrome.user?.id !== item.creator.id ? <Button variant="ghost" onClick={() => chrome.user ? setReportOpen(true) : chrome.onAuthRequest()}><Flag className="h-4 w-4" />신고</Button> : null}
             </div>
@@ -429,6 +429,11 @@ const NarrativeMessage = ({ message }: { message: RoomSummary['messages'][number
   )
 }
 
+const isViewportNearDocumentBottom = () => {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return true
+  return document.documentElement.scrollHeight - (window.scrollY + window.innerHeight) <= 160
+}
+
 // 시작 URL은 상세 화면으로 정규화해 링크 형태만 다르고 핵심 경험은 하나로 유지한다.
 export function StartCharacterPage({ chrome, slug }: { chrome: PlatformPageChromeProps; slug: string }) {
   useEffect(() => {
@@ -457,6 +462,10 @@ export function RoomPage({ chrome, roomId }: { chrome: PlatformPageChromeProps; 
   const [pendingRequestId, setPendingRequestId] = useState<string | null>(null)
   const isSendingRef = useRef(false)
   const roomScopeEpochRef = useRef(0)
+  const messagesEndRef = useRef<HTMLDivElement | null>(null)
+  const hasPositionedInitialMessagesRef = useRef(false)
+  const previousMessageCountRef = useRef(0)
+  const shouldFollowMessagesRef = useRef(true)
 
   useEffect(() => {
     roomScopeEpochRef.current += 1
@@ -469,6 +478,18 @@ export function RoomPage({ chrome, roomId }: { chrome: PlatformPageChromeProps; 
     setIsLoading(false)
     setLoadError('')
     setQuotaError('')
+    hasPositionedInitialMessagesRef.current = false
+    previousMessageCountRef.current = 0
+    shouldFollowMessagesRef.current = true
+  }, [chrome.user?.id, roomId])
+
+  useEffect(() => {
+    const updateFollowState = () => {
+      shouldFollowMessagesRef.current = isViewportNearDocumentBottom()
+    }
+    updateFollowState()
+    window.addEventListener('scroll', updateFollowState, { passive: true })
+    return () => window.removeEventListener('scroll', updateFollowState)
   }, [chrome.user?.id, roomId])
 
   useEffect(() => {
@@ -485,6 +506,21 @@ export function RoomPage({ chrome, roomId }: { chrome: PlatformPageChromeProps; 
       .catch(() => { if (mounted && scopeEpoch === roomScopeEpochRef.current) setQuotaError('사용량을 불러오지 못했습니다. 메시지를 보내면 서버에서 한도를 확인합니다.') })
     return () => { mounted = false }
   }, [chrome.user?.id, roomId, reloadVersion])
+
+  useEffect(() => {
+    if (!room) return
+    const isInitialPosition = !hasPositionedInitialMessagesRef.current
+    const hasNewMessages = room.messages.length > previousMessageCountRef.current
+    const shouldScroll = isInitialPosition || (hasNewMessages && shouldFollowMessagesRef.current)
+    hasPositionedInitialMessagesRef.current = true
+    previousMessageCountRef.current = room.messages.length
+    if (!shouldScroll) return
+
+    const frame = window.requestAnimationFrame(() => {
+      messagesEndRef.current?.scrollIntoView?.({ block: 'end', behavior: isInitialPosition ? 'auto' : 'smooth' })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [room?.id, room?.messages.length])
 
   const activeCharacterImage = useMemo(() => {
     if (!room) return ''
@@ -528,6 +564,7 @@ export function RoomPage({ chrome, roomId }: { chrome: PlatformPageChromeProps; 
 
     const requestId = pendingRequestId || crypto.randomUUID()
     const scopeEpoch = roomScopeEpochRef.current
+    shouldFollowMessagesRef.current = isViewportNearDocumentBottom()
     isSendingRef.current = true
     setPendingRequestId(requestId)
     setNeedsRetry(false)
@@ -632,6 +669,7 @@ export function RoomPage({ chrome, roomId }: { chrome: PlatformPageChromeProps; 
                   needsRetry={needsRetry}
                 />
               </div>
+              <div ref={messagesEndRef} aria-hidden="true" className="h-px" />
             </div>
           </div>
         </div>
@@ -649,6 +687,7 @@ const FileUploadCard = ({
   aspectClassName,
   hint,
   actionLabel = '이미지 선택',
+  disabled = false,
   isProcessing = false,
   onChange,
 }: {
@@ -660,6 +699,7 @@ const FileUploadCard = ({
   aspectClassName: string
   hint: string
   actionLabel?: string
+  disabled?: boolean
   isProcessing?: boolean
   onChange: (file: File) => void
 }) => (
@@ -673,20 +713,12 @@ const FileUploadCard = ({
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
-        <label
-          htmlFor={inputId}
-          className={`inline-flex h-11 cursor-pointer items-center justify-center gap-2 rounded-lg border border-[#d8d8d8] px-5 text-sm font-semibold tracking-[-0.015em] transition ${
-            isProcessing ? 'pointer-events-none bg-[#f3f3f3] text-[#171717]/48' : 'bg-white text-[#111317] hover:border-[#ff5148] hover:text-[#ff5148]'
-          }`}
-        >
-          <ImagePlus className="h-4 w-4" />
-          {isProcessing ? '이미지 처리 중…' : actionLabel}
-        </label>
         <input
           id={inputId}
           type="file"
           accept="image/*"
-          className="sr-only"
+          disabled={disabled}
+          className="peer sr-only"
           onChange={(event) => {
             const file = event.target.files?.[0]
             event.currentTarget.value = ''
@@ -694,6 +726,15 @@ const FileUploadCard = ({
             onChange(file)
           }}
         />
+        <label
+          htmlFor={inputId}
+          className={`inline-flex h-11 cursor-pointer items-center justify-center gap-2 rounded-lg border border-[#d8d8d8] px-5 text-sm font-semibold tracking-[-0.015em] transition peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-[#ff5148]/40 peer-focus-visible:ring-offset-2 ${
+            disabled ? 'pointer-events-none cursor-not-allowed bg-[#f3f3f3] text-[#171717]/48' : 'bg-white text-[#111317] hover:border-[#ff5148] hover:text-[#c9342f]'
+          }`}
+        >
+          <ImagePlus className="h-4 w-4" />
+          {isProcessing ? '이미지 처리 중…' : actionLabel}
+        </label>
         <span className="text-xs leading-6 text-[#7a7a7a]">{hint}</span>
       </div>
     </div>
@@ -759,6 +800,322 @@ const createDraftFromExistingSlot = (slot: {
   existingCardUrl: slot.cardUrl || '',
   existingDetailUrl: slot.detailUrl || '',
 })
+
+type EditorDraftKind = 'character' | 'world'
+
+interface PersistedImageSlotDraft {
+  id: string
+  slot: string
+  usage: string
+  trigger: string
+  priority: string
+  existingThumbUrl: string
+  existingCardUrl: string
+  existingDetailUrl: string
+}
+
+interface EditorDraftRecord<TValues extends Record<string, unknown>> {
+  version: 1
+  kind: EditorDraftKind
+  revision: string
+  updatedAt: string
+  values: TValues
+  imageSlots: PersistedImageSlotDraft[]
+  imageSlotsDirty: boolean
+  requiresImageReselection: boolean
+}
+
+const editorDraftKey = (kind: EditorDraftKind, slug: string | undefined, userId: string) =>
+  `v-mate:editor-draft:v1:${kind}:${encodeURIComponent(slug || 'new')}:${encodeURIComponent(userId)}`
+
+const resolveEditorDraftStorage = () => {
+  if (typeof window === 'undefined') return null
+  try {
+    return window.sessionStorage
+  } catch {
+    return null
+  }
+}
+
+const readEditorDraft = <TValues extends Record<string, unknown>>(key: string, kind: EditorDraftKind): EditorDraftRecord<TValues> | null => {
+  const storage = resolveEditorDraftStorage()
+  if (!storage) return null
+  try {
+    const parsed = JSON.parse(storage.getItem(key) || 'null') as EditorDraftRecord<TValues> | null
+    if (!parsed || parsed.version !== 1 || parsed.kind !== kind || !parsed.values || typeof parsed.values !== 'object' || Array.isArray(parsed.values) || !Array.isArray(parsed.imageSlots) || !parsed.imageSlots.every((slot) => slot && typeof slot === 'object')) {
+      storage.removeItem(key)
+      return null
+    }
+    return parsed
+  } catch {
+    storage.removeItem(key)
+    return null
+  }
+}
+
+const writeEditorDraft = <TValues extends Record<string, unknown>>(key: string, draft: EditorDraftRecord<TValues>) => {
+  try {
+    resolveEditorDraftStorage()?.setItem(key, JSON.stringify(draft))
+  } catch {
+    // 임시 저장 실패가 편집 자체를 막아서는 안 된다.
+  }
+}
+
+const clearEditorDraft = (key: string) => {
+  try {
+    resolveEditorDraftStorage()?.removeItem(key)
+  } catch {
+    // 저장 완료 뒤 임시 저장 정리에 실패해도 서버 저장 결과는 유지한다.
+  }
+}
+
+const createEditorDraftRevision = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+}
+
+const readEditorDraftRevision = (key: string) => {
+  try {
+    const raw = resolveEditorDraftStorage()?.getItem(key)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    return typeof parsed.revision === 'string' && parsed.revision ? parsed.revision : null
+  } catch {
+    return null
+  }
+}
+
+const toPersistedImageSlots = (slots: ImageSlotDraft[]) => slots
+  .slice(0, 6)
+  .map((slot) => ({
+    id: slot.id,
+    slot: slot.slot,
+    usage: slot.usage,
+    trigger: slot.trigger,
+    priority: slot.priority,
+    existingThumbUrl: slot.existingThumbUrl,
+    existingCardUrl: slot.existingCardUrl,
+    existingDetailUrl: slot.existingDetailUrl,
+  }))
+
+const imageSlotsRequireReselection = (slots: ImageSlotDraft[]) => slots.some((slot, index) => (
+  slot.assets.length > 0
+  || (index > 0 && !slot.existingThumbUrl && !slot.existingCardUrl && !slot.existingDetailUrl)
+))
+
+const restorePersistedImageSlots = (slots: PersistedImageSlotDraft[], fallback: ImageSlotDraft) => {
+  const restored = slots.slice(0, 6).map((slot) => ({
+    id: typeof slot.id === 'string' && isCanonicalSlotId(slot.id) ? slot.id : createSlotId(),
+    slot: String(slot.slot || ''),
+    usage: String(slot.usage || ''),
+    trigger: String(slot.trigger || ''),
+    priority: String(slot.priority || '0'),
+    assets: [],
+    previewUrl: String(slot.existingDetailUrl || slot.existingCardUrl || slot.existingThumbUrl || ''),
+    sourceSize: '',
+    existingThumbUrl: String(slot.existingThumbUrl || ''),
+    existingCardUrl: String(slot.existingCardUrl || ''),
+    existingDetailUrl: String(slot.existingDetailUrl || ''),
+  }))
+  return restored.length > 0 ? restored : [fallback]
+}
+
+const isCurrentNavigationTarget = (path: string) => {
+  if (typeof window === 'undefined') return false
+  try {
+    const target = new URL(path, window.location.href)
+    const normalize = (pathname: string) => pathname.length > 1 && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname
+    return normalize(target.pathname) === normalize(window.location.pathname)
+      && target.search === window.location.search
+      && target.hash === window.location.hash
+  } catch {
+    return false
+  }
+}
+
+interface EditorNavigationSnapshot {
+  draftKey: string
+  draftRevision: string | null
+  localGeneration: number
+  appGeneration: number | null
+}
+
+type PendingEditorNavigation =
+  | { kind: 'navigate'; path: string }
+  | { kind: 'search'; value: string }
+
+const useEditorIntegrity = (chrome: PlatformPageChromeProps, draftKey: string) => {
+  const [imageSlotsDirty, setImageSlotsDirty] = useState(false)
+  const [isDirty, setIsDirty] = useState(false)
+  const [pendingNavigation, setPendingNavigation] = useState<PendingEditorNavigation | null>(null)
+  const isDirtyRef = useRef(false)
+  const isMountedRef = useRef(false)
+  const pendingNavigationRef = useRef<PendingEditorNavigation | null>(null)
+  const isConfirmingNavigationRef = useRef(false)
+  const localNavigationGenerationRef = useRef(0)
+  const activeDraftKeyRef = useRef(draftKey)
+  const chromeRef = useRef(chrome)
+  activeDraftKeyRef.current = draftKey
+  chromeRef.current = chrome
+
+  const markDirty = () => {
+    isDirtyRef.current = true
+    setIsDirty(true)
+    chromeRef.current.onEditorDirtyChange?.(true)
+  }
+
+  const markImageSlotsDirty = () => {
+    setImageSlotsDirty(true)
+    markDirty()
+  }
+
+  const markClean = () => {
+    isDirtyRef.current = false
+    setIsDirty(false)
+    chromeRef.current.onEditorDirtyChange?.(false)
+  }
+
+  const guardedNavigate = (path: string) => {
+    if (isCurrentNavigationTarget(path)) return
+    if (isDirtyRef.current) {
+      if (pendingNavigationRef.current) return
+      const nextNavigation: PendingEditorNavigation = { kind: 'navigate', path }
+      pendingNavigationRef.current = nextNavigation
+      setPendingNavigation(nextNavigation)
+      return
+    }
+    localNavigationGenerationRef.current += 1
+    chromeRef.current.onNavigate(path)
+  }
+
+  const guardedSearchSubmit = (value: string) => {
+    if (isDirtyRef.current) {
+      if (pendingNavigationRef.current) return
+      const nextNavigation: PendingEditorNavigation = { kind: 'search', value }
+      pendingNavigationRef.current = nextNavigation
+      setPendingNavigation(nextNavigation)
+      return
+    }
+    localNavigationGenerationRef.current += 1
+    chromeRef.current.onSearchSubmit(value)
+  }
+
+  const cancelNavigation = () => {
+    if (isConfirmingNavigationRef.current) return
+    pendingNavigationRef.current = null
+    setPendingNavigation(null)
+  }
+
+  const confirmNavigation = () => {
+    const nextNavigation = pendingNavigationRef.current
+    if (!nextNavigation || isConfirmingNavigationRef.current) return
+    isConfirmingNavigationRef.current = true
+    pendingNavigationRef.current = null
+    setPendingNavigation(null)
+    localNavigationGenerationRef.current += 1
+    try {
+      if (nextNavigation.kind === 'navigate') chromeRef.current.onNavigate(nextNavigation.path)
+      else chromeRef.current.onSearchSubmit(nextNavigation.value)
+    } finally {
+      isConfirmingNavigationRef.current = false
+    }
+  }
+
+  const captureNavigation = (): EditorNavigationSnapshot => ({
+    draftKey: activeDraftKeyRef.current,
+    draftRevision: activeDraftKeyRef.current ? readEditorDraftRevision(activeDraftKeyRef.current) : null,
+    localGeneration: localNavigationGenerationRef.current,
+    appGeneration: chromeRef.current.getNavigationGeneration?.() ?? null,
+  })
+
+  const finishAndNavigate = (path: string, snapshot: EditorNavigationSnapshot) => {
+    const currentAppGeneration = chromeRef.current.getNavigationGeneration?.() ?? null
+    const navigationIsCurrent = isMountedRef.current
+      && activeDraftKeyRef.current === snapshot.draftKey
+      && localNavigationGenerationRef.current === snapshot.localGeneration
+      && (snapshot.appGeneration === null || currentAppGeneration === snapshot.appGeneration)
+    const submittedDraftStillStored = Boolean(snapshot.draftKey)
+      && snapshot.draftRevision !== null
+      && readEditorDraftRevision(snapshot.draftKey) === snapshot.draftRevision
+    if (snapshot.draftKey && submittedDraftStillStored) {
+      clearEditorDraft(snapshot.draftKey)
+    }
+    if (!navigationIsCurrent) return
+    pendingNavigationRef.current = null
+    setPendingNavigation(null)
+    localNavigationGenerationRef.current += 1
+    markClean()
+    chromeRef.current.onNavigate(path)
+  }
+
+  useEffect(() => {
+    isMountedRef.current = true
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!isDirtyRef.current) return
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => {
+      isMountedRef.current = false
+      pendingNavigationRef.current = null
+      chromeRef.current.onEditorDirtyChange?.(false)
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+    }
+  }, [])
+
+  return {
+    editorChrome: { ...chrome, onNavigate: guardedNavigate, onSearchSubmit: guardedSearchSubmit } as PlatformPageChromeProps,
+    editorNavigationDialog: (
+      <UnsavedChangesDialog
+        open={pendingNavigation !== null}
+        description={pendingNavigation?.kind === 'search'
+          ? '검색 결과로 이동하면 현재 입력 내용은 임시저장본으로만 남습니다.'
+          : '다른 화면으로 이동하면 현재 입력 내용은 임시저장본으로만 남습니다.'}
+        onCancel={cancelNavigation}
+        onConfirm={confirmNavigation}
+      />
+    ),
+    captureNavigation,
+    finishAndNavigate,
+    guardedNavigate,
+    imageSlotsDirty,
+    isDirty,
+    markClean,
+    markDirty,
+    markImageSlotsDirty,
+    setImageSlotsDirty,
+  }
+}
+
+const useImageProcessingTracker = () => {
+  const nextTokenRef = useRef(0)
+  const [operations, setOperations] = useState<Record<number, string>>({})
+  const processingSlotIds = useMemo(() => new Set(Object.values(operations)), [operations])
+
+  const begin = (slotId: string) => {
+    const token = nextTokenRef.current + 1
+    nextTokenRef.current = token
+    setOperations((current) => ({ ...current, [token]: slotId }))
+    return token
+  }
+
+  const finish = (token: number) => {
+    setOperations((current) => {
+      if (!(token in current)) return current
+      const next = { ...current }
+      delete next[token]
+      return next
+    })
+  }
+
+  return {
+    begin,
+    finish,
+    isProcessing: Object.keys(operations).length > 0,
+    processingSlotIds,
+  }
+}
 
 const uploadPreparedAssets = async ({
   entityType,
@@ -859,7 +1216,8 @@ const SituationImageSlotsEditor = ({
   mainDescription,
   aspectClassName,
   slots,
-  processingSlotId,
+  isProcessing,
+  processingSlotIds,
   inputPrefix,
   onUpload,
   onAdd,
@@ -870,7 +1228,8 @@ const SituationImageSlotsEditor = ({
   mainDescription: string
   aspectClassName: string
   slots: ImageSlotDraft[]
-  processingSlotId: string | null
+  isProcessing: boolean
+  processingSlotIds: ReadonlySet<string>
   inputPrefix: string
   onUpload: (slotId: string, file: File) => void
   onAdd: () => void
@@ -890,7 +1249,8 @@ const SituationImageSlotsEditor = ({
         previewAlt={`${sectionTitle} 대표 이미지 미리보기`}
         aspectClassName={aspectClassName}
         hint={`현재 원본 ${mainSlot.sourceSize || '미선택'} · 장면에 맞춰 상황별 이미지를 표시합니다.`}
-        isProcessing={processingSlotId === mainSlot.id}
+        disabled={isProcessing}
+        isProcessing={processingSlotIds.has(mainSlot.id)}
         onChange={(file) => onUpload(mainSlot.id, file)}
       />
 
@@ -899,7 +1259,7 @@ const SituationImageSlotsEditor = ({
           <p className="text-sm font-semibold text-[#171717]">상황별 이미지 추가</p>
           <p className="mt-1 text-sm leading-6 text-[#737373]">장면이 바뀔 때 어떤 이미지로 전환할지 슬롯별로 지정합니다. 콘텐츠당 최대 6개입니다.</p>
         </div>
-        <Button variant="outline" onClick={onAdd} disabled={slots.length >= 6} title={slots.length >= 6 ? '이미지 슬롯은 최대 6개입니다.' : undefined}>
+        <Button variant="outline" onClick={onAdd} disabled={isProcessing || slots.length >= 6} title={slots.length >= 6 ? '이미지 슬롯은 최대 6개입니다.' : undefined}>
           <ImagePlus className="h-4 w-4" />상황별 이미지 추가
         </Button>
       </div>
@@ -908,20 +1268,21 @@ const SituationImageSlotsEditor = ({
         <div key={slot.id} className="grid gap-4 rounded-xl border border-[#e7e7e7] bg-[#ffffff] p-4 lg:grid-cols-[220px_minmax(0,1fr)]">
           <div className="space-y-3">
             <ArtworkFrame src={slot.previewUrl} alt={`${slot.slot || '상황별'} 이미지 미리보기`} aspectClassName={aspectClassName} />
-            <label htmlFor={`${inputPrefix}-${slot.id}-image-upload-input`} className={`inline-flex h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-[#d8d8d8] px-5 text-sm font-semibold tracking-[-0.015em] transition ${processingSlotId === slot.id ? 'pointer-events-none bg-[#f3f3f3] text-[#171717]/48' : 'bg-white text-[#111317] hover:border-[#ff5148] hover:text-[#ff5148]'}`}>
-              <ImagePlus className="h-4 w-4" />{processingSlotId === slot.id ? '이미지 처리 중…' : '이미지 선택'}
-              <input
-                id={`${inputPrefix}-${slot.id}-image-upload-input`}
-                type="file"
-                accept="image/*"
-                className="sr-only"
-                onChange={(event) => {
-                  const file = event.target.files?.[0]
-                  event.currentTarget.value = ''
-                  if (!file) return
-                  onUpload(slot.id, file)
-                }}
-              />
+            <input
+              id={`${inputPrefix}-${slot.id}-image-upload-input`}
+              type="file"
+              accept="image/*"
+              disabled={isProcessing}
+              className="peer sr-only"
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                event.currentTarget.value = ''
+                if (!file) return
+                onUpload(slot.id, file)
+              }}
+            />
+            <label htmlFor={`${inputPrefix}-${slot.id}-image-upload-input`} className={`inline-flex h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-[#d8d8d8] px-5 text-sm font-semibold tracking-[-0.015em] transition peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-[#ff5148]/40 peer-focus-visible:ring-offset-2 ${isProcessing ? 'pointer-events-none cursor-not-allowed bg-[#f3f3f3] text-[#171717]/48' : 'bg-white text-[#111317] hover:border-[#ff5148] hover:text-[#c9342f]'}`}>
+              <ImagePlus className="h-4 w-4" />{processingSlotIds.has(slot.id) ? '이미지 처리 중…' : '이미지 선택'}
             </label>
             <p className="text-xs leading-6 text-[#7a7a7a]">현재 원본 {slot.sourceSize || '미선택'} · 이미지를 올리면 이 슬롯을 사용할 수 있습니다.</p>
           </div>
@@ -934,7 +1295,7 @@ const SituationImageSlotsEditor = ({
                 value={slot.slot}
                 onChange={(event) => onUpdate(slot.id, { slot: event.target.value, usage: event.target.value })}
                 placeholder="예: battle, rain, night"
-                className="bg-[#ffffff] font-normal text-[#171717] placeholder:text-[#aaaaaa]"
+                className="bg-[#ffffff] font-normal text-[#171717] placeholder:text-[#707070]"
               />
             </label>
             <label className="space-y-2 text-sm font-semibold text-[#555]">
@@ -944,11 +1305,11 @@ const SituationImageSlotsEditor = ({
                 value={slot.trigger}
                 onChange={(event) => onUpdate(slot.id, { trigger: event.target.value })}
                 placeholder="예: 말싸움이 격해지거나 긴장감이 높아질 때"
-                className="min-h-[140px] w-full rounded-xl border border-[#e7e7e7] bg-[#ffffff] px-4 py-3 text-sm font-normal text-[#171717] placeholder:text-[#aaaaaa] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2"
+                className="min-h-[140px] w-full rounded-xl border border-[#e7e7e7] bg-[#ffffff] px-4 py-3 text-sm font-normal text-[#171717] placeholder:text-[#707070] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2"
               />
             </label>
             <div className="flex justify-end">
-              <Button variant="outline" className="border-[#ff5148]/40 text-[#ff5148] hover:bg-[#ff5148]/10 hover:text-[#171717]" onClick={() => onRemove(slot.id)}>
+              <Button variant="outline" className="border-[#ff5148]/40 text-[#c9342f] hover:bg-[#ff5148]/10 hover:text-[#171717]" onClick={() => onRemove(slot.id)} disabled={isProcessing}>
                 <Trash2 className="h-4 w-4" />슬롯 삭제
               </Button>
             </div>
@@ -963,16 +1324,28 @@ const selectStyle = { colorScheme: 'light' as const }
 const CreateTypeTabs = ({ active, onNavigate }: { active: 'character' | 'world'; onNavigate: (path: string) => void }) => (
   <div className="flex items-center justify-between gap-3">
     <h1 className="text-3xl font-black tracking-[-0.05em] text-[#171717]">{active === 'character' ? '캐릭터 만들기' : '월드 만들기'}</h1>
-    <div role="group" aria-label="만들기 유형" className="flex rounded-lg border border-[#d8d8d8] bg-white p-1"><button type="button" aria-pressed={active === 'character'} onClick={() => onNavigate('/create/character')} className={`min-h-10 rounded-md px-3 py-2 text-xs font-bold ${active === 'character' ? 'bg-[#d43a34] text-white' : 'text-[#666666]'}`}>캐릭터</button><button type="button" aria-pressed={active === 'world'} onClick={() => onNavigate('/create/world')} className={`min-h-10 rounded-md px-3 py-2 text-xs font-bold ${active === 'world' ? 'bg-[#d43a34] text-white' : 'text-[#666666]'}`}>월드</button></div>
+    <nav aria-label="만들기 유형" className="flex rounded-lg border border-[#d8d8d8] bg-white p-1"><NavigationLink path="/create/character" onNavigate={onNavigate} ariaCurrent={active === 'character' ? 'page' : undefined} className={`min-h-10 rounded-md px-3 py-2 text-xs font-bold ${active === 'character' ? 'bg-[#d43a34] text-white' : 'text-[#666666]'}`}>캐릭터</NavigationLink><NavigationLink path="/create/world" onNavigate={onNavigate} ariaCurrent={active === 'world' ? 'page' : undefined} className={`min-h-10 rounded-md px-3 py-2 text-xs font-bold ${active === 'world' ? 'bg-[#d43a34] text-white' : 'text-[#666666]'}`}>월드</NavigationLink></nav>
   </div>
 )
 
 const PublishingAttestation = ({ rightsConfirmed, onRightsChange }: { rightsConfirmed: boolean; onRightsChange: (value: boolean) => void }) => (
   <div className="space-y-3 rounded-lg border border-[#e7e7e7] bg-[#fff7f6] p-4 text-sm text-[#5f5551]">
-    <p className="font-bold text-[#ff5148]">공개 전 확인</p>
+    <p className="font-bold text-[#c9342f]">공개 전 확인</p>
     <label className="flex items-start gap-3"><input type="checkbox" checked={rightsConfirmed} onChange={(event) => onRightsChange(event.target.checked)} className="mt-0.5 size-4 accent-[#ff5148]" /><span>이 콘텐츠와 업로드 이미지의 공개 권리를 보유하고 있습니다.</span></label>
   </div>
 )
+
+type CharacterEditorDraftValues = {
+  name: string
+  headline: string
+  tags: string
+  sourceType: 'original' | 'derivative'
+  sourceUrl: string
+  visibility: 'private' | 'public'
+  rightsConfirmed: boolean
+  characterPrompt: string
+  characterIntro: string
+}
 
 // 제작 화면은 업로드 준비, 폼 입력, 저장 호출을 한 방향 흐름으로 고정한다.
 export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChromeProps; slug?: string }) {
@@ -985,7 +1358,7 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
   const [rightsConfirmed, setRightsConfirmed] = useState(false)
   const [characterPrompt, setCharacterPrompt] = useState('')
   const [characterIntro, setCharacterIntro] = useState('')
-  const [processingSlotId, setProcessingSlotId] = useState<string | null>(null)
+  const { begin: beginImageProcessing, finish: finishImageProcessing, isProcessing: isProcessingImages, processingSlotIds } = useImageProcessingTracker()
   const [isHydrating, setIsHydrating] = useState(Boolean(slug))
   const [hydrationError, setHydrationError] = useState('')
   const [isSaving, setIsSaving] = useState(false)
@@ -993,16 +1366,43 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
   const [canManage, setCanManage] = useState<boolean | null>(slug ? null : true)
   const [pendingDelete, setPendingDelete] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [hydratedDraftKey, setHydratedDraftKey] = useState('')
   const [imageSlots, setImageSlots] = useState<ImageSlotDraft[]>(() => [
     createImageSlotDraft('main', '대표 이미지', '기본 대표 비주얼', '100'),
   ])
+  const draftKey = chrome.user?.id ? editorDraftKey('character', slug, chrome.user.id) : ''
+  const { captureNavigation, editorChrome, editorNavigationDialog, finishAndNavigate, guardedNavigate, imageSlotsDirty, isDirty, markClean, markDirty, markImageSlotsDirty, setImageSlotsDirty } = useEditorIntegrity(chrome, draftKey)
+
+  const restoreDraft = (draft: EditorDraftRecord<CharacterEditorDraftValues>) => {
+    const values = draft.values
+    setName(String(values.name || ''))
+    setHeadline(String(values.headline || ''))
+    setTags(String(values.tags || ''))
+    setSourceType(values.sourceType === 'derivative' ? 'derivative' : 'original')
+    setSourceUrl(String(values.sourceUrl || ''))
+    setVisibility(values.visibility === 'public' ? 'public' : 'private')
+    setRightsConfirmed(Boolean(values.rightsConfirmed))
+    setCharacterPrompt(String(values.characterPrompt || ''))
+    setCharacterIntro(String(values.characterIntro || ''))
+    setImageSlots(restorePersistedImageSlots(draft.imageSlots, createImageSlotDraft('main', '대표 이미지', '기본 대표 비주얼', '100')))
+    setImageSlotsDirty(Boolean(draft.imageSlotsDirty))
+    markDirty()
+    toast.info(draft.requiresImageReselection
+      ? '임시 저장된 내용을 복원했습니다. 새 이미지와 미완성 이미지 슬롯은 다시 선택해 주세요.'
+      : '임시 저장된 내용을 복원했습니다.')
+  }
 
   const updateSlot = (slotId: string, patch: Partial<ImageSlotDraft>) => {
     setImageSlots((prev) => prev.map((slot) => slot.id === slotId ? { ...slot, ...patch } : slot))
+    markImageSlotsDirty()
   }
 
   const handleSlotUpload = (slotId: string, file: File) => {
-    setProcessingSlotId(slotId)
+    // File bytes cannot be restored from sessionStorage. Mark the editor dirty
+    // before asynchronous resizing starts so Back/navigation cannot discard the
+    // user's selection during the processing window.
+    markImageSlotsDirty()
+    const processingToken = beginImageProcessing(slotId)
     void createImageVariants({ file, variants: toEntitySlotVariants(slotId, CHARACTER_VARIANTS) })
       .then((assets) => {
         const preview = assets.find((asset) => asset.kind.endsWith(':detail')) || assets[0]
@@ -1014,16 +1414,52 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
         toast.success('이미지 파생본을 생성했습니다.')
       })
       .catch(() => toast.error(imageProcessingFailureMessage()))
-      .finally(() => setProcessingSlotId(null))
+      .finally(() => finishImageProcessing(processingToken))
   }
 
   const mainSlot = imageSlots[0]!
   const creatorName = String(chrome.user?.user_metadata?.name || chrome.user?.email || '').trim()
 
   useEffect(() => {
+    if (slug || !draftKey || hydratedDraftKey === draftKey) return
+    setHydratedDraftKey('')
+    const draft = readEditorDraft<CharacterEditorDraftValues>(draftKey, 'character')
+    if (draft) restoreDraft(draft)
+    else {
+      setName('')
+      setHeadline('')
+      setTags('')
+      setSourceType('original')
+      setSourceUrl('')
+      setVisibility('private')
+      setRightsConfirmed(false)
+      setCharacterPrompt('')
+      setCharacterIntro('')
+      setImageSlots([createImageSlotDraft('main', '대표 이미지', '기본 대표 비주얼', '100')])
+      setImageSlotsDirty(false)
+      markClean()
+    }
+    setHydratedDraftKey(draftKey)
+  }, [draftKey, hydratedDraftKey, slug])
+
+  useEffect(() => {
     if (!slug) return
     let mounted = true
     setIsHydrating(true)
+    setHydratedDraftKey('')
+    setCanManage(null)
+    setName('')
+    setHeadline('')
+    setTags('')
+    setSourceType('original')
+    setSourceUrl('')
+    setVisibility('private')
+    setRightsConfirmed(false)
+    setCharacterPrompt('')
+    setCharacterIntro('')
+    setImageSlots([createImageSlotDraft('main', '대표 이미지', '기본 대표 비주얼', '100')])
+    setImageSlotsDirty(false)
+    markClean()
     setHydrationError('')
     void platformApi.fetchCharacter(slug)
       .then(({ item }) => {
@@ -1043,14 +1479,37 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
         setCharacterPrompt(String(item.promptProfileJson?.masterPrompt || item.summary || ''))
         setCharacterIntro(String(item.promptProfileJson?.characterIntro || ''))
         setImageSlots(item.imageSlots?.length ? item.imageSlots.map((slot) => createDraftFromExistingSlot(slot)) : [createImageSlotDraft('main', '대표 이미지', '기본 대표 비주얼', '100')])
+        const draft = draftKey ? readEditorDraft<CharacterEditorDraftValues>(draftKey, 'character') : null
+        if (draft) restoreDraft(draft)
+        else markClean()
+        setHydratedDraftKey(draftKey)
       })
       .catch((error) => { if (mounted) setHydrationError(safeActionError(error, '캐릭터 정보를 불러오지 못했습니다. 저장된 데이터는 변경되지 않았습니다. 다시 시도해 주세요.')) })
       .finally(() => { if (mounted) setIsHydrating(false) })
     return () => { mounted = false }
-  }, [slug, chrome.user?.id])
+  }, [draftKey, slug, chrome.user?.id])
+
+  useEffect(() => {
+    if (!draftKey || hydratedDraftKey !== draftKey || !isDirty) return
+    const persistedSlots = toPersistedImageSlots(imageSlots)
+    writeEditorDraft<CharacterEditorDraftValues>(draftKey, {
+      version: 1,
+      kind: 'character',
+      revision: createEditorDraftRevision(),
+      updatedAt: new Date().toISOString(),
+      values: { name, headline, tags, sourceType, sourceUrl, visibility, rightsConfirmed, characterPrompt, characterIntro },
+      imageSlots: persistedSlots,
+      imageSlotsDirty,
+      requiresImageReselection: isProcessingImages || imageSlotsRequireReselection(imageSlots),
+    })
+  }, [characterIntro, characterPrompt, draftKey, headline, hydratedDraftKey, imageSlots, imageSlotsDirty, isDirty, isProcessingImages, name, rightsConfirmed, sourceType, sourceUrl, tags, visibility])
 
   if (!chrome.user) {
     return <ProtectedGate chrome={chrome} title="로그인이 필요합니다" description="로그인하면 캐릭터를 만들고 저장할 수 있습니다." />
+  }
+
+  if (slug && isHydrating) {
+    return <PageFrame chrome={chrome} showCombinationDock={false}><LoadingState label="캐릭터 정보 불러오는 중…" /></PageFrame>
   }
 
   if (slug && canManage === false) {
@@ -1072,7 +1531,8 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
   const derivedSummary = deriveSummaryFromPrompt(headline, characterPrompt)
 
   return (
-    <PageFrame chrome={chrome} showCombinationDock={false}>
+    <PageFrame chrome={editorChrome} showCombinationDock={false}>
+      {editorNavigationDialog}
       <OwnedContentDeleteDialog
         open={pendingDelete}
         title="캐릭터를 삭제할까요?"
@@ -1082,11 +1542,12 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
         onCancel={() => setPendingDelete(false)}
         onConfirm={() => {
           if (!slug) return
+          const navigationSnapshot = captureNavigation()
           setIsDeleting(true)
           void platformApi.deleteCharacter(slug)
             .then(() => {
               toast.success('캐릭터를 삭제했습니다.')
-              chrome.onNavigate('/library')
+              finishAndNavigate('/library', navigationSnapshot)
             })
             .catch((error) => toast.error(safeActionError(error, '캐릭터 삭제 결과를 확인하지 못했습니다. 보관함을 다시 불러와 현재 상태를 확인해 주세요.')))
             .finally(() => {
@@ -1095,27 +1556,27 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
             })
         }}
       />
-      <div className="mx-auto max-w-4xl space-y-6">
-        <CreateTypeTabs active="character" onNavigate={chrome.onNavigate} />
+      <fieldset disabled={isSaving || isDeleting} aria-busy={isSaving || isDeleting} className="mx-auto w-full min-w-0 max-w-4xl space-y-6 border-0 p-0">
+        <CreateTypeTabs active="character" onNavigate={guardedNavigate} />
         <PageSection title="기본 정보">
           <div className="grid gap-4">
-            <label htmlFor="character-name" className="space-y-2 text-sm font-semibold text-[#555]"><span>이름 · 필수</span><Input id="character-name" name="character-name" required value={name} onChange={(event) => setName(event.target.value)} placeholder="캐릭터 이름" className="bg-[#ffffff] font-normal text-[#171717] placeholder:text-[#aaaaaa]" /></label>
-            <label htmlFor="character-headline" className="space-y-2 text-sm font-semibold text-[#555]"><span>한 줄 소개 · 필수</span><Input id="character-headline" name="character-headline" required value={headline} onChange={(event) => setHeadline(event.target.value)} placeholder="캐릭터를 한 문장으로 소개하세요" className="bg-[#ffffff] font-normal text-[#171717] placeholder:text-[#aaaaaa]" /></label>
-            <label htmlFor="character-tags" className="space-y-2 text-sm font-semibold text-[#555]"><span>태그 · 선택</span><Input id="character-tags" name="character-tags" value={tags} onChange={(event) => setTags(event.target.value)} placeholder="미스터리, 일상, 로맨스" className="bg-[#ffffff] font-normal text-[#171717] placeholder:text-[#aaaaaa]" /></label>
+            <label htmlFor="character-name" className="space-y-2 text-sm font-semibold text-[#555]"><span>이름 · 필수</span><Input id="character-name" name="character-name" required value={name} onChange={(event) => { setName(event.target.value); markDirty() }} placeholder="캐릭터 이름" className="bg-[#ffffff] font-normal text-[#171717] placeholder:text-[#707070]" /></label>
+            <label htmlFor="character-headline" className="space-y-2 text-sm font-semibold text-[#555]"><span>한 줄 소개 · 필수</span><Input id="character-headline" name="character-headline" required value={headline} onChange={(event) => { setHeadline(event.target.value); markDirty() }} placeholder="캐릭터를 한 문장으로 소개하세요" className="bg-[#ffffff] font-normal text-[#171717] placeholder:text-[#707070]" /></label>
+            <label htmlFor="character-tags" className="space-y-2 text-sm font-semibold text-[#555]"><span>태그 · 선택</span><Input id="character-tags" name="character-tags" value={tags} onChange={(event) => { setTags(event.target.value); markDirty() }} placeholder="미스터리, 일상, 로맨스" className="bg-[#ffffff] font-normal text-[#171717] placeholder:text-[#707070]" /></label>
             <label className="space-y-2 text-sm font-semibold text-[#555]">
               <span>공개 범위</span>
-              <select name="character-visibility" value={visibility} onChange={(event) => setVisibility(event.target.value as typeof visibility)} className="h-11 w-full rounded-lg border border-[#d8d8d8] bg-white px-3 font-normal text-[#171717] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2" style={selectStyle}>
+              <select name="character-visibility" value={visibility} onChange={(event) => { setVisibility(event.target.value as typeof visibility); markDirty() }} className="h-11 w-full rounded-lg border border-[#d8d8d8] bg-white px-3 font-normal text-[#171717] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2" style={selectStyle}>
                 <option value="private">비공개로 저장</option><option value="public">전체 공개</option>
               </select>
             </label>
             <label className="space-y-2 text-sm font-semibold text-[#555]">
               <span>원작 여부</span>
-              <select name="character-source-type" value={sourceType} onChange={(event) => setSourceType(event.target.value as typeof sourceType)} className="h-11 w-full rounded-lg border border-[#d8d8d8] bg-white px-3 font-normal text-[#171717] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2" style={selectStyle}>
+              <select name="character-source-type" value={sourceType} onChange={(event) => { setSourceType(event.target.value as typeof sourceType); markDirty() }} className="h-11 w-full rounded-lg border border-[#d8d8d8] bg-white px-3 font-normal text-[#171717] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2" style={selectStyle}>
                 <option value="original">오리지널</option><option value="derivative">2차창작</option>
               </select>
             </label>
-            {sourceType === 'derivative' ? <label htmlFor="character-source-url" className="space-y-2 text-sm font-semibold text-[#555]"><span>원작 또는 출처 URL</span><Input id="character-source-url" name="character-source-url" type="url" value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} placeholder="https://…" className="font-normal" /></label> : null}
-            {visibility === 'public' ? <PublishingAttestation rightsConfirmed={rightsConfirmed} onRightsChange={setRightsConfirmed} /> : null}
+            {sourceType === 'derivative' ? <label htmlFor="character-source-url" className="space-y-2 text-sm font-semibold text-[#555]"><span>원작 또는 출처 URL</span><Input id="character-source-url" name="character-source-url" type="url" value={sourceUrl} onChange={(event) => { setSourceUrl(event.target.value); markDirty() }} placeholder="https://…" className="font-normal" /></label> : null}
+            {visibility === 'public' ? <PublishingAttestation rightsConfirmed={rightsConfirmed} onRightsChange={(value) => { setRightsConfirmed(value); markDirty() }} /> : null}
           </div>
         </PageSection>
 
@@ -1136,14 +1597,14 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
               name="character-prompt"
               required
               value={characterPrompt}
-              onChange={(event) => setCharacterPrompt(event.target.value)}
+              onChange={(event) => { setCharacterPrompt(event.target.value); markDirty() }}
               placeholder={[
                 '정체성: 무심한 척하지만 상대를 세심하게 챙긴다.',
                 '말투: 짧은 반말. 감정이 올라가면 더 직설적으로 말한다.',
                 '관계: 처음에는 거리를 두지만 솔직한 상대에게 빠르게 마음을 연다.',
                 '유지 규칙: 과장된 밈 말투를 피하고, 긴장 장면에는 battle 이미지를 사용한다.',
               ].join('\n')}
-              className="min-h-[320px] w-full rounded-xl border border-[#e7e7e7] bg-[#ffffff] px-4 py-4 text-[15px] leading-7 text-[#171717] placeholder:text-[#aaaaaa] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2"
+              className="min-h-[320px] w-full rounded-xl border border-[#e7e7e7] bg-[#ffffff] px-4 py-4 text-[15px] leading-7 text-[#171717] placeholder:text-[#707070] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2"
             />
           </div>
         </PageSection>
@@ -1156,9 +1617,9 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
               id="character-intro"
               name="character-intro"
               value={characterIntro}
-              onChange={(event) => setCharacterIntro(event.target.value)}
+              onChange={(event) => { setCharacterIntro(event.target.value); markDirty() }}
               placeholder="예) 사용자를 한 번 살핀 뒤 짧게 먼저 말을 건다. 경계는 있지만 무례하지 않고, 호기심이 먼저 보인다."
-              className="min-h-[120px] w-full rounded-xl border border-[#e7e7e7] bg-[#ffffff] px-4 py-4 text-[15px] leading-7 text-[#171717] placeholder:text-[#aaaaaa] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2"
+              className="min-h-[120px] w-full rounded-xl border border-[#e7e7e7] bg-[#ffffff] px-4 py-4 text-[15px] leading-7 text-[#171717] placeholder:text-[#707070] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2"
             />
           </div>
         </PageSection>
@@ -1172,23 +1633,25 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
             mainDescription="카드와 대화 화면에 기본으로 표시할 이미지입니다."
             aspectClassName="aspect-[3/4]"
             slots={imageSlots}
-            processingSlotId={processingSlotId}
+            isProcessing={isProcessingImages}
+            processingSlotIds={processingSlotIds}
             inputPrefix="character"
             onUpload={handleSlotUpload}
-            onAdd={() => setImageSlots((prev) => prev.length >= 6 ? prev : [...prev, createImageSlotDraft(`scene-${prev.length}`, `scene-${prev.length}`, '', String(Math.max(10, 100 - prev.length * 10)))])}
+            onAdd={() => { setImageSlots((prev) => prev.length >= 6 ? prev : [...prev, createImageSlotDraft(`scene-${prev.length}`, `scene-${prev.length}`, '', String(Math.max(10, 100 - prev.length * 10)))]); markImageSlotsDirty() }}
             onUpdate={updateSlot}
-            onRemove={(slotId) => setImageSlots((prev) => prev.filter((slot) => slot.id !== slotId))}
+            onRemove={(slotId) => { setImageSlots((prev) => prev.filter((slot) => slot.id !== slotId)); markImageSlotsDirty() }}
           />
         </PageSection>
 
         <div className="flex flex-wrap items-center justify-between gap-3">
           {slug ? (
-            <Button variant="outline" className="border-[#ff5148]/40 text-[#ff5148] hover:bg-[#ff5148]/10 hover:text-[#171717]" onClick={() => setPendingDelete(true)} disabled={isHydrating || processingSlotId !== null || isDeleting || canManage !== true}>
+            <Button variant="outline" className="border-[#ff5148]/40 text-[#c9342f] hover:bg-[#ff5148]/10 hover:text-[#171717]" onClick={() => setPendingDelete(true)} disabled={isHydrating || isProcessingImages || isDeleting || canManage !== true}>
               <Trash2 className="h-4 w-4" />캐릭터 삭제
             </Button>
           ) : <span />}
-          <Button disabled={isHydrating || isSaving || processingSlotId !== null || !name.trim() || !headline.trim() || !characterPrompt.trim() || !mainSlot.previewUrl || (visibility === 'public' && !rightsConfirmed)} onClick={() => {
+          <Button disabled={isHydrating || isSaving || isProcessingImages || !name.trim() || !headline.trim() || !characterPrompt.trim() || !mainSlot.previewUrl || (visibility === 'public' && !rightsConfirmed)} onClick={() => {
             if (isSavingRef.current) return
+            const navigationSnapshot = captureNavigation()
             isSavingRef.current = true
             setIsSaving(true)
             void (async () => {
@@ -1201,7 +1664,8 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
               const detailUrl = mainRecord?.detailUrl || ''
               const cardUrl = mainRecord?.cardUrl || detailUrl
               const hasNewMainAssets = uploadedAssets.some((asset) => asset.kind.startsWith(`${mainSlot.id}:`))
-              const includeImageChanges = !slug || uploadedAssets.length > 0
+              const includeAssetChanges = !slug || uploadedAssets.length > 0
+              const includeImageSlotChanges = !slug || imageSlotsDirty || uploadedAssets.length > 0
               const payload = {
                 name,
                 headline,
@@ -1213,7 +1677,7 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
                 rightsConfirmed,
                 creatorName,
                 ...(!slug || hasNewMainAssets ? { coverImageUrl: detailUrl, avatarImageUrl: cardUrl } : {}),
-                ...(includeImageChanges ? { assets: uploadedAssets } : {}),
+                ...(includeAssetChanges ? { assets: uploadedAssets } : {}),
                 profileJson: {
                   prompt: characterPrompt,
                   creatorName,
@@ -1227,7 +1691,7 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
                   persona: characterPrompt.trim() ? [characterPrompt.trim()] : [],
                   speechStyle: headline.trim() ? [headline.trim()] : [],
                   relationshipBaseline: '처음 관계는 캐릭터 프롬프트 지시를 따른다.',
-                  ...(includeImageChanges ? { imageSlots: imageSlotRecords } : {}),
+                  ...(includeImageSlotChanges ? { imageSlots: imageSlotRecords } : {}),
                   creatorName,
                 },
               }
@@ -1235,13 +1699,25 @@ export function CreateCharacterPage({ chrome, slug }: { chrome: PlatformPageChro
                 ? await platformApi.updateCharacter(slug, payload)
                 : await platformApi.createCharacter(payload)
               toast.success(slug ? '캐릭터를 수정했습니다.' : '캐릭터를 만들었습니다.')
-              chrome.onNavigate(`/characters/${item.slug}`)
+              finishAndNavigate(`/characters/${item.slug}`, navigationSnapshot)
             })().catch((error) => toast.error(safeActionError(error, `캐릭터를 ${slug ? '수정' : '저장'}하지 못했습니다. 입력한 내용은 유지됩니다. 다시 시도해 주세요.`))).finally(() => { isSavingRef.current = false; setIsSaving(false) })
-          }}>{isSaving || isHydrating || processingSlotId ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlusCircle className="h-4 w-4" />}{isHydrating ? '불러오는 중…' : processingSlotId ? '이미지 처리 중…' : isSaving ? '저장 중…' : slug ? '캐릭터 수정' : '캐릭터 저장'}</Button>
+          }}>{isSaving || isHydrating || isProcessingImages ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlusCircle className="h-4 w-4" />}{isHydrating ? '불러오는 중…' : isProcessingImages ? '이미지 처리 중…' : isSaving ? '저장 중…' : slug ? '캐릭터 수정' : '캐릭터 저장'}</Button>
         </div>
-      </div>
+      </fieldset>
     </PageFrame>
   )
+}
+
+type WorldEditorDraftValues = {
+  name: string
+  headline: string
+  tags: string
+  sourceType: 'original' | 'derivative'
+  sourceUrl: string
+  visibility: 'private' | 'public'
+  rightsConfirmed: boolean
+  worldPrompt: string
+  worldIntro: string
 }
 
 export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromeProps; slug?: string }) {
@@ -1254,7 +1730,7 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
   const [rightsConfirmed, setRightsConfirmed] = useState(false)
   const [worldPrompt, setWorldPrompt] = useState('')
   const [worldIntro, setWorldIntro] = useState('')
-  const [processingSlotId, setProcessingSlotId] = useState<string | null>(null)
+  const { begin: beginImageProcessing, finish: finishImageProcessing, isProcessing: isProcessingImages, processingSlotIds } = useImageProcessingTracker()
   const [isHydrating, setIsHydrating] = useState(Boolean(slug))
   const [hydrationError, setHydrationError] = useState('')
   const [isSaving, setIsSaving] = useState(false)
@@ -1262,16 +1738,42 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
   const [canManage, setCanManage] = useState<boolean | null>(slug ? null : true)
   const [pendingDelete, setPendingDelete] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [hydratedDraftKey, setHydratedDraftKey] = useState('')
   const [imageSlots, setImageSlots] = useState<ImageSlotDraft[]>(() => [
     createImageSlotDraft('main', '대표 이미지', '기본 월드 비주얼', '100'),
   ])
+  const draftKey = chrome.user?.id ? editorDraftKey('world', slug, chrome.user.id) : ''
+  const { captureNavigation, editorChrome, editorNavigationDialog, finishAndNavigate, guardedNavigate, imageSlotsDirty, isDirty, markClean, markDirty, markImageSlotsDirty, setImageSlotsDirty } = useEditorIntegrity(chrome, draftKey)
+
+  const restoreDraft = (draft: EditorDraftRecord<WorldEditorDraftValues>) => {
+    const values = draft.values
+    setName(String(values.name || ''))
+    setHeadline(String(values.headline || ''))
+    setTags(String(values.tags || ''))
+    setSourceType(values.sourceType === 'derivative' ? 'derivative' : 'original')
+    setSourceUrl(String(values.sourceUrl || ''))
+    setVisibility(values.visibility === 'public' ? 'public' : 'private')
+    setRightsConfirmed(Boolean(values.rightsConfirmed))
+    setWorldPrompt(String(values.worldPrompt || ''))
+    setWorldIntro(String(values.worldIntro || ''))
+    setImageSlots(restorePersistedImageSlots(draft.imageSlots, createImageSlotDraft('main', '대표 이미지', '기본 월드 비주얼', '100')))
+    setImageSlotsDirty(Boolean(draft.imageSlotsDirty))
+    markDirty()
+    toast.info(draft.requiresImageReselection
+      ? '임시 저장된 내용을 복원했습니다. 새 이미지와 미완성 이미지 슬롯은 다시 선택해 주세요.'
+      : '임시 저장된 내용을 복원했습니다.')
+  }
 
   const updateSlot = (slotId: string, patch: Partial<ImageSlotDraft>) => {
     setImageSlots((prev) => prev.map((slot) => slot.id === slotId ? { ...slot, ...patch } : slot))
+    markImageSlotsDirty()
   }
 
   const handleSlotUpload = (slotId: string, file: File) => {
-    setProcessingSlotId(slotId)
+    // Keep navigation guarded while the selected file is still being resized;
+    // binary input cannot be reconstructed from the session draft.
+    markImageSlotsDirty()
+    const processingToken = beginImageProcessing(slotId)
     void createImageVariants({ file, variants: toEntitySlotVariants(slotId, WORLD_VARIANTS) })
       .then((assets) => {
         const preview = assets.find((asset) => asset.kind.endsWith(':hero')) || assets[0]
@@ -1283,7 +1785,7 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
         toast.success('월드 이미지 파생본을 생성했습니다.')
       })
       .catch(() => toast.error(imageProcessingFailureMessage()))
-      .finally(() => setProcessingSlotId(null))
+      .finally(() => finishImageProcessing(processingToken))
   }
 
   const mainSlot = imageSlots[0]!
@@ -1291,9 +1793,45 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
   const creatorName = String(chrome.user?.user_metadata?.name || chrome.user?.email || '').trim()
 
   useEffect(() => {
+    if (slug || !draftKey || hydratedDraftKey === draftKey) return
+    setHydratedDraftKey('')
+    const draft = readEditorDraft<WorldEditorDraftValues>(draftKey, 'world')
+    if (draft) restoreDraft(draft)
+    else {
+      setName('')
+      setHeadline('')
+      setTags('')
+      setSourceType('original')
+      setSourceUrl('')
+      setVisibility('private')
+      setRightsConfirmed(false)
+      setWorldPrompt('')
+      setWorldIntro('')
+      setImageSlots([createImageSlotDraft('main', '대표 이미지', '기본 월드 비주얼', '100')])
+      setImageSlotsDirty(false)
+      markClean()
+    }
+    setHydratedDraftKey(draftKey)
+  }, [draftKey, hydratedDraftKey, slug])
+
+  useEffect(() => {
     if (!slug) return
     let mounted = true
     setIsHydrating(true)
+    setHydratedDraftKey('')
+    setCanManage(null)
+    setName('')
+    setHeadline('')
+    setTags('')
+    setSourceType('original')
+    setSourceUrl('')
+    setVisibility('private')
+    setRightsConfirmed(false)
+    setWorldPrompt('')
+    setWorldIntro('')
+    setImageSlots([createImageSlotDraft('main', '대표 이미지', '기본 월드 비주얼', '100')])
+    setImageSlotsDirty(false)
+    markClean()
     setHydrationError('')
     void platformApi.fetchWorld(slug)
       .then(({ item }) => {
@@ -1313,14 +1851,37 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
         setWorldPrompt(String(item.promptProfileJson?.masterPrompt || item.summary || ''))
         setWorldIntro(String(item.promptProfileJson?.worldIntro || ''))
         setImageSlots(item.imageSlots?.length ? item.imageSlots.map((slot) => createDraftFromExistingSlot(slot)) : [createImageSlotDraft('main', '대표 이미지', '기본 월드 비주얼', '100')])
+        const draft = draftKey ? readEditorDraft<WorldEditorDraftValues>(draftKey, 'world') : null
+        if (draft) restoreDraft(draft)
+        else markClean()
+        setHydratedDraftKey(draftKey)
       })
       .catch((error) => { if (mounted) setHydrationError(safeActionError(error, '월드 정보를 불러오지 못했습니다. 저장된 데이터는 변경되지 않았습니다. 다시 시도해 주세요.')) })
       .finally(() => { if (mounted) setIsHydrating(false) })
     return () => { mounted = false }
-  }, [slug, chrome.user?.id])
+  }, [draftKey, slug, chrome.user?.id])
+
+  useEffect(() => {
+    if (!draftKey || hydratedDraftKey !== draftKey || !isDirty) return
+    const persistedSlots = toPersistedImageSlots(imageSlots)
+    writeEditorDraft<WorldEditorDraftValues>(draftKey, {
+      version: 1,
+      kind: 'world',
+      revision: createEditorDraftRevision(),
+      updatedAt: new Date().toISOString(),
+      values: { name, headline, tags, sourceType, sourceUrl, visibility, rightsConfirmed, worldPrompt, worldIntro },
+      imageSlots: persistedSlots,
+      imageSlotsDirty,
+      requiresImageReselection: isProcessingImages || imageSlotsRequireReselection(imageSlots),
+    })
+  }, [draftKey, headline, hydratedDraftKey, imageSlots, imageSlotsDirty, isDirty, isProcessingImages, name, rightsConfirmed, sourceType, sourceUrl, tags, visibility, worldIntro, worldPrompt])
 
   if (!chrome.user) {
     return <ProtectedGate chrome={chrome} title="로그인이 필요합니다" description="로그인하면 월드를 만들고 저장할 수 있습니다." />
+  }
+
+  if (slug && isHydrating) {
+    return <PageFrame chrome={chrome} showCombinationDock={false}><LoadingState label="월드 정보 불러오는 중…" /></PageFrame>
   }
 
   if (slug && canManage === false) {
@@ -1340,7 +1901,8 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
   }
 
   return (
-    <PageFrame chrome={chrome} showCombinationDock={false}>
+    <PageFrame chrome={editorChrome} showCombinationDock={false}>
+      {editorNavigationDialog}
       <OwnedContentDeleteDialog
         open={pendingDelete}
         title="월드를 삭제할까요?"
@@ -1350,11 +1912,12 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
         onCancel={() => setPendingDelete(false)}
         onConfirm={() => {
           if (!slug) return
+          const navigationSnapshot = captureNavigation()
           setIsDeleting(true)
           void platformApi.deleteWorld(slug)
             .then(() => {
               toast.success('월드를 삭제했습니다.')
-              chrome.onNavigate('/library')
+              finishAndNavigate('/library', navigationSnapshot)
             })
             .catch((error) => toast.error(safeActionError(error, '월드 삭제 결과를 확인하지 못했습니다. 보관함을 다시 불러와 현재 상태를 확인해 주세요.')))
             .finally(() => {
@@ -1363,27 +1926,27 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
             })
         }}
       />
-      <div className="mx-auto max-w-4xl space-y-6">
-        <CreateTypeTabs active="world" onNavigate={chrome.onNavigate} />
+      <fieldset disabled={isSaving || isDeleting} aria-busy={isSaving || isDeleting} className="mx-auto w-full min-w-0 max-w-4xl space-y-6 border-0 p-0">
+        <CreateTypeTabs active="world" onNavigate={guardedNavigate} />
         <PageSection title="기본 정보">
           <div className="grid gap-4">
-            <label htmlFor="world-name" className="space-y-2 text-sm font-semibold text-[#555]"><span>이름 · 필수</span><Input id="world-name" name="world-name" required value={name} onChange={(event) => setName(event.target.value)} placeholder="월드 이름" className="bg-[#ffffff] font-normal text-[#171717] placeholder:text-[#aaaaaa]" /></label>
-            <label htmlFor="world-headline" className="space-y-2 text-sm font-semibold text-[#555]"><span>한 줄 소개 · 필수</span><Input id="world-headline" name="world-headline" required value={headline} onChange={(event) => setHeadline(event.target.value)} placeholder="월드를 한 문장으로 소개하세요" className="bg-[#ffffff] font-normal text-[#171717] placeholder:text-[#aaaaaa]" /></label>
-            <label htmlFor="world-tags" className="space-y-2 text-sm font-semibold text-[#555]"><span>태그 · 선택</span><Input id="world-tags" name="world-tags" value={tags} onChange={(event) => setTags(event.target.value)} placeholder="현대, 도시, 미스터리" className="bg-[#ffffff] font-normal text-[#171717] placeholder:text-[#aaaaaa]" /></label>
+            <label htmlFor="world-name" className="space-y-2 text-sm font-semibold text-[#555]"><span>이름 · 필수</span><Input id="world-name" name="world-name" required value={name} onChange={(event) => { setName(event.target.value); markDirty() }} placeholder="월드 이름" className="bg-[#ffffff] font-normal text-[#171717] placeholder:text-[#707070]" /></label>
+            <label htmlFor="world-headline" className="space-y-2 text-sm font-semibold text-[#555]"><span>한 줄 소개 · 필수</span><Input id="world-headline" name="world-headline" required value={headline} onChange={(event) => { setHeadline(event.target.value); markDirty() }} placeholder="월드를 한 문장으로 소개하세요" className="bg-[#ffffff] font-normal text-[#171717] placeholder:text-[#707070]" /></label>
+            <label htmlFor="world-tags" className="space-y-2 text-sm font-semibold text-[#555]"><span>태그 · 선택</span><Input id="world-tags" name="world-tags" value={tags} onChange={(event) => { setTags(event.target.value); markDirty() }} placeholder="현대, 도시, 미스터리" className="bg-[#ffffff] font-normal text-[#171717] placeholder:text-[#707070]" /></label>
             <label className="space-y-2 text-sm font-semibold text-[#555]">
               <span>공개 범위</span>
-              <select name="world-visibility" value={visibility} onChange={(event) => setVisibility(event.target.value as typeof visibility)} className="h-11 w-full rounded-lg border border-[#d8d8d8] bg-white px-3 font-normal text-[#171717] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2" style={selectStyle}>
+              <select name="world-visibility" value={visibility} onChange={(event) => { setVisibility(event.target.value as typeof visibility); markDirty() }} className="h-11 w-full rounded-lg border border-[#d8d8d8] bg-white px-3 font-normal text-[#171717] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2" style={selectStyle}>
                 <option value="private">비공개로 저장</option><option value="public">전체 공개</option>
               </select>
             </label>
             <label className="space-y-2 text-sm font-semibold text-[#555]">
               <span>원작 여부</span>
-              <select name="world-source-type" value={sourceType} onChange={(event) => setSourceType(event.target.value as typeof sourceType)} className="h-11 w-full rounded-lg border border-[#d8d8d8] bg-white px-3 font-normal text-[#171717] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2" style={selectStyle}>
+              <select name="world-source-type" value={sourceType} onChange={(event) => { setSourceType(event.target.value as typeof sourceType); markDirty() }} className="h-11 w-full rounded-lg border border-[#d8d8d8] bg-white px-3 font-normal text-[#171717] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2" style={selectStyle}>
                 <option value="original">오리지널</option><option value="derivative">2차창작</option>
               </select>
             </label>
-            {sourceType === 'derivative' ? <label htmlFor="world-source-url" className="space-y-2 text-sm font-semibold text-[#555]"><span>원작 또는 출처 URL</span><Input id="world-source-url" name="world-source-url" type="url" value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} placeholder="https://…" className="font-normal" /></label> : null}
-            {visibility === 'public' ? <PublishingAttestation rightsConfirmed={rightsConfirmed} onRightsChange={setRightsConfirmed} /> : null}
+            {sourceType === 'derivative' ? <label htmlFor="world-source-url" className="space-y-2 text-sm font-semibold text-[#555]"><span>원작 또는 출처 URL</span><Input id="world-source-url" name="world-source-url" type="url" value={sourceUrl} onChange={(event) => { setSourceUrl(event.target.value); markDirty() }} placeholder="https://…" className="font-normal" /></label> : null}
+            {visibility === 'public' ? <PublishingAttestation rightsConfirmed={rightsConfirmed} onRightsChange={(value) => { setRightsConfirmed(value); markDirty() }} /> : null}
           </div>
         </PageSection>
 
@@ -1404,14 +1967,14 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
               name="world-prompt"
               required
               value={worldPrompt}
-              onChange={(event) => setWorldPrompt(event.target.value)}
+              onChange={(event) => { setWorldPrompt(event.target.value); markDirty() }}
               placeholder={[
                 '분위기: 비가 자주 오는 현실 도시. 심야의 정적이 중요하다.',
                 '시작: 편의점 앞, 횡단보도, 비 젖은 골목 중 한 곳에서 시작한다.',
                 '유지 규칙: 현실적인 대사와 공간감을 유지하고 갑작스러운 코미디 전개를 피한다.',
                 '이미지: 비가 강해지면 rain, 밤거리가 강조되면 neon-night 이미지를 사용한다.',
               ].join('\n')}
-              className="min-h-[320px] w-full rounded-xl border border-[#e7e7e7] bg-[#ffffff] px-4 py-4 text-[15px] leading-7 text-[#171717] placeholder:text-[#aaaaaa] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2"
+              className="min-h-[320px] w-full rounded-xl border border-[#e7e7e7] bg-[#ffffff] px-4 py-4 text-[15px] leading-7 text-[#171717] placeholder:text-[#707070] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2"
             />
           </div>
         </PageSection>
@@ -1424,9 +1987,9 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
               id="world-intro"
               name="world-intro"
               value={worldIntro}
-              onChange={(event) => setWorldIntro(event.target.value)}
+              onChange={(event) => { setWorldIntro(event.target.value); markDirty() }}
               placeholder="예) 비가 막 그친 편의점 앞에서 시작한다. 막차가 얼마 남지 않아 시간이 촉박하고, 주변 공기는 조용하지만 눅눅한 긴장감이 있다."
-              className="min-h-[120px] w-full rounded-xl border border-[#e7e7e7] bg-[#ffffff] px-4 py-4 text-[15px] leading-7 text-[#171717] placeholder:text-[#aaaaaa] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2"
+              className="min-h-[120px] w-full rounded-xl border border-[#e7e7e7] bg-[#ffffff] px-4 py-4 text-[15px] leading-7 text-[#171717] placeholder:text-[#707070] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5148]/30 focus-visible:ring-offset-2"
             />
           </div>
         </PageSection>
@@ -1440,23 +2003,25 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
             mainDescription="카드와 대화 화면에 기본으로 표시할 이미지입니다."
             aspectClassName="aspect-[16/9]"
             slots={imageSlots}
-            processingSlotId={processingSlotId}
+            isProcessing={isProcessingImages}
+            processingSlotIds={processingSlotIds}
             inputPrefix="world"
             onUpload={handleSlotUpload}
-            onAdd={() => setImageSlots((prev) => prev.length >= 6 ? prev : [...prev, createImageSlotDraft(`scene-${prev.length}`, `scene-${prev.length}`, '', String(Math.max(10, 100 - prev.length * 10)))])}
+            onAdd={() => { setImageSlots((prev) => prev.length >= 6 ? prev : [...prev, createImageSlotDraft(`scene-${prev.length}`, `scene-${prev.length}`, '', String(Math.max(10, 100 - prev.length * 10)))]); markImageSlotsDirty() }}
             onUpdate={updateSlot}
-            onRemove={(slotId) => setImageSlots((prev) => prev.filter((slot) => slot.id !== slotId))}
+            onRemove={(slotId) => { setImageSlots((prev) => prev.filter((slot) => slot.id !== slotId)); markImageSlotsDirty() }}
           />
         </PageSection>
 
         <div className="flex flex-wrap items-center justify-between gap-3">
           {slug ? (
-            <Button variant="outline" className="border-[#ff5148]/40 text-[#ff5148] hover:bg-[#ff5148]/10 hover:text-[#171717]" onClick={() => setPendingDelete(true)} disabled={isHydrating || processingSlotId !== null || isDeleting || canManage !== true}>
+            <Button variant="outline" className="border-[#ff5148]/40 text-[#c9342f] hover:bg-[#ff5148]/10 hover:text-[#171717]" onClick={() => setPendingDelete(true)} disabled={isHydrating || isProcessingImages || isDeleting || canManage !== true}>
               <Trash2 className="h-4 w-4" />월드 삭제
             </Button>
           ) : <span />}
-          <Button disabled={isHydrating || isSaving || processingSlotId !== null || !name.trim() || !headline.trim() || !worldPrompt.trim() || !mainSlot.previewUrl || (visibility === 'public' && !rightsConfirmed)} onClick={() => {
+          <Button disabled={isHydrating || isSaving || isProcessingImages || !name.trim() || !headline.trim() || !worldPrompt.trim() || !mainSlot.previewUrl || (visibility === 'public' && !rightsConfirmed)} onClick={() => {
             if (isSavingRef.current) return
+            const navigationSnapshot = captureNavigation()
             isSavingRef.current = true
             setIsSaving(true)
             void (async () => {
@@ -1468,7 +2033,8 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
               const mainRecord = imageSlotRecords[0]
               const heroUrl = mainRecord?.detailUrl || uploadedAssets.find((asset) => asset.kind === `${mainSlot.id}:hero`)?.url || ''
               const hasNewMainAssets = uploadedAssets.some((asset) => asset.kind.startsWith(`${mainSlot.id}:`))
-              const includeImageChanges = !slug || uploadedAssets.length > 0
+              const includeAssetChanges = !slug || uploadedAssets.length > 0
+              const includeImageSlotChanges = !slug || imageSlotsDirty || uploadedAssets.length > 0
               const payload = {
                 name,
                 headline,
@@ -1481,7 +2047,7 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
                 creatorName,
                 ...(!slug || hasNewMainAssets ? { coverImageUrl: heroUrl } : {}),
                 worldRulesMarkdown: worldPrompt,
-                ...(includeImageChanges ? { assets: uploadedAssets } : {}),
+                ...(includeAssetChanges ? { assets: uploadedAssets } : {}),
                 promptProfileJson: {
                   masterPrompt: worldPrompt.trim(),
                   worldIntro: worldIntro.trim(),
@@ -1489,7 +2055,7 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
                   tone: headline.trim() || derivedSummary,
                   starterLocations: [],
                   worldTerms: splitCommaValues(tags),
-                  ...(includeImageChanges ? { imageSlots: imageSlotRecords } : {}),
+                  ...(includeImageSlotChanges ? { imageSlots: imageSlotRecords } : {}),
                   creatorName,
                 },
               }
@@ -1497,11 +2063,11 @@ export function CreateWorldPage({ chrome, slug }: { chrome: PlatformPageChromePr
                 ? await platformApi.updateWorld(slug, payload)
                 : await platformApi.createWorld(payload)
               toast.success(slug ? '월드를 수정했습니다.' : '월드를 만들었습니다.')
-              chrome.onNavigate(`/worlds/${item.slug}`)
+              finishAndNavigate(`/worlds/${item.slug}`, navigationSnapshot)
             })().catch((error) => toast.error(safeActionError(error, `월드를 ${slug ? '수정' : '저장'}하지 못했습니다. 입력한 내용은 유지됩니다. 다시 시도해 주세요.`))).finally(() => { isSavingRef.current = false; setIsSaving(false) })
-          }}>{isSaving || isHydrating || processingSlotId ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlusCircle className="h-4 w-4" />}{isHydrating ? '불러오는 중…' : processingSlotId ? '이미지 처리 중…' : isSaving ? '저장 중…' : slug ? '월드 수정' : '월드 저장'}</Button>
+          }}>{isSaving || isHydrating || isProcessingImages ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlusCircle className="h-4 w-4" />}{isHydrating ? '불러오는 중…' : isProcessingImages ? '이미지 처리 중…' : isSaving ? '저장 중…' : slug ? '월드 수정' : '월드 저장'}</Button>
         </div>
-      </div>
+      </fieldset>
     </PageFrame>
   )
 }
@@ -1518,7 +2084,7 @@ export function RecentRoomsPage({ chrome }: { chrome: PlatformPageChromeProps })
     let mounted = true
     setIsLoading(true)
     setLoadError('')
-    void platformApi.fetchRecentRooms()
+    void platformApi.fetchRecentRooms({ limit: 20, includeMessages: false })
       .then(({ items }) => { if (mounted) setItems(items) })
       .catch(() => { if (mounted) setLoadError('네트워크 연결을 확인한 뒤 다시 시도해 주세요.') })
       .finally(() => { if (mounted) setIsLoading(false) })
@@ -1537,7 +2103,7 @@ export function RecentRoomsPage({ chrome }: { chrome: PlatformPageChromeProps })
         ) : (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
             {items.map((room) => (
-              <button key={room.id} type="button" onClick={() => chrome.onNavigate(`/rooms/${room.id}`)} className="w-full rounded-xl border border-[#e7e7e7] bg-[#ffffff] p-4 text-left transition hover:border-[#c6c6c6] hover:bg-[#fafafa]">
+              <NavigationLink key={room.id} path={`/rooms/${room.id}`} onNavigate={chrome.onNavigate} className="block w-full rounded-xl border border-[#e7e7e7] bg-[#ffffff] p-4 text-left transition hover:border-[#c6c6c6] hover:bg-[#fafafa]">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className={`rounded-lg px-2.5 py-1 text-[11px] font-semibold ${room.world ? 'bg-[#eef5ff] text-[#335a82]' : 'bg-[#f4f1f8] text-[#624c78]'}`}>{room.world ? '월드 포함' : '캐릭터 대화'}</span>
                   <span className="text-xs text-[#777]">{room.character.name}{room.world ? ` · ${room.world.name}` : ''}</span>
@@ -1545,7 +2111,7 @@ export function RecentRoomsPage({ chrome }: { chrome: PlatformPageChromeProps })
                 <p className="mt-3 text-lg font-semibold text-[#171717]">{room.title}</p>
                 <p className="mt-2 text-sm font-semibold text-[#171717]/70">마지막 장면</p>
                 <p className="mt-1 text-sm leading-6 text-[#6f6f6f]">{room.state.currentSituation}</p>
-              </button>
+              </NavigationLink>
             ))}
           </div>
         )}
@@ -1562,8 +2128,9 @@ export function LibraryPage({ chrome }: { chrome: PlatformPageChromeProps }) {
   useEffect(() => {
     if (!chrome.user) return
     let mounted = true
+    setLibrary(null)
     setLoadError('')
-    void platformApi.fetchLibrary()
+    void platformApi.fetchLibrary({ includeRecentRooms: false })
       .then((data) => { if (mounted) setLibrary(data) })
       .catch(() => { if (mounted) setLoadError('네트워크 연결을 확인한 뒤 다시 시도해 주세요.') })
     return () => { mounted = false }
@@ -1582,7 +2149,7 @@ export function LibraryPage({ chrome }: { chrome: PlatformPageChromeProps }) {
           <PageSection title="즐겨찾기">
             {library.bookmarks.length === 0 ? <EmptyState title="아직 즐겨찾기가 없습니다" description="캐릭터나 월드 상세에서 즐겨찾기에 저장할 수 있습니다." /> : (
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
-                {library.bookmarks.map((entry) => <EntityCard key={entry.id} item={entry.item} onClick={() => chrome.onNavigate(entry.entityType === 'character' ? `/characters/${entry.item.slug}` : `/worlds/${entry.item.slug}`)} />)}
+                {library.bookmarks.map((entry) => <EntityCard key={entry.id} item={entry.item} href={entry.entityType === 'character' ? `/characters/${entry.item.slug}` : `/worlds/${entry.item.slug}`} onNavigate={chrome.onNavigate} />)}
               </div>
             )}
           </PageSection>
@@ -1590,7 +2157,7 @@ export function LibraryPage({ chrome }: { chrome: PlatformPageChromeProps }) {
           <PageSection title="최근 본 항목">
             {library.recentViews.length === 0 ? <EmptyState title="아직 최근 본 항목이 없습니다" description="확인한 캐릭터와 월드가 여기에 표시됩니다." /> : (
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
-                {library.recentViews.map((entry) => <EntityCard key={entry.id} item={entry.item} onClick={() => chrome.onNavigate(entry.entityType === 'character' ? `/characters/${entry.item.slug}` : `/worlds/${entry.item.slug}`)} />)}
+                {library.recentViews.map((entry) => <EntityCard key={entry.id} item={entry.item} href={entry.entityType === 'character' ? `/characters/${entry.item.slug}` : `/worlds/${entry.item.slug}`} onNavigate={chrome.onNavigate} />)}
               </div>
             )}
           </PageSection>
@@ -1598,7 +2165,7 @@ export function LibraryPage({ chrome }: { chrome: PlatformPageChromeProps }) {
           <PageSection title="내가 만든 캐릭터">
             {library.owned.characters.length === 0 ? <EmptyState title="아직 만든 캐릭터가 없습니다" action={<Button onClick={() => chrome.onNavigate('/create/character')}>캐릭터 만들기</Button>} /> : (
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
-                {library.owned.characters.map((item) => <EntityCard key={item.id} item={item} onClick={() => chrome.onNavigate(`/characters/${item.slug}`)} />)}
+                {library.owned.characters.map((item) => <EntityCard key={item.id} item={item} href={`/characters/${item.slug}`} onNavigate={chrome.onNavigate} />)}
               </div>
             )}
           </PageSection>
@@ -1606,7 +2173,7 @@ export function LibraryPage({ chrome }: { chrome: PlatformPageChromeProps }) {
           <PageSection title="내가 만든 월드">
             {library.owned.worlds.length === 0 ? <EmptyState title="아직 만든 월드가 없습니다" action={<Button onClick={() => chrome.onNavigate('/create/world')}>월드 만들기</Button>} /> : (
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
-                {library.owned.worlds.map((item) => <EntityCard key={item.id} item={item} onClick={() => chrome.onNavigate(`/worlds/${item.slug}`)} />)}
+                {library.owned.worlds.map((item) => <EntityCard key={item.id} item={item} href={`/worlds/${item.slug}`} onNavigate={chrome.onNavigate} />)}
               </div>
             )}
           </PageSection>
@@ -1628,6 +2195,13 @@ export function OpsPage({ chrome }: { chrome: PlatformPageChromeProps }) {
     setLoadError('')
     void Promise.all([platformApi.fetchOpsDashboard(), platformApi.fetchReports('open')])
       .then(([data, reportPayload]) => {
+        if (!data) {
+          setDashboard(null)
+          setReports([])
+          setIsForbidden(false)
+          setLoadError('현재 운영 상태를 확인하지 못했습니다. 다시 불러와 주세요.')
+          return
+        }
         setDashboard(data)
         setReports(reportPayload.reports)
         setIsForbidden(false)
@@ -1697,7 +2271,7 @@ export function OpsPage({ chrome }: { chrome: PlatformPageChromeProps }) {
       ) : (
         <div className="space-y-6">
           <PageSection title={`신고 큐 ${reports.length ? `(${reports.length})` : ''}`}>
-            {reports.length === 0 ? <EmptyState title="검토할 신고가 없습니다" description="새 신고가 들어오면 콘텐츠와 사유가 여기에 표시됩니다." /> : <div className="space-y-3">{reports.map((report) => <div key={report.id} className="rounded-lg border border-[#e7e7e7] bg-[#ffffff] p-4"><div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div className="min-w-0"><p className="font-bold text-[#171717]">{report.entityName}</p><p className="mt-1 text-xs font-semibold text-[#ff5148]">{report.entityType === 'character' ? '캐릭터' : '월드'} · {report.reason}</p>{report.details ? <p className="mt-2 break-words text-sm text-[#666666]">{report.details}</p> : null}</div><div className="grid shrink-0 grid-cols-2 gap-2 sm:flex sm:flex-wrap"><Button size="sm" variant="outline" onClick={() => reviewReport(report.id, 'dismiss')}>기각</Button><Button size="sm" variant="outline" onClick={() => reviewReport(report.id, 'restore')}>복구</Button><Button size="sm" className="bg-[#d43a34] text-white hover:bg-[#c9342f]" onClick={() => reviewReport(report.id, 'quarantine')}>격리</Button><Button size="sm" variant="destructive" onClick={() => reviewReport(report.id, 'remove')}>차단</Button></div></div></div>)}</div>}
+            {reports.length === 0 ? <EmptyState title="검토할 신고가 없습니다" description="새 신고가 들어오면 콘텐츠와 사유가 여기에 표시됩니다." /> : <div className="space-y-3">{reports.map((report) => <div key={report.id} className="rounded-lg border border-[#e7e7e7] bg-[#ffffff] p-4"><div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div className="min-w-0"><p className="font-bold text-[#171717]">{report.entityName}</p><p className="mt-1 text-xs font-semibold text-[#c9342f]">{report.entityType === 'character' ? '캐릭터' : '월드'} · {report.reason}</p>{report.details ? <p className="mt-2 break-words text-sm text-[#666666]">{report.details}</p> : null}</div><div className="grid shrink-0 grid-cols-2 gap-2 sm:flex sm:flex-wrap"><Button size="sm" variant="outline" onClick={() => reviewReport(report.id, 'dismiss')}>기각</Button><Button size="sm" variant="outline" onClick={() => reviewReport(report.id, 'restore')}>복구</Button><Button size="sm" className="bg-[#d43a34] text-white hover:bg-[#c9342f]" onClick={() => reviewReport(report.id, 'quarantine')}>격리</Button><Button size="sm" variant="destructive" onClick={() => reviewReport(report.id, 'remove')}>차단</Button></div></div></div>)}</div>}
           </PageSection>
           <PageSection title="콘텐츠 관리">
             <div className="space-y-4">
@@ -1727,7 +2301,7 @@ export function OpsPage({ chrome }: { chrome: PlatformPageChromeProps }) {
                                 }}>
                                   {section.visible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}{section.visible ? '숨김' : '복구'}
                                 </Button>
-                                <Button variant="outline" className="flex-1 border-[#ff5148]/40 text-[#ff5148] hover:bg-[#ff5148]/10 hover:text-[#171717] sm:flex-none" onClick={() => setPendingDelete({ entityType: 'character', id: item.id, name: item.name })}>
+                                <Button variant="outline" className="flex-1 border-[#ff5148]/40 text-[#c9342f] hover:bg-[#ff5148]/10 hover:text-[#171717] sm:flex-none" onClick={() => setPendingDelete({ entityType: 'character', id: item.id, name: item.name })}>
                                   <Trash2 className="h-4 w-4" />삭제
                                 </Button>
                               </div>
@@ -1765,7 +2339,7 @@ export function OpsPage({ chrome }: { chrome: PlatformPageChromeProps }) {
                                 }}>
                                   {section.visible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}{section.visible ? '숨김' : '복구'}
                                 </Button>
-                                <Button variant="outline" className="flex-1 border-[#ff5148]/40 text-[#ff5148] hover:bg-[#ff5148]/10 hover:text-[#171717] sm:flex-none" onClick={() => setPendingDelete({ entityType: 'world', id: item.id, name: item.name })}>
+                                <Button variant="outline" className="flex-1 border-[#ff5148]/40 text-[#c9342f] hover:bg-[#ff5148]/10 hover:text-[#171717] sm:flex-none" onClick={() => setPendingDelete({ entityType: 'world', id: item.id, name: item.name })}>
                                   <Trash2 className="h-4 w-4" />삭제
                                 </Button>
                               </div>

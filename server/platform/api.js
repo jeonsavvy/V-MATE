@@ -5,6 +5,8 @@ import { hasAuthorizationHeader, resolveAuthenticatedUser } from '../modules/aut
 import { executeGeminiChatRequest } from '../modules/gemini-orchestrator.js';
 import { GEMINI_CHAT_MODEL_NAME } from '../modules/gemini-model.js';
 import { normalizeAssistantPayload } from '../modules/response-normalizer.js';
+import { toSafeErrorMeta } from '../modules/safe-error-meta.js';
+import { logServerWarn } from '../modules/server-logger.js';
 import * as memoryStore from './content-store.js';
 import * as persistentStore from './supabase-platform-repository.js';
 import {
@@ -12,12 +14,134 @@ import {
   validateContentPayload,
   validateUploadVariants,
 } from './input-contracts.js';
+import {
+  guardConfidentialPromptResponse,
+  isConfidentialPromptExtractionRequest,
+} from './prompt-builder.js';
 
 // 플랫폼 라우터는 public read, authenticated write, owner ops를 하나의 계약으로 묶는다.
 const PLATFORM_ALLOWED_METHODS = 'GET, POST, PATCH, DELETE, OPTIONS';
 
-// Supabase가 준비되면 persistent store를, 아니면 memory store를 선택해 같은 API를 유지한다.
+// Supabase가 준비되면 persistent store를, 로컬 개발에서만 memory store를 선택한다.
 const getPlatformStore = () => (persistentStore.isPersistentPlatformAvailable() ? persistentStore : memoryStore);
+
+const PUBLIC_CONTENT_SUMMARY_KEYS = Object.freeze([
+  'id',
+  'entityType',
+  'slug',
+  'name',
+  'headline',
+  'summary',
+  'coverImageUrl',
+  'avatarImageUrl',
+  'tags',
+  'creator',
+  'visibility',
+  'displayStatus',
+  'sourceType',
+  'sourceUrl',
+  'rightsAttestedAt',
+  'moderationStatus',
+  'favoriteCount',
+  'chatStartCount',
+  'updatedAt',
+  'heroImageUrl',
+  'imageSlots',
+]);
+const PUBLIC_CONTENT_STRING_KEYS = new Set([
+  'id', 'entityType', 'slug', 'name', 'headline', 'summary',
+  'coverImageUrl', 'avatarImageUrl', 'visibility', 'displayStatus',
+  'sourceType', 'sourceUrl', 'rightsAttestedAt', 'moderationStatus',
+  'updatedAt', 'heroImageUrl',
+]);
+const PUBLIC_CONTENT_NUMBER_KEYS = new Set(['favoriteCount', 'chatStartCount']);
+
+const toPublicCreator = (creator = {}) => ({
+  id: String(creator.id || ''),
+  slug: String(creator.slug || ''),
+  name: String(creator.name || ''),
+  ...(typeof creator.bio === 'string' && creator.bio ? { bio: creator.bio } : {}),
+});
+
+const toPublicImageSlot = (slot = {}) => ({
+  id: String(slot.id || ''),
+  slot: String(slot.slot || ''),
+  ...(typeof slot.thumbUrl === 'string' && slot.thumbUrl ? { thumbUrl: slot.thumbUrl } : {}),
+  ...(typeof slot.feedUrl === 'string' && slot.feedUrl ? { feedUrl: slot.feedUrl } : {}),
+  ...(Number.isFinite(Number(slot.feedWidth)) && Number(slot.feedWidth) > 0 ? { feedWidth: Number(slot.feedWidth) } : {}),
+  ...(typeof slot.cardUrl === 'string' && slot.cardUrl ? { cardUrl: slot.cardUrl } : {}),
+  ...(typeof slot.detailUrl === 'string' && slot.detailUrl ? { detailUrl: slot.detailUrl } : {}),
+});
+
+const toPublicSection = (section = {}) => ({
+  title: String(section.title || ''),
+  body: String(section.body || ''),
+});
+
+// Public API DTOs are allowlisted so future authoring fields cannot silently
+// become public merely because a store starts returning them.
+export const toPublicContentSummary = (item = {}) => {
+  const summary = Object.fromEntries(
+    PUBLIC_CONTENT_SUMMARY_KEYS
+      .filter((key) => Object.prototype.hasOwnProperty.call(item, key))
+      .map((key) => {
+        if (PUBLIC_CONTENT_STRING_KEYS.has(key)) {
+          return [key, typeof item[key] === 'string' ? item[key] : ''];
+        }
+        if (PUBLIC_CONTENT_NUMBER_KEYS.has(key)) {
+          return [key, Number.isFinite(Number(item[key])) ? Number(item[key]) : 0];
+        }
+        return [key, item[key]];
+      })
+  );
+  if (Object.prototype.hasOwnProperty.call(summary, 'creator')) {
+    summary.creator = toPublicCreator(summary.creator);
+  }
+  if (Object.prototype.hasOwnProperty.call(summary, 'imageSlots')) {
+    summary.imageSlots = Array.isArray(summary.imageSlots)
+      ? summary.imageSlots.slice(0, 6).map(toPublicImageSlot)
+      : [];
+  }
+  if (Object.prototype.hasOwnProperty.call(summary, 'tags')) {
+    summary.tags = Array.isArray(summary.tags) ? summary.tags.map((tag) => String(tag)) : [];
+  }
+  return summary;
+};
+
+export const toPublicContentDetail = (item = {}) => {
+  const summary = toPublicContentSummary(item);
+  if (item.entityType === 'world') {
+    return {
+      ...summary,
+      worldSections: Array.isArray(item.worldSections) ? item.worldSections.map(toPublicSection) : [],
+      gallery: Array.isArray(item.gallery) ? item.gallery.map((url) => String(url)) : [],
+      characters: Array.isArray(item.characters) ? item.characters.map(toPublicContentSummary) : [],
+    };
+  }
+  return {
+    ...summary,
+    profileSections: Array.isArray(item.profileSections) ? item.profileSections.map(toPublicSection) : [],
+    gallery: Array.isArray(item.gallery) ? item.gallery.map((url) => String(url)) : [],
+  };
+};
+
+const toPublicHomePayload = (payload) => {
+  if (!payload?.home) return payload;
+  return {
+    ...payload,
+    home: {
+      ...payload.home,
+      characterFeed: {
+        ...payload.home.characterFeed,
+        items: (payload.home.characterFeed?.items || []).map(toPublicContentSummary),
+      },
+      worldFeed: {
+        ...payload.home.worldFeed,
+        items: (payload.home.worldFeed?.items || []).map(toPublicContentSummary),
+      },
+    },
+  };
+};
 
 const withPlatformHeaders = (headers) => ({
   ...headers,
@@ -53,12 +177,37 @@ const parseJsonBody = (bodyText) => {
 };
 
 const getSegments = (path) => String(path || '').split('/').filter(Boolean);
+const CATALOG_SEARCH_LIMIT = 160;
+const parseBooleanQuery = (value, fallback = true) => {
+  if (typeof value === 'undefined' || value === null || String(value).trim() === '') return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  if (['false', '0', 'no'].includes(normalized)) return false;
+  if (['true', '1', 'yes'].includes(normalized)) return true;
+  return fallback;
+};
 const parseQuery = (queryStringParameters = {}) => ({
-  search: String(queryStringParameters.search || '').trim(),
+  search: String(queryStringParameters.search || '').trim().slice(0, CATALOG_SEARCH_LIMIT),
   filter: String(queryStringParameters.filter || '').trim(),
+  characterFilter: String(queryStringParameters.characterFilter || queryStringParameters.character_filter || queryStringParameters.filter || '').trim(),
+  worldFilter: String(queryStringParameters.worldFilter || queryStringParameters.world_filter || queryStringParameters.filter || '').trim(),
   tab: String(queryStringParameters.tab || 'characters').trim(),
   tag: String(queryStringParameters.tag || '').trim(),
+  limit: queryStringParameters.limit,
+  includeMessages: parseBooleanQuery(queryStringParameters.includeMessages ?? queryStringParameters.include_messages, true),
+  includeRecentRooms: parseBooleanQuery(queryStringParameters.includeRecentRooms ?? queryStringParameters.include_recent_rooms, true),
 });
+
+export const resolveViewerBookmarked = async ({ store, event, userId, entityType, targetId }) => {
+  if (!userId || !targetId || typeof store?.getBookmarkStatus !== 'function') return false;
+  try {
+    return Boolean(await store.getBookmarkStatus({ event, userId, entityType, targetId }));
+  } catch (error) {
+    logServerWarn('[V-MATE] Bookmark status read failed; returning unavailable state', {
+      ...toSafeErrorMeta(error),
+    });
+    return null;
+  }
+};
 
 const resolveOptionalUser = async ({ event, traceId, requireAuth = false, allowLocalDemo = false }) => {
   if (!requireAuth && !hasAuthorizationHeader(event?.headers)) {
@@ -83,6 +232,12 @@ const mutationUnavailableError = ({ headers, startedAtMs, traceId }) => jsonErro
   errorCode: 'FEATURE_TEMPORARILY_UNAVAILABLE',
   retryable: true,
 });
+
+const ensureRequiredPersistenceAvailable = ({ headers, startedAtMs, traceId }) => (
+  persistentStore.isPersistentPlatformRequired() && !persistentStore.isPersistentPlatformAvailable()
+    ? mutationUnavailableError({ headers, startedAtMs, traceId })
+    : null
+);
 
 const ensurePersistentMutationAvailable = ({ headers, startedAtMs, traceId }) => (
   (persistentStore.isPersistentPlatformAvailable() || persistentStore.isPersistentPlatformRequired())
@@ -161,6 +316,17 @@ export const mapStoreError = ({ error, headers, startedAtMs, traceId }) => {
       retryable: true,
     });
   }
+  if (code.includes('OPS_DASHBOARD_UNAVAILABLE')) {
+    return jsonError({
+      statusCode: 503,
+      headers,
+      startedAtMs,
+      traceId,
+      error: '운영 데이터를 확인하지 못했습니다. 현재 화면의 데이터는 갱신되지 않았습니다. 잠시 후 다시 불러와 주세요.',
+      errorCode: 'OPS_DASHBOARD_UNAVAILABLE',
+      retryable: true,
+    });
+  }
   if (code.includes('ROOM_TARGET_NOT_STARTABLE')) {
     return jsonError({ statusCode: 409, headers, startedAtMs, traceId, error: '선택한 콘텐츠로는 대화를 시작할 수 없습니다.', errorCode: 'ROOM_TARGET_NOT_STARTABLE' });
   }
@@ -199,6 +365,16 @@ export const handleRoomChat = async ({ event, headers, startedAtMs, traceId, roo
   if (clientRequestId && !/^[A-Za-z0-9_-]{8,128}$/.test(clientRequestId)) {
     return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: '요청 ID 형식을 확인해주세요.', errorCode: 'INVALID_CLIENT_REQUEST_ID' });
   }
+  if (isConfidentialPromptExtractionRequest(userMessage)) {
+    return jsonError({
+      statusCode: 400,
+      headers,
+      startedAtMs,
+      traceId,
+      error: '비공개 설정은 요청할 수 없습니다. 캐릭터와 이어갈 장면이나 대화를 입력해주세요.',
+      errorCode: 'PROMPT_DISCLOSURE_REQUEST_BLOCKED',
+    });
+  }
   const apiKey = process.env.GOOGLE_API_KEY;
   if (!apiKey) return mutationUnavailableError({ headers, startedAtMs, traceId });
 
@@ -219,13 +395,48 @@ export const handleRoomChat = async ({ event, headers, startedAtMs, traceId, roo
     return jsonError({ statusCode: 409, headers, startedAtMs, traceId, error: '같은 요청 ID에 다른 메시지가 사용되었습니다.', errorCode: 'CLIENT_REQUEST_ID_CONFLICT' });
   }
   if (quota?.disposition === 'replay' && quota.response?.message) {
-    const currentRoom = await store.getRoom({ event, roomId, userId: authResult.userId });
+    let currentRoom;
+    let replayPromptContext;
+    try {
+      [currentRoom, replayPromptContext] = await Promise.all([
+        store.getRoom({ event, roomId, userId: authResult.userId }),
+        store.getRoomPromptContext({ event, roomId, userId: authResult.userId }),
+      ]);
+    } catch {
+      return jsonError({
+        statusCode: 503,
+        headers,
+        startedAtMs,
+        traceId,
+        error: '저장된 응답을 안전하게 확인하지 못했습니다. 잠시 후 다시 시도해주세요.',
+        errorCode: 'PROMPT_CONTEXT_UNAVAILABLE',
+        retryable: true,
+      });
+    }
+    if (!replayPromptContext?.promptSnapshot) {
+      return jsonError({
+        statusCode: 503,
+        headers,
+        startedAtMs,
+        traceId,
+        error: '저장된 응답을 안전하게 확인하지 못했습니다. 잠시 후 다시 시도해주세요.',
+        errorCode: 'PROMPT_CONTEXT_UNAVAILABLE',
+        retryable: true,
+      });
+    }
+    const guardedReplay = guardConfidentialPromptResponse({
+      message: quota.response.message,
+      promptSnapshot: replayPromptContext?.promptSnapshot,
+    });
+    if (guardedReplay.blocked) {
+      logServerWarn('[V-MATE] Confidential prompt disclosure blocked from replay', { traceId });
+    }
     return jsonOk({
       headers,
       startedAtMs,
       body: {
         room: currentRoom || room,
-        message: quota.response.message,
+        message: guardedReplay.message,
         trace_id: quota.response.trace_id || traceId,
         quota: { limit: quota.limit, remaining: quota.remaining, resetAt: quota.resetAt },
         thinking_level: getGeminiThinkingLevel(),
@@ -290,7 +501,7 @@ export const handleRoomChat = async ({ event, headers, startedAtMs, traceId, roo
       return jsonError({ statusCode: result.error?.status === 429 ? 429 : 503, headers, startedAtMs, traceId, error: '응답을 생성하지 못했습니다. 잠시 후 다시 시도해주세요.', errorCode: result.error?.status === 429 ? 'RESPONSE_RATE_LIMITED' : 'RESPONSE_SERVICE_UNAVAILABLE', retryable: true });
     }
 
-    const message = normalizeAssistantPayload(result.modelText, {
+    const normalizedMessage = normalizeAssistantPayload(result.modelText, {
       traceId,
       roomId,
       modelName: GEMINI_CHAT_MODEL_NAME,
@@ -298,6 +509,14 @@ export const handleRoomChat = async ({ event, headers, startedAtMs, traceId, roo
       historyMessageCount: roomHistory.length,
       outputLimit: chatRuntimeLimits.primaryMaxOutputTokens,
     });
+    const guardedMessage = guardConfidentialPromptResponse({
+      message: normalizedMessage,
+      promptSnapshot: promptContext.promptSnapshot,
+    });
+    if (guardedMessage.blocked) {
+      logServerWarn('[V-MATE] Confidential prompt disclosure blocked from model response', { traceId });
+    }
+    const message = guardedMessage.message;
     let nextRoom;
     if (typeof store.commitRoomTurn === 'function') {
       nextRoom = await store.commitRoomTurn({
@@ -310,6 +529,8 @@ export const handleRoomChat = async ({ event, headers, startedAtMs, traceId, roo
         userMessage,
         assistantMessage: message,
         response: { message, trace_id: traceId },
+        room,
+        promptContext,
       });
     } else {
       nextRoom = await store.appendRoomMessages({ event, userId: authResult.userId, roomId, userMessage, assistantMessage: message });
@@ -349,7 +570,10 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
     return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Not found.', errorCode: 'NOT_FOUND' });
   }
 
-  // Production-like runtimes must never downgrade writes to the process-local demo store.
+  // Production-like runtimes must never downgrade reads or writes to demo fixtures.
+  const persistenceUnavailable = ensureRequiredPersistenceAvailable({ headers, startedAtMs, traceId });
+  if (persistenceUnavailable) return persistenceUnavailable;
+
   if (!['GET', 'OPTIONS', 'HEAD'].includes(method)) {
     const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId });
     if (unavailable) return unavailable;
@@ -358,45 +582,62 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
   // 공개 탐색 라우트
   if (method === 'GET' && segments[1] === 'home') {
     const query = parseQuery(event.queryStringParameters);
-    return jsonOk({ headers, startedAtMs, body: await getPlatformStore().getHomePayload({ tab: query.tab, search: query.search, filter: query.filter }) });
+    const payload = await getPlatformStore().getHomePayload({
+      tab: query.tab,
+      search: query.search,
+      filter: query.filter,
+      characterFilter: query.characterFilter,
+      worldFilter: query.worldFilter,
+    });
+    return jsonOk({ headers, startedAtMs, body: toPublicHomePayload(payload) });
   }
 
   if (method === 'GET' && segments[1] === 'characters' && !segments[2]) {
     const query = parseQuery(event.queryStringParameters);
-    return jsonOk({ headers, startedAtMs, body: { items: await getPlatformStore().listCharacters({ search: query.search, filter: query.filter }) } });
+    const items = await getPlatformStore().listCharacters({ search: query.search, filter: query.filter });
+    return jsonOk({ headers, startedAtMs, body: { items: items.map(toPublicContentSummary) } });
   }
 
   if (method === 'GET' && segments[1] === 'worlds' && !segments[2]) {
     const query = parseQuery(event.queryStringParameters);
-    return jsonOk({ headers, startedAtMs, body: { items: await getPlatformStore().listWorlds({ search: query.search, filter: query.filter }) } });
+    const items = await getPlatformStore().listWorlds({ search: query.search, filter: query.filter });
+    return jsonOk({ headers, startedAtMs, body: { items: items.map(toPublicContentSummary) } });
   }
 
   if (method === 'GET' && segments[1] === 'characters' && segments[2]) {
     const authResult = await resolveOptionalUser({ event, traceId });
     if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || '로그인 정보를 확인해주세요.', errorCode: authResult.errorCode || 'AUTH_UNAUTHORIZED', retryable: Boolean(authResult.retryable) });
-    const item = await getPlatformStore().getCharacterDetail({ event, slug: segments[2], userId: authResult.userId });
+    const store = getPlatformStore();
+    const item = await store.getCharacterDetail({ event, slug: segments[2], userId: authResult.userId });
     if (!item) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Character not found.', errorCode: 'CHARACTER_NOT_FOUND' });
-    return jsonOk({ headers, startedAtMs, body: { item } });
+    const isOwner = Boolean(authResult.userId) && String(item.creator?.id || '') === authResult.userId;
+    const bookmarked = await resolveViewerBookmarked({ store, event, userId: authResult.userId, entityType: 'character', targetId: item.id });
+    return jsonOk({ headers, startedAtMs, body: { item: isOwner ? item : toPublicContentDetail(item), viewer: { bookmarked } } });
   }
 
   if (method === 'GET' && segments[1] === 'worlds' && segments[2]) {
     const authResult = await resolveOptionalUser({ event, traceId });
     if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || '로그인 정보를 확인해주세요.', errorCode: authResult.errorCode || 'AUTH_UNAUTHORIZED', retryable: Boolean(authResult.retryable) });
-    const item = await getPlatformStore().getWorldDetail({ event, slug: segments[2], userId: authResult.userId });
+    const store = getPlatformStore();
+    const item = await store.getWorldDetail({ event, slug: segments[2], userId: authResult.userId });
     if (!item) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'World not found.', errorCode: 'WORLD_NOT_FOUND' });
-    return jsonOk({ headers, startedAtMs, body: { item } });
+    const isOwner = Boolean(authResult.userId) && String(item.creator?.id || '') === authResult.userId;
+    const bookmarked = await resolveViewerBookmarked({ store, event, userId: authResult.userId, entityType: 'world', targetId: item.id });
+    return jsonOk({ headers, startedAtMs, body: { item: isOwner ? item : toPublicContentDetail(item), viewer: { bookmarked } } });
   }
 
   if (method === 'GET' && segments[1] === 'recent-rooms') {
     const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
     if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
-    return jsonOk({ headers, startedAtMs, body: { items: await getPlatformStore().listRecentRooms({ event, userId: authResult.userId }) } });
+    const query = parseQuery(event.queryStringParameters);
+    return jsonOk({ headers, startedAtMs, body: { items: await getPlatformStore().listRecentRooms({ event, userId: authResult.userId, limit: query.limit, includeMessages: query.includeMessages }) } });
   }
 
   if (method === 'GET' && segments[1] === 'library') {
     const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
     if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
-    return jsonOk({ headers, startedAtMs, body: await getPlatformStore().getLibraryPayload({ event, userId: authResult.userId }) });
+    const query = parseQuery(event.queryStringParameters);
+    return jsonOk({ headers, startedAtMs, body: await getPlatformStore().getLibraryPayload({ event, userId: authResult.userId, includeRecentRooms: query.includeRecentRooms }) });
   }
 
   if (method === 'GET' && segments[1] === 'me' && segments[2] === 'chat-quota') {
@@ -681,7 +922,19 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
     if (!isOwner) {
       return jsonError({ statusCode: 403, headers, startedAtMs, traceId, error: 'Owner access required.', errorCode: 'OWNER_FORBIDDEN' });
     }
-    return jsonOk({ headers, startedAtMs, body: await getPlatformStore().getOpsDashboard({ event, userId: authResult.userId }) });
+    try {
+      const dashboard = await getPlatformStore().getOpsDashboard({ event, userId: authResult.userId });
+      if (!dashboard) {
+        const error = new Error('OPS_DASHBOARD_UNAVAILABLE');
+        error.code = 'OPS_DASHBOARD_UNAVAILABLE';
+        throw error;
+      }
+      return jsonOk({ headers, startedAtMs, body: dashboard });
+    } catch (error) {
+      const mapped = mapStoreError({ error, headers, startedAtMs, traceId });
+      if (mapped) return mapped;
+      throw error;
+    }
   }
 
   if (method === 'POST' && segments[1] === 'ops' && segments[2] === 'content' && segments[3] && segments[4] && segments[5]) {

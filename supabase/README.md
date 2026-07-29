@@ -50,6 +50,8 @@ npm run test:db:upgrade
 | 4 | `20260721043317_remove_age_restrictions.sql` | 연령 확인 제거, 권리 확인 유지 |
 | 5 | `20260726190559_backend_stabilization_expand.sql` | v2 호환 additive 확장 |
 | 6 | `20260727000000_backend_stabilization_lockdown.sql` | v2 검증 후 브라우저 직접 쓰기 회수 |
+| 7 | `20260729000000_prompt_read_views_expand.sql` | 기존 Worker 권한을 유지한 채 공개/owner 조회 view 추가 |
+| 8 | `20260729010000_private_prompt_reads_lockdown.sql` | view 호환 Worker 검증 후 프롬프트 base-column 직접 조회 권한 회수 |
 
 ## 변경 규칙
 
@@ -75,6 +77,15 @@ npm run test:db:upgrade
 lockdown 이후에는 브라우저 직접 table/Storage 쓰기 권한을 되살리는 down migration을 사용하지 않습니다. 검증된 v2-compatible Worker를 복원하거나 새 forward migration을 작성합니다.
 
 저장소의 lockdown source version은 `20260727000000`입니다. 기존 production evidence가 확인하는 remote history alias `20260727025134 / backend_stabilization_lockdown`은 release workflow가 관리합니다. source 파일을 alias에 맞춰 rename하거나 remote history를 수동 repair하지 않습니다.
+
+프롬프트 read 경계도 같은 expand → Worker → lockdown 순서를 따릅니다.
+
+1. `release-database.yml`에서 `release_track: prompt-privacy`, `operation: apply-expand`를 선택해 `20260729000000_prompt_read_views_expand.sql`을 적용합니다. 이 단계에서는 기존 base-table `SELECT` 권한을 유지합니다.
+2. `release-worker.yml`에서 `database_release_track: prompt-privacy`와 해당 expand evidence를 선택하고 public, owner edit, room, prompt-context read를 검증합니다.
+3. 별도 승인 후 `release-database.yml`에서 `release_track: prompt-privacy`, `operation: apply-lockdown`을 선택해 `20260729010000_private_prompt_reads_lockdown.sql`을 적용합니다. 이 단계는 브라우저의 `bridge_profile_json` 직접 읽기를 회수하고, 과거 방 상태에 복사됐을 수 있는 초기 상황·위치·관계·월드 용어 캐시와 첫 assistant 인사 메시지를 안전한 기본값으로 교체하므로 backup evidence가 필요합니다.
+4. post-lockdown privilege smoke와 observation workflow가 lockdown evidence의 `releaseTrack`을 이어받아 프롬프트 column 차단과 safe view 권한을 검증합니다.
+
+호환 Worker 검증 전에 prompt-read lockdown을 적용하지 않습니다. expand 단계 rollback은 view만 제거하며, lockdown rollback은 기존 Worker를 긴급 복구할 때만 broad read grant를 일시 복원하므로 disclosure surface가 다시 열립니다.
 
 승인과 rollback evidence의 전체 순서는 [`docs/operations.md`](../docs/operations.md)를 확인하세요.
 

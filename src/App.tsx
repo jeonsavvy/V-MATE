@@ -5,6 +5,7 @@ import { Toaster } from '@/components/ui/sonner'
 import { toast } from 'sonner'
 import { devError } from '@/lib/logger'
 import { getStoredKeys } from '@/lib/browserStorage'
+import { UnsavedChangesDialog } from '@/components/platform/UnsavedChangesDialog'
 import type { CharacterSummary, EntitySummary, WorldSummary } from '@/lib/platform/types'
 import {
   clearCombinationSelection,
@@ -115,6 +116,40 @@ const resolveInitialRoute = (): RouteState => {
   return parseRouteFromPathname(window.location.pathname)
 }
 
+const resolveSearchQuery = () => {
+  if (typeof window === 'undefined') return ''
+  return new URLSearchParams(window.location.search).get('search') || ''
+}
+
+const HISTORY_INDEX_KEY = '__vMateHistoryIndex'
+
+interface PendingHistoryNavigation {
+  targetUrl: string
+  targetIndex: number | null
+  restoreDelta: number
+  isReady: boolean
+}
+
+interface DeferredNavigation {
+  nextRoute: RouteState
+  options?: { replace?: boolean; search?: string }
+}
+
+const resolveCurrentUrl = () => typeof window === 'undefined'
+  ? '/'
+  : `${normalizePathname(window.location.pathname)}${window.location.search}${window.location.hash}`
+
+const readHistoryIndex = (state: unknown): number | null => {
+  if (!state || typeof state !== 'object' || Array.isArray(state)) return null
+  const value = (state as Record<string, unknown>)[HISTORY_INDEX_KEY]
+  return typeof value === 'number' && Number.isInteger(value) ? value : null
+}
+
+const withHistoryIndex = (state: unknown, index: number) => ({
+  ...(state && typeof state === 'object' && !Array.isArray(state) ? state : {}),
+  [HISTORY_INDEX_KEY]: index,
+})
+
 const hasPersistedSupabaseSession = (): boolean => {
   if (typeof window === 'undefined') return false
   return getStoredKeys().some((key) => key.startsWith('sb-') && key.endsWith('-auth-token'))
@@ -135,7 +170,7 @@ function App() {
   const [route, setRoute] = useState<RouteState>(resolveInitialRoute)
   const [user, setUser] = useState<User | null>(null)
   const [authStatus, setAuthStatus] = useState<'checking' | 'authenticated' | 'anonymous' | 'unavailable'>(() => hasPersistedSupabaseSession() || resolveInitialRoute().view === 'recovery' ? 'checking' : 'anonymous')
-  const [searchQuery, setSearchQuery] = useState('')
+  const [searchQuery, setSearchQuery] = useState(resolveSearchQuery)
   const [isAuthDialogOpen, setIsAuthDialogOpen] = useState(false)
   const [authDialogMode, setAuthDialogMode] = useState<'signin' | 'reset'>('signin')
   const [shouldInitializeAuth, setShouldInitializeAuth] = useState<boolean>(() => hasPersistedSupabaseSession() || resolveInitialRoute().view === 'recovery')
@@ -144,19 +179,141 @@ function App() {
   const [selectedCharacter, setSelectedCharacter] = useState<CharacterSummary | null>(initialSelection.character)
   const [selectedWorld, setSelectedWorld] = useState<WorldSummary | null>(initialSelection.world)
   const [isStartingCombination, setIsStartingCombination] = useState(false)
+  const [selectionHydratedScope, setSelectionHydratedScope] = useState<string | null>(null)
+  const [pendingHistoryNavigation, setPendingHistoryNavigation] = useState<PendingHistoryNavigation | null>(null)
   const authenticatedUserIdRef = useRef<string | null>(null)
+  const editorDirtyRef = useRef(false)
+  const historyIndexRef = useRef(0)
+  const committedUrlRef = useRef(resolveCurrentUrl())
+  const pendingHistoryNavigationRef = useRef<PendingHistoryNavigation | null>(null)
+  const approvedHistoryNavigationRef = useRef<PendingHistoryNavigation | null>(null)
+  const deferredNavigationRef = useRef<DeferredNavigation | null>(null)
+  const navigateToRef = useRef<(nextRoute: RouteState, options?: DeferredNavigation['options']) => void>(() => undefined)
+  const isConfirmingHistoryNavigationRef = useRef(false)
+  const navigationGenerationRef = useRef(0)
+  const combinationSelectionScope = authStatus === 'authenticated' && user?.id
+    ? `user:${user.id}`
+    : authStatus === 'anonymous'
+      ? 'anonymous'
+      : null
 
   useEffect(() => {
-    const handlePopState = () => setRoute(parseRouteFromPathname(window.location.pathname))
+    const markPendingHistoryNavigationReady = () => {
+      const pendingNavigation = pendingHistoryNavigationRef.current
+      if (!pendingNavigation || pendingNavigation.isReady) return
+      const readyNavigation = { ...pendingNavigation, isReady: true }
+      pendingHistoryNavigationRef.current = readyNavigation
+      setPendingHistoryNavigation(readyNavigation)
+    }
+
+    const restoreCommittedHistoryEntry = (targetIndex: number | null) => {
+      const restoreDelta = targetIndex === null ? 0 : historyIndexRef.current - targetIndex
+      if (restoreDelta !== 0) {
+        const pendingNavigation = pendingHistoryNavigationRef.current
+        if (pendingNavigation?.isReady) {
+          const restoringNavigation = { ...pendingNavigation, isReady: false }
+          pendingHistoryNavigationRef.current = restoringNavigation
+          setPendingHistoryNavigation(restoringNavigation)
+        }
+        window.history.go(restoreDelta)
+        return
+      }
+      window.history.pushState(withHistoryIndex(window.history.state, historyIndexRef.current), '', committedUrlRef.current)
+      markPendingHistoryNavigationReady()
+    }
+
+    const traverseApprovedHistoryNavigation = (approvedNavigation: PendingHistoryNavigation) => {
+      const targetDelta = approvedNavigation.targetIndex === null
+        ? null
+        : approvedNavigation.targetIndex - historyIndexRef.current
+      if (targetDelta !== null && targetDelta !== 0) window.history.go(targetDelta)
+      else window.history.back()
+    }
+
+    const handlePopState = (event: PopStateEvent) => {
+      const targetUrl = resolveCurrentUrl()
+      const targetIndex = readHistoryIndex(event.state)
+      const approvedNavigation = approvedHistoryNavigationRef.current
+      if (approvedNavigation
+        && targetUrl === approvedNavigation.targetUrl
+        && (approvedNavigation.targetIndex === null || targetIndex === approvedNavigation.targetIndex)) {
+        approvedHistoryNavigationRef.current = null
+        isConfirmingHistoryNavigationRef.current = false
+        if (targetIndex !== null) historyIndexRef.current = targetIndex
+        committedUrlRef.current = targetUrl
+        setRoute(parseRouteFromPathname(window.location.pathname))
+        setSearchQuery(resolveSearchQuery())
+        return
+      }
+      if (targetUrl === committedUrlRef.current) {
+        if (targetIndex !== null) historyIndexRef.current = targetIndex
+        const deferredNavigation = deferredNavigationRef.current
+        if (deferredNavigation) {
+          deferredNavigationRef.current = null
+          pendingHistoryNavigationRef.current = null
+          setPendingHistoryNavigation(null)
+          navigateToRef.current(deferredNavigation.nextRoute, deferredNavigation.options)
+        } else if (approvedNavigation) traverseApprovedHistoryNavigation(approvedNavigation)
+        else markPendingHistoryNavigationReady()
+        return
+      }
+      if (pendingHistoryNavigationRef.current || approvedHistoryNavigationRef.current) {
+        restoreCommittedHistoryEntry(targetIndex)
+        return
+      }
+      if (editorDirtyRef.current) {
+        const restoreDelta = targetIndex === null ? 0 : historyIndexRef.current - targetIndex
+        const pendingNavigation: PendingHistoryNavigation = {
+          targetUrl,
+          targetIndex,
+          restoreDelta,
+          isReady: restoreDelta === 0,
+        }
+        pendingHistoryNavigationRef.current = pendingNavigation
+        setPendingHistoryNavigation(pendingNavigation)
+        restoreCommittedHistoryEntry(targetIndex)
+        return
+      }
+      editorDirtyRef.current = false
+      navigationGenerationRef.current += 1
+      if (targetIndex !== null) historyIndexRef.current = targetIndex
+      committedUrlRef.current = targetUrl
+      setRoute(parseRouteFromPathname(window.location.pathname))
+      setSearchQuery(resolveSearchQuery())
+    }
     const initialRoute = parseRouteFromPathname(window.location.pathname)
     const normalizedPath = toPathname(initialRoute)
-    if (window.location.pathname !== normalizedPath) {
-      window.history.replaceState({}, '', normalizedPath)
-    }
+    const initialUrl = `${normalizedPath}${window.location.search}${window.location.hash}`
+    const initialIndex = readHistoryIndex(window.history.state) ?? 0
+    historyIndexRef.current = initialIndex
+    window.history.replaceState(withHistoryIndex(window.history.state, initialIndex), '', initialUrl)
+    committedUrlRef.current = initialUrl
     setRoute(initialRoute)
     window.addEventListener('popstate', handlePopState)
     return () => window.removeEventListener('popstate', handlePopState)
   }, [])
+
+  const cancelHistoryNavigation = () => {
+    if (isConfirmingHistoryNavigationRef.current) return
+    pendingHistoryNavigationRef.current = null
+    setPendingHistoryNavigation(null)
+  }
+
+  const confirmHistoryNavigation = () => {
+    const pendingNavigation = pendingHistoryNavigationRef.current
+    if (!pendingNavigation?.isReady || isConfirmingHistoryNavigationRef.current) return
+    isConfirmingHistoryNavigationRef.current = true
+    pendingHistoryNavigationRef.current = null
+    approvedHistoryNavigationRef.current = pendingNavigation
+    setPendingHistoryNavigation(null)
+    editorDirtyRef.current = false
+    navigationGenerationRef.current += 1
+    if (pendingNavigation.restoreDelta !== 0) {
+      window.history.go(-pendingNavigation.restoreDelta)
+    } else {
+      window.history.back()
+    }
+  }
 
   useEffect(() => {
     if (!shouldInitializeAuth) return
@@ -204,18 +361,56 @@ function App() {
     }
   }, [shouldInitializeAuth, authRetryNonce])
 
-  const navigateTo = (nextRoute: RouteState, options?: { replace?: boolean }) => {
+  const navigateTo = (nextRoute: RouteState, options?: { replace?: boolean; search?: string }) => {
     const nextPath = toPathname(nextRoute)
-    const currentPath = normalizePathname(window.location.pathname)
-    if (currentPath !== nextPath) {
-      if (options?.replace) {
-        window.history.replaceState({}, '', nextPath)
-      } else {
-        window.history.pushState({}, '', nextPath)
-      }
+    const nextUrl = `${nextPath}${options?.search || ''}`
+    const nextSearchQuery = nextRoute.view === 'home'
+      ? new URLSearchParams(options?.search || '').get('search') || ''
+      : null
+    const pendingHistoryNavigation = pendingHistoryNavigationRef.current
+    if (pendingHistoryNavigation && !pendingHistoryNavigation.isReady) {
+      deferredNavigationRef.current = { nextRoute, options }
+      setPendingHistoryNavigation(null)
+      return
     }
+    if (pendingHistoryNavigationRef.current?.isReady) {
+      pendingHistoryNavigationRef.current = null
+      setPendingHistoryNavigation(null)
+    }
+    const currentUrl = resolveCurrentUrl()
+    if (currentUrl === nextUrl) {
+      if (nextSearchQuery !== null) setSearchQuery(nextSearchQuery)
+      return
+    }
+    const nextIndex = options?.replace ? historyIndexRef.current : historyIndexRef.current + 1
+    if (options?.replace) {
+      window.history.replaceState(withHistoryIndex(window.history.state, nextIndex), '', nextUrl)
+    } else {
+      window.history.pushState(withHistoryIndex({}, nextIndex), '', nextUrl)
+    }
+    historyIndexRef.current = nextIndex
+    committedUrlRef.current = nextUrl
+    editorDirtyRef.current = false
+    navigationGenerationRef.current += 1
+    if (nextSearchQuery !== null) setSearchQuery(nextSearchQuery)
     setRoute(nextRoute)
     window.scrollTo({ top: 0, left: 0, behavior: 'auto' })
+  }
+  navigateToRef.current = navigateTo
+
+  const handleSearchChange = (value: string) => {
+    setSearchQuery(value)
+    if (route.view !== 'home') return
+    const normalized = value.trim()
+    const nextUrl = normalized ? `/?search=${encodeURIComponent(normalized)}` : '/'
+    window.history.replaceState(withHistoryIndex(window.history.state, historyIndexRef.current), '', nextUrl)
+    committedUrlRef.current = nextUrl
+  }
+
+  const handleSearchSubmit = (value: string) => {
+    const normalized = value.trim()
+    setSearchQuery(normalized)
+    navigateTo({ view: 'home' }, { search: normalized ? `?search=${encodeURIComponent(normalized)}` : '' })
   }
 
   const prepareAuthDialog = () => {
@@ -276,16 +471,26 @@ function App() {
   }
 
   useEffect(() => {
-    writeCombinationSelection({ character: selectedCharacter, world: selectedWorld }, user?.id)
-  }, [selectedCharacter, selectedWorld, user?.id])
+    if (!combinationSelectionScope) {
+      setSelectionHydratedScope(null)
+      return
+    }
+    const stored = readCombinationSelection(user?.id)
+    setSelectedCharacter((current) => {
+      if (!stored.character && current?.visibility === 'private') return null
+      return current || stored.character
+    })
+    setSelectedWorld((current) => {
+      if (!stored.world && current?.visibility === 'private') return null
+      return current || stored.world
+    })
+    setSelectionHydratedScope(combinationSelectionScope)
+  }, [combinationSelectionScope, user?.id])
 
   useEffect(() => {
-    const stored = readCombinationSelection(user?.id)
-    if (!selectedCharacter && stored.character) setSelectedCharacter(stored.character)
-    if (!selectedWorld && stored.world) setSelectedWorld(stored.world)
-    if (!stored.character && selectedCharacter?.visibility === 'private') setSelectedCharacter(null)
-    if (!stored.world && selectedWorld?.visibility === 'private') setSelectedWorld(null)
-  }, [user?.id, selectedCharacter?.visibility, selectedWorld?.visibility])
+    if (!combinationSelectionScope || selectionHydratedScope !== combinationSelectionScope) return
+    writeCombinationSelection({ character: selectedCharacter, world: selectedWorld }, user?.id)
+  }, [combinationSelectionScope, selectionHydratedScope, selectedCharacter, selectedWorld, user?.id])
 
   const handleSelectEntity = (item: EntitySummary) => {
     if (item.entityType === 'character') {
@@ -334,8 +539,11 @@ function App() {
     authStatus,
     userAvatarInitial: toAvatarInitial(user),
     searchQuery,
-    onSearchChange: setSearchQuery,
+    onSearchChange: handleSearchChange,
+    onSearchSubmit: handleSearchSubmit,
     onNavigate: (path: string) => navigateTo(parseRouteFromPathname(path)),
+    onEditorDirtyChange: (isDirty: boolean) => { editorDirtyRef.current = isDirty },
+    getNavigationGeneration: () => navigationGenerationRef.current,
     onAuthRequest: openAuthDialog,
     onSignOut: handleSignOut,
     onDeleteAccount: handleDeleteAccount,
@@ -345,9 +553,9 @@ function App() {
     onSelectEntity: handleSelectEntity,
     onClearSelectedEntity: handleClearSelectedEntity,
     onStartCombination: handleStartCombination,
-  }), [user, authStatus, searchQuery, selectedCharacter, selectedWorld, isStartingCombination])
+  }), [user, authStatus, route.view, searchQuery, selectedCharacter, selectedWorld, isStartingCombination])
 
-  const routeKey = route.view === 'room' ? `room-${route.roomId}` : route.view === 'character' ? `character-${route.slug}` : route.view === 'world' ? `world-${route.slug}` : route.view === 'startCharacter' ? `start-character-${route.slug}` : route.view === 'startWorld' ? `start-world-${route.slug}` : route.view
+  const routeKey = route.view === 'room' ? `room-${route.roomId}` : route.view === 'character' ? `character-${route.slug}` : route.view === 'world' ? `world-${route.slug}` : route.view === 'startCharacter' ? `start-character-${route.slug}` : route.view === 'startWorld' ? `start-world-${route.slug}` : route.view === 'editCharacter' ? `edit-character-${route.slug}` : route.view === 'editWorld' ? `edit-world-${route.slug}` : route.view
 
   return (
     <MotionConfig reducedMotion="user" transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}>
@@ -379,6 +587,13 @@ function App() {
             <AuthDialog open={isAuthDialogOpen} onOpenChange={setIsAuthDialogOpen} onSuccess={() => setIsAuthDialogOpen(false)} initialMode={authDialogMode} />
           </Suspense>
         )}
+        <UnsavedChangesDialog
+          open={pendingHistoryNavigation !== null}
+          description="이전 또는 다음 화면으로 이동하면 현재 입력 내용은 임시저장본으로만 남습니다."
+          confirmDisabled={!pendingHistoryNavigation?.isReady}
+          onCancel={cancelHistoryNavigation}
+          onConfirm={confirmHistoryNavigation}
+        />
         <Toaster />
       </div>
     </MotionConfig>

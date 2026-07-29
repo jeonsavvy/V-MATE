@@ -50,6 +50,13 @@ import {
 import { resolveAuthenticatedUser } from './modules/auth-guard.js';
 import { GEMINI_CHAT_MODEL_NAME } from './modules/gemini-model.js';
 import * as persistentStore from './platform/supabase-platform-repository.js';
+import {
+    guardConfidentialPromptResponse,
+    isConfidentialPromptExtractionRequest,
+} from './platform/prompt-builder.js';
+
+const guardLegacyPromptPayload = ({ message, promptSnapshot }) =>
+    guardConfidentialPromptResponse({ message, promptSnapshot });
 
 export const handler = async (event, context) => {
     const requestStartedAt = Date.now();
@@ -250,6 +257,20 @@ export const handler = async (event, context) => {
             clientRequestId,
             normalizedCharacterId,
         } = validatedRequest.value;
+        const promptExtractionRequested = [
+            userMessage,
+            ...(Array.isArray(messageHistory) ? messageHistory.map((message) => message?.content) : []),
+        ].some(isConfidentialPromptExtractionRequest);
+        if (promptExtractionRequested) {
+            return buildApiErrorResult({
+                statusCode: 400,
+                headers: rateLimitedHeaders,
+                startedAtMs: requestStartedAt,
+                error: '비공개 설정은 요청할 수 없습니다. 캐릭터와 이어갈 대화를 입력해주세요.',
+                errorCode: 'PROMPT_DISCLOSURE_REQUEST_BLOCKED',
+                traceId: requestTraceId,
+            });
+        }
         const trimmedSystemPrompt = String(getSystemPromptForCharacter(normalizedCharacterId) || '').trim();
         if (clientRequestId) {
             headers['X-V-MATE-Client-Request-Id'] = clientRequestId;
@@ -348,7 +369,14 @@ export const handler = async (event, context) => {
                     errorCode: 'RESPONSE_INVALID_FORMAT',
                 };
             }
-            const finalPayload = normalizedPayload;
+            const guardedPayload = guardLegacyPromptPayload({
+                message: normalizedPayload,
+                promptSnapshot: trimmedSystemPrompt,
+            });
+            if (guardedPayload.blocked) {
+                logServerWarn('[V-MATE] Confidential prompt disclosure blocked from legacy model response', logMeta);
+            }
+            const finalPayload = guardedPayload.message;
 
             if (canUseContextCache && promptCacheKey && responseCachedContent) {
                 const { ttlSeconds } = getGeminiContextCacheConfig();
@@ -476,6 +504,23 @@ export const handler = async (event, context) => {
                 retryable: Boolean(modelResult?.retryable),
             });
         }
+
+        // Re-check the final boundary so persistent quota and in-process
+        // dedupe replay paths cannot bypass the confidentiality guard.
+        const guardedFinalPayload = guardLegacyPromptPayload({
+            message: modelResult.payload,
+            promptSnapshot: trimmedSystemPrompt,
+        });
+        if (guardedFinalPayload.blocked) {
+            logServerWarn('[V-MATE] Confidential prompt disclosure blocked from legacy replay', {
+                ...logMeta,
+                wasPersistentReplay: quota?.disposition === 'replay',
+            });
+        }
+        modelResult = {
+            ...modelResult,
+            payload: guardedFinalPayload.message,
+        };
 
         if (usePersistentQuota && quota?.disposition !== 'replay') {
             try {

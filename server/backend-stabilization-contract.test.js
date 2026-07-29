@@ -82,16 +82,25 @@ test('v2 mutation RPCs are service-only and lockdown removes direct mutation pat
   assert.match(lockdown, /drop policy if exists "Authenticated users can upload vmate assets to their own folder" on storage\.objects;/);
 });
 
-test('schema snapshot exactly carries the latest stabilization phases', async () => {
-  const [schema, expand, lockdown] = await Promise.all([
+test('schema snapshot exactly carries the stabilization and prompt-read phases', async () => {
+  const [schema, expand, lockdown, promptExpand, promptLockdown] = await Promise.all([
     readUtf8('supabase/schema.sql'),
     readUtf8('supabase/migrations/20260726190559_backend_stabilization_expand.sql'),
     readUtf8('supabase/migrations/20260727000000_backend_stabilization_lockdown.sql'),
+    readUtf8('supabase/migrations/20260729000000_prompt_read_views_expand.sql'),
+    readUtf8('supabase/migrations/20260729010000_private_prompt_reads_lockdown.sql'),
   ]);
 
-  assert.ok(schema.endsWith(`${lockdown.trim()}\n`) || schema.endsWith(`${lockdown.trim()}\r\n`));
-  assert.ok(schema.includes(expand.trim()));
-  assert.equal(schema.indexOf(expand.trim()), schema.lastIndexOf(expand.trim()));
+  const orderedPhases = [expand, lockdown, promptExpand, promptLockdown].map((source) => source.trim());
+  assert.ok(schema.endsWith(`${promptLockdown.trim()}\n`) || schema.endsWith(`${promptLockdown.trim()}\r\n`));
+  for (const phase of orderedPhases) {
+    assert.ok(schema.includes(phase));
+    assert.equal(schema.indexOf(phase), schema.lastIndexOf(phase));
+  }
+  assert.deepEqual(
+    orderedPhases.map((phase) => schema.indexOf(phase)),
+    [...orderedPhases].map((phase) => schema.indexOf(phase)).sort((left, right) => left - right),
+  );
 });
 
 test('server coverage gate uses the agreed line, branch, and function thresholds', async () => {

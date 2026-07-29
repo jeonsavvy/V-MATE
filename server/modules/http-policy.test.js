@@ -3,6 +3,7 @@ import { afterEach, test } from 'node:test';
 import {
   buildHeaders,
   checkRateLimit,
+  CORS_ALLOWED_METHODS,
   getClientKey,
   isOriginAllowed,
   normalizeOrigin,
@@ -107,6 +108,7 @@ test('reuses parsed allowlist for same env value and refreshes when env changes'
 test('builds client key with ip > fingerprint > anonymous priority', () => {
   const keyFromIp = getClientKey(
     {
+      requestContext: { trustedProxy: true },
       headers: {
         'cf-ray': '8f1234abcd',
         'cf-connecting-ip': '198.51.100.10',
@@ -148,6 +150,30 @@ test('ignores spoofable proxy ip headers unless trusted', () => {
     'https://a.example'
   );
   assert.match(keyWithoutTrust, /^fingerprint:[a-f0-9]{16}$/);
+
+  const keyWithSpoofedCloudflareHeaders = getClientKey(
+    {
+      headers: {
+        'cf-ray': 'attacker-controlled',
+        'cf-connecting-ip': '203.0.113.99',
+        origin: 'https://a.example',
+        'user-agent': 'UnitTestUA',
+      },
+    },
+    'https://a.example'
+  );
+  assert.match(keyWithSpoofedCloudflareHeaders, /^fingerprint:[a-f0-9]{16}$/);
+
+  const keyFromTrustedAdapter = getClientKey(
+    {
+      requestContext: { trustedProxy: true },
+      headers: {
+        'cf-connecting-ip': '203.0.113.15',
+      },
+    },
+    'https://a.example'
+  );
+  assert.equal(keyFromTrustedAdapter, 'ip:203.0.113.15');
 
   process.env.TRUST_PROXY_HEADERS = 'true';
   const keyWithTrust = getClientKey(
@@ -198,6 +224,12 @@ test('evicts oldest key when rate-limit key capacity is exceeded', () => {
 test('buildHeaders returns null origin when request origin is blocked', () => {
   const allowedHeaders = buildHeaders(true, 'https://a.example');
   assert.equal(allowedHeaders['Access-Control-Allow-Origin'], 'https://a.example');
+  assert.match(allowedHeaders['Access-Control-Allow-Headers'], /Authorization/i);
+  assert.equal(allowedHeaders['Access-Control-Allow-Methods'], CORS_ALLOWED_METHODS.chat);
+  const platformHeaders = buildHeaders(true, 'https://a.example', { allowedMethods: CORS_ALLOWED_METHODS.platform });
+  assert.match(platformHeaders['Access-Control-Allow-Methods'], /GET/i);
+  assert.match(platformHeaders['Access-Control-Allow-Methods'], /PATCH/i);
+  assert.match(platformHeaders['Access-Control-Allow-Methods'], /DELETE/i);
   assert.match(
     String(allowedHeaders['Access-Control-Expose-Headers'] || ''),
     /X-V-MATE-Trace-Id/i

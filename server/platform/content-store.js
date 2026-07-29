@@ -30,6 +30,8 @@ const featuredHomeState = {
   heroMode: 'auto',
   heroTargetPath: '',
 };
+const CATALOG_LIMIT = 200;
+const RECENT_ROOM_LIMIT = 20;
 
 const nowIso = () => new Date().toISOString();
 
@@ -200,6 +202,52 @@ const slugify = (value, fallback) => {
   return normalized || fallback;
 };
 
+const PUBLIC_IMAGE_SLOT_URL_KEYS = Object.freeze([
+  'thumbUrl',
+  'feedUrl',
+  'cardUrl',
+  'detailUrl',
+]);
+const PUBLIC_IMAGE_SLOT_DIMENSION_KEYS = Object.freeze([
+  'thumbWidth',
+  'thumbHeight',
+  'feedWidth',
+  'feedHeight',
+  'cardWidth',
+  'cardHeight',
+  'detailWidth',
+  'detailHeight',
+]);
+
+// Summary surfaces need slot identity and render sources, not the authoring
+// rules that teach the model when or why to select a slot.
+const toPublicImageSlot = (slot = {}) => {
+  const output = {
+    id: typeof slot.id === 'string' ? slot.id : '',
+    slot: typeof slot.slot === 'string' ? slot.slot : '',
+  };
+  for (const key of PUBLIC_IMAGE_SLOT_URL_KEYS) {
+    if (typeof slot[key] === 'string' && slot[key]) output[key] = slot[key];
+  }
+  if (!output.detailUrl && typeof slot.heroUrl === 'string' && slot.heroUrl) {
+    output.detailUrl = slot.heroUrl;
+  }
+  for (const key of PUBLIC_IMAGE_SLOT_DIMENSION_KEYS) {
+    const value = Number(slot[key]);
+    if (Number.isFinite(value) && value > 0) output[key] = value;
+  }
+  return output;
+};
+
+const toPublicImageSlots = (slots) => (
+  Array.isArray(slots) ? slots.slice(0, 6).map(toPublicImageSlot) : []
+);
+
+const withPublicSummarySlots = (summary) => ({
+  ...summary,
+  imageSlots: toPublicImageSlots(summary?.imageSlots),
+});
+
 const summarizeCharacter = (item) => ({
   id: item.id,
   entityType: 'character',
@@ -220,8 +268,8 @@ const summarizeCharacter = (item) => ({
   favoriteCount: item.favoriteCount,
   chatStartCount: item.chatStartCount,
   updatedAt: item.updatedAt,
-  heroImageUrl: item.promptProfile?.heroImageUrl || '',
-  imageSlots: Array.isArray(item.promptProfile?.imageSlots) ? clone(item.promptProfile.imageSlots) : [],
+  heroImageUrl: typeof item.promptProfile?.heroImageUrl === 'string' ? item.promptProfile.heroImageUrl : '',
+  imageSlots: toPublicImageSlots(item.promptProfile?.imageSlots),
 });
 
 const summarizeWorld = (item) => ({
@@ -243,11 +291,18 @@ const summarizeWorld = (item) => ({
   favoriteCount: item.favoriteCount,
   chatStartCount: item.chatStartCount,
   updatedAt: item.updatedAt,
-  imageSlots: Array.isArray(item.promptProfile?.imageSlots) ? clone(item.promptProfile.imageSlots) : [],
+  imageSlots: toPublicImageSlots(item.promptProfile?.imageSlots),
 });
 
 const allCharacters = () => [...createdCharacters.values()];
 const allWorlds = () => [...createdWorlds.values()];
+
+const isPubliclyVisible = (item, entityType) => {
+  const moderationStatus = moderationByEntity.get(`${entityType}:${item.id}`)?.status || item.moderationStatus || 'clear';
+  return item.visibility === 'public'
+    && item.displayStatus === 'visible'
+    && !['quarantined', 'blocked'].includes(moderationStatus);
+};
 
 const findCharacter = (ref) => {
   if (!ref) return null;
@@ -269,35 +324,53 @@ const ensureBookmarkBucket = (userId) => {
   return bookmarksByUser.get(userId);
 };
 
-export const listCharacters = ({ search = '', filter = '' } = {}) => {
-  const query = String(search || '').trim().toLowerCase();
-  const items = allCharacters()
-    .filter((item) => item.displayStatus !== 'hidden' && !['quarantined', 'blocked'].includes(moderationByEntity.get(`character:${item.id}`)?.status))
-    .map(summarizeCharacter)
-    .filter((item) => !query || JSON.stringify(item).toLowerCase().includes(query));
+const matchesCatalogSearch = (item, search) => {
+  const query = String(search || '').trim().slice(0, 160).toLowerCase();
+  if (!query) return true;
+  return [
+    item.name,
+    item.headline,
+    item.summary,
+    item.creator?.name,
+    ...(Array.isArray(item.tags) ? item.tags : []),
+  ].some((value) => String(value || '').toLowerCase().includes(query));
+};
 
+const sortCatalogItems = (items, filter) => {
   if (filter === 'new') {
-    return items.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+    return [...items].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || String(a.id).localeCompare(String(b.id)));
   }
-  return items.sort((a, b) => b.chatStartCount - a.chatStartCount || b.favoriteCount - a.favoriteCount || Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  return [...items].sort((a, b) => b.chatStartCount - a.chatStartCount
+    || b.favoriteCount - a.favoriteCount
+    || Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
+    || String(a.id).localeCompare(String(b.id)));
+};
+
+export const listCharacters = ({ search = '', filter = '' } = {}) => {
+  const items = allCharacters()
+    .filter((item) => isPubliclyVisible(item, 'character'))
+    .map(summarizeCharacter)
+    .filter((item) => matchesCatalogSearch(item, search));
+  return sortCatalogItems(items, filter).slice(0, CATALOG_LIMIT);
 };
 
 export const listWorlds = ({ search = '', filter = '' } = {}) => {
-  const query = String(search || '').trim().toLowerCase();
   const items = allWorlds()
-    .filter((item) => item.displayStatus !== 'hidden' && !['quarantined', 'blocked'].includes(moderationByEntity.get(`world:${item.id}`)?.status))
+    .filter((item) => isPubliclyVisible(item, 'world'))
     .map(summarizeWorld)
-    .filter((item) => !query || JSON.stringify(item).toLowerCase().includes(query));
-
-  if (filter === 'new') {
-    return items.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
-  }
-  return items.sort((a, b) => b.chatStartCount - a.chatStartCount || b.favoriteCount - a.favoriteCount || Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+    .filter((item) => matchesCatalogSearch(item, search));
+  return sortCatalogItems(items, filter).slice(0, CATALOG_LIMIT);
 };
 
-export const getHomePayload = ({ tab = 'characters', search = '', filter = '' } = {}) => {
-  const characters = listCharacters({ search, filter });
-  const worlds = listWorlds({ search, filter });
+export const getHomePayload = ({
+  tab = 'characters',
+  search = '',
+  filter = '',
+  characterFilter = filter,
+  worldFilter = filter,
+} = {}) => {
+  const characters = listCharacters({ search, filter: characterFilter });
+  const worlds = listWorlds({ search, filter: worldFilter });
   const manualHero = featuredHomeState.heroTargetPath.startsWith('/worlds/')
     ? worlds.find((item) => featuredHomeState.heroTargetPath.endsWith(`/${item.slug}`))
     : characters.find((item) => featuredHomeState.heroTargetPath.endsWith(`/${item.slug}`));
@@ -328,13 +401,18 @@ export const getCharacterDetail = (input) => {
     item.visibility !== 'public' || item.displayStatus !== 'visible' || ['quarantined', 'blocked'].includes(moderationStatus)
   ))) return null;
 
+  const isOwner = item.ownerUserId === userId;
+
   return {
     ...summarizeCharacter(item),
     profileSections: item.profileSections,
     gallery: item.gallery,
-    profileJson: item.profileJson || {},
-    speechStyleJson: item.speechStyleJson || {},
-    promptProfileJson: item.promptProfile || {},
+    ...(isOwner ? {
+      imageSlots: Array.isArray(item.promptProfile?.imageSlots) ? clone(item.promptProfile.imageSlots) : [],
+      profileJson: item.profileJson || {},
+      speechStyleJson: item.speechStyleJson || {},
+      promptProfileJson: item.promptProfile || {},
+    } : {}),
   };
 };
 
@@ -347,12 +425,18 @@ export const getWorldDetail = (input) => {
     item.visibility !== 'public' || item.displayStatus !== 'visible' || ['quarantined', 'blocked'].includes(moderationStatus)
   ))) return null;
 
+  const isOwner = item.ownerUserId === userId;
+
   return {
     ...summarizeWorld(item),
     worldSections: item.worldSections.filter((section) => section.title === '월드 소개').slice(0, 1),
     gallery: item.gallery,
     characters: [],
-    promptProfileJson: item.promptProfile || {},
+    ...(isOwner ? {
+      imageSlots: Array.isArray(item.promptProfile?.imageSlots) ? clone(item.promptProfile.imageSlots) : [],
+      promptProfileJson: item.promptProfile || {},
+    } : {}),
+    ...(isOwner ? { worldRulesMarkdown: item.worldRulesMarkdown || '' } : {}),
   };
 };
 
@@ -389,21 +473,60 @@ export const toggleBookmark = ({ userId, entityType, ref }) => {
   return { active: true, id };
 };
 
+export const getBookmarkStatus = ({ userId, entityType, targetId }) => {
+  if (!userId || !entityType || !targetId) return false;
+  const bucket = bookmarksByUser.get(userId);
+  if (!bucket) return false;
+  return Array.from(bucket.values()).some((entry) => (
+    entry.entityType === entityType && entry.item?.id === targetId
+  ));
+};
+
 export const removeBookmark = ({ userId, bookmarkId }) => {
   ensureBookmarkBucket(userId).delete(bookmarkId);
 };
 
+const normalizeRecentRoomLimit = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed)
+    ? Math.max(1, Math.min(RECENT_ROOM_LIMIT, Math.floor(parsed)))
+    : RECENT_ROOM_LIMIT;
+};
+
+const toRoomResponse = (room, { includeMessages = true } = {}) => {
+  const response = clone(room);
+  delete response.resolvedPromptSnapshotJson;
+  delete response.bridgeProfile;
+  response.character = withPublicSummarySlots(response.character);
+  response.world = response.world ? withPublicSummarySlots(response.world) : null;
+  if (!includeMessages) response.messages = [];
+  return response;
+};
+
 export const listRecentRooms = (input) => {
-  const userId = typeof input === 'string' ? input : input?.userId
-  return Array.from(rooms.values()).filter((room) => room.userId === userId).map(clone).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  const userId = typeof input === 'string' ? input : input?.userId;
+  const limit = normalizeRecentRoomLimit(typeof input === 'string' ? undefined : input?.limit);
+  const includeMessages = typeof input === 'string' || input?.includeMessages !== false;
+  return Array.from(rooms.values())
+    .filter((room) => room.userId === userId)
+    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+    .slice(0, limit)
+    .map((room) => toRoomResponse(room, { includeMessages }));
 };
 
 export const getLibraryPayload = (input) => {
-  const userId = typeof input === 'string' ? input : input?.userId
+  const userId = typeof input === 'string' ? input : input?.userId;
+  const includeRecentRooms = typeof input === 'string' || input?.includeRecentRooms !== false;
   return {
-    bookmarks: Array.from(ensureBookmarkBucket(userId).values()).map(clone),
-    recentViews: clone(ensureRecentBucket(userId)),
-    recentRooms: listRecentRooms(userId),
+    bookmarks: Array.from(ensureBookmarkBucket(userId).values()).map((entry) => ({
+      ...clone(entry),
+      item: withPublicSummarySlots(entry.item),
+    })),
+    recentViews: ensureRecentBucket(userId).map((entry) => ({
+      ...clone(entry),
+      item: withPublicSummarySlots(entry.item),
+    })),
+    recentRooms: includeRecentRooms ? listRecentRooms({ userId }) : [],
     owned: {
       characters: allCharacters().filter((item) => item.ownerUserId === userId).map(summarizeCharacter),
       worlds: allWorlds().filter((item) => item.ownerUserId === userId).map(summarizeWorld),
@@ -503,14 +626,14 @@ export const createWorld = ({ userId, payload }) => {
     sourceType: payload.sourceType || 'original',
     sourceUrl: payload.sourceUrl || '',
     rightsAttestedAt: payload.visibility === 'public' ? nowIso() : '',
+    worldRulesMarkdown: payload.worldRulesMarkdown || '',
     moderationStatus: 'clear',
     favoriteCount: 0,
     chatStartCount: 0,
     updatedAt: nowIso(),
-    worldSections: [
-      { title: '월드 소개', body: payload.summary },
-      { title: '월드 규칙', body: payload.worldRulesMarkdown || payload.summary },
-    ],
+    // Authoring rules are model instructions. Public detail gets only the
+    // explicitly public summary, matching the persistent repository contract.
+    worldSections: [{ title: '월드 소개', body: payload.summary }],
     gallery: payload.coverImageUrl ? [payload.coverImageUrl] : [],
     promptProfile: {
       genreKey: 'city',
@@ -541,14 +664,10 @@ export const updateWorld = ({ userId, slug, payload }) => {
   item.sourceType = payload.sourceType || item.sourceType;
   if (Object.prototype.hasOwnProperty.call(payload, 'sourceUrl')) item.sourceUrl = payload.sourceUrl || '';
   if (payload.visibility === 'public' && payload.rightsConfirmed) item.rightsAttestedAt = nowIso();
+  if (Object.prototype.hasOwnProperty.call(payload, 'worldRulesMarkdown')) item.worldRulesMarkdown = payload.worldRulesMarkdown || '';
   item.coverImageUrl = payload.coverImageUrl || item.coverImageUrl;
   item.creator = { ...item.creator, name: creatorName };
-  if (payload.summary || payload.worldRulesMarkdown) {
-    item.worldSections = [
-      { title: '월드 소개', body: payload.summary || item.summary },
-      { title: '월드 규칙', body: payload.worldRulesMarkdown || payload.summary || item.worldSections?.[1]?.body || item.summary },
-    ];
-  }
+  if (payload.summary) item.worldSections = [{ title: '월드 소개', body: item.summary }];
   item.promptProfile = { ...item.promptProfile, ...(payload.promptProfileJson || {}), creatorName };
   if (Array.isArray(payload.assets) && payload.assets.length > 0) {
     item.gallery = payload.assets.map((asset) => asset.url);
@@ -615,7 +734,7 @@ export const createRoom = ({ userId, characterRef, characterSlug, worldRef, worl
     const worldStore = createdWorlds.get(world.id);
     if (worldStore) worldStore.chatStartCount += 1;
   }
-  return clone(room);
+  return toRoomResponse(room);
 };
 
 export const getRoom = (input) => {
@@ -623,7 +742,7 @@ export const getRoom = (input) => {
   const userId = typeof input === 'string' ? '' : String(input?.userId || '');
   const room = rooms.get(roomId);
   if (!room || (userId && room.userId !== userId)) return null;
-  return clone(room);
+  return toRoomResponse(room);
 };
 
 export const getRoomHistoryForModel = (input) => {
@@ -631,7 +750,7 @@ export const getRoomHistoryForModel = (input) => {
   const userId = typeof input === 'string' ? '' : String(input?.userId || '');
   const room = rooms.get(roomId);
   if (!room || (userId && room.userId !== userId)) return [];
-  const history = room.messages.map((message) => ({
+  const history = room.messages.slice(-12).map((message) => ({
     role: message.role,
     content: typeof message.content === 'string' ? message.content : message.content.response,
   }));
@@ -650,7 +769,6 @@ export const getRoomPromptContext = (input) => {
       storedPromptSnapshot: room.resolvedPromptSnapshotJson,
       state: room.state,
     }),
-    bridgeProfile: clone(room.bridgeProfile),
     state: clone(room.state),
     character,
     world,
@@ -681,7 +799,7 @@ export const appendRoomMessages = ({ roomId, userId = '', userMessage, assistant
   room.updatedAt = nowIso();
   room.lastMessageAt = nowIso();
   room.version = Number(room.version || 0) + 1;
-  return clone(room);
+  return toRoomResponse(room);
 };
 
 export const getOpsDashboard = () => ({

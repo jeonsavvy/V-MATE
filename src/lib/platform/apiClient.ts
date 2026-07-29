@@ -1,5 +1,6 @@
 import type {
-  CharacterDetail,
+  CatalogFilter,
+  CharacterDetailPayload,
   CharacterSummary,
   ChatQuota,
   ContentReport,
@@ -10,7 +11,7 @@ import type {
   RoomChatResponse,
   RoomSummary,
   Visibility,
-  WorldDetail,
+  WorldDetailPayload,
   WorldSummary,
 } from '@/lib/platform/types'
 import { getBrowserOrigin } from '@/lib/browserRuntime'
@@ -38,6 +39,15 @@ export interface UserFacingError {
   title: string
   message: string
   recovery: 'retry' | 'login' | 'home' | 'library' | 'new-reset-link' | 'none'
+}
+
+export interface RecentRoomsOptions {
+  limit?: number
+  includeMessages?: boolean
+}
+
+export interface LibraryOptions {
+  includeRecentRooms?: boolean
 }
 
 export const toUserFacingError = (error: unknown, fallback = '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.'): UserFacingError => {
@@ -172,13 +182,18 @@ const request = async <T>(path: string, init?: RequestInit & { auth?: boolean; o
 }
 
 export const platformApi = {
-  fetchHome: (tab: 'characters' | 'worlds' = 'characters', search = '', filter: 'new' | 'popular' | '' = '') => request<HomeFeedPayload>(`/home?tab=${tab}&search=${encodeURIComponent(search)}&filter=${encodeURIComponent(filter)}`),
+  fetchHome: (
+    tab: 'characters' | 'worlds' = 'characters',
+    search = '',
+    characterFilter: CatalogFilter = '',
+    worldFilter: CatalogFilter = characterFilter,
+  ) => request<HomeFeedPayload>(`/home?tab=${tab}&search=${encodeURIComponent(search)}&characterFilter=${encodeURIComponent(characterFilter)}&worldFilter=${encodeURIComponent(worldFilter)}`),
   fetchCharacters: (search = '', filter: 'new' | 'popular' | '' = '') => request<{ items: CharacterSummary[] }>(`/characters?search=${encodeURIComponent(search)}&filter=${encodeURIComponent(filter)}`),
   fetchWorlds: (search = '', filter: 'new' | 'popular' | '' = '') => request<{ items: WorldSummary[] }>(`/worlds?search=${encodeURIComponent(search)}&filter=${encodeURIComponent(filter)}`),
-  fetchCharacter: (slug: string) => request<{ item: CharacterDetail }>(`/characters/${slug}`, { optionalAuth: true }),
-  fetchWorld: (slug: string) => request<{ item: WorldDetail }>(`/worlds/${slug}`, { optionalAuth: true }),
-  fetchRecentRooms: () => request<{ items: RoomSummary[] }>('/recent-rooms', { auth: true }),
-  fetchLibrary: () => request<LibraryPayload>('/library', { auth: true }),
+  fetchCharacter: (slug: string) => request<CharacterDetailPayload>(`/characters/${slug}`, { optionalAuth: true }),
+  fetchWorld: (slug: string) => request<WorldDetailPayload>(`/worlds/${slug}`, { optionalAuth: true }),
+  fetchRecentRooms: ({ limit = 20, includeMessages = true }: RecentRoomsOptions = {}) => request<{ items: RoomSummary[] }>(`/recent-rooms?limit=${limit}&includeMessages=${includeMessages}`, { auth: true }),
+  fetchLibrary: ({ includeRecentRooms = true }: LibraryOptions = {}) => request<LibraryPayload>(`/library?includeRecentRooms=${includeRecentRooms}`, { auth: true }),
   fetchOpsDashboard: () => request<OwnerOpsDashboard>('/ops/dashboard', { auth: true }),
   prepareUploads: (payload: { entityType: EntityType; variants: Array<{ kind: string; width: number; height: number }> }) =>
     request<{ bucket: string; expiresAt: string; uploads: Array<{ kind: string; width: number; height: number; path: string; token: string; signedUrl: string; publicUrl: string; bucket: string; expiresAt?: string }> }>('/uploads/prepare', {
