@@ -131,6 +131,7 @@ flowchart TD
 | --- | --- |
 | `release-backup-readiness.yml` | expand와 `prompt-privacy` lockdown 전 backup/PITR readiness evidence |
 | `release-database.yml` | 선택한 expand 또는 lockdown 한 단계만 dry-run/apply |
+| `release-prelaunch-attestation.yml` | staging이 없는 출시 전 production의 읽기 전용 catalog·row-count·보호 데이터 HMAC 증명 |
 | `release-worker.yml` | Worker shadow, smoke, cutover, evidence-bound rollback |
 | `release-staging-synthetic-smoke.yml` | staging v2 A/B 시나리오 검증 |
 | `release-post-lockdown-privilege-smoke.yml` | SQL role과 실제 HTTP 쓰기 경계 검증 |
@@ -140,6 +141,12 @@ flowchart TD
 Worker release는 확장 migration evidence가 기본입니다. DB/schema/data 변경이 없는 allowlisted domain/canonical 변경만 별도 승인된 read-only baseline attestation을 사용할 수 있습니다. 이 경로는 `db push`나 원격 DML을 실행하지 않으며 `AUTHORIZED_DOMAIN_RELEASE_SHA`가 현재 40자리 release commit SHA와 일치해야 합니다.
 
 DB와 Worker workflow의 `release_track`/`database_release_track`은 같은 값을 사용합니다. `backend-stabilization`과 `prompt-privacy` evidence는 서로 대체할 수 없으며, post-lockdown smoke와 observation은 선택값을 수동 입력받지 않고 적용된 lockdown evidence에서 이어받습니다.
+
+Prelaunch direct 경로는 production에 보존 대상 사용자 데이터가 없고 별도 staging 검증이 불가능한 최초 `prompt-privacy` 전환에서만 사용할 수 있습니다. `production-db-preflight` 승인 환경에서 `release-prelaunch-attestation.yml`에 `PRELAUNCH_DIRECT_APPROVED`를 입력하면 원격 write 없이 production project guard와 동일 default-branch commit의 CI를 확인합니다. 읽기 전용 SQL은 catalog, `auth.users`와 `storage.objects`를 포함한 row count, 계정·prompt·방 상태/version·첫 인사·Storage key/metadata의 ordered fingerprint를 계산합니다. Artifact에는 실제 count나 사용자·prompt·Storage 데이터 대신 `SUPABASE_ACCESS_TOKEN`으로 keyed HMAC만 기록합니다.
+
+`production:prompt-privacy:apply-expand`는 staging post-lockdown privilege evidence와 6시간 이내 prelaunch evidence 중 정확히 하나만 받습니다. Prelaunch expand는 additive migration이므로 이 경로에서만 physical backup/PITR evidence를 생략할 수 있습니다. Apply 직전 같은 네 가지 읽기 전용 query를 다시 실행하며 current catalog·row-count·보호 데이터 HMAC이 attestation과 다르면 write 전에 중단합니다. Worker workflow는 받은 expand run이 성공한 동일 SHA·default-branch의 `release-database.yml` dispatch인지 확인합니다.
+
+Worker shadow/smoke/cutover 동안 최초 attestation의 6시간 기한이 지나면 `apply-lockdown` 전에 attestation을 갱신합니다. 갱신 run은 같은 SHA·project·track이어야 하며, original expand evidence와 keyed row-count·보호 데이터 HMAC이 같아야 합니다. Catalog HMAC은 expand 전후에 달라질 수 있으므로 original과 renewal 사이에서 비교하지 않고 각 attestation과 그 직후 current DB 사이에서만 비교합니다. Database artifact는 original과 renewal run ID 및 keyed hashes를 별도 필드로 보존합니다. 다른 target, track, operation과 staging 기반 production 전환은 기존 backup/PITR 및 staging evidence gate를 그대로 사용합니다.
 
 승인 환경이 보관하는 배포 자격 증명:
 
@@ -166,7 +173,7 @@ DB와 Worker workflow의 `release_track`/`database_release_track`은 같은 값�
 
 `pre-lockdown`과 `post-lockdown`은 선택한 release track을 기준으로 판정합니다. `prompt-privacy`의 pre-lockdown은 backend 쓰기 권한이 이미 회수되고 safe view가 설치됐지만 raw prompt read가 아직 유지된 상태이며, post-lockdown은 raw prompt read까지 회수된 상태입니다.
 
-`prompt-privacy` lockdown은 과거 방의 초기 상황·위치·관계·월드 용어 캐시와 첫 assistant 인사 메시지도 안전한 기본값으로 교체합니다. 권한 rollback은 이 데이터를 복원하지 않으므로, `prompt-privacy:apply-lockdown`은 적용 시점부터 6시간 이내에 생성된 동일 commit·target·project의 승인된 backup evidence를 필수로 검증합니다.
+`prompt-privacy` lockdown은 과거 방의 초기 상황·위치·관계·월드 용어 캐시와 첫 assistant 인사 메시지도 안전한 기본값으로 교체합니다. 일반 경로의 `prompt-privacy:apply-lockdown`은 적용 시점부터 6시간 이내에 생성된 동일 commit·target·project의 승인된 physical backup evidence를 필수로 검증합니다. Prelaunch direct 경로만 같은 6시간 제한의 attestation으로 이 gate를 대체합니다. Migration은 scrub 전에 `vmate_private.prompt_lockdown_room_state_backup_20260729`와 `vmate_private.prompt_lockdown_greeting_backup_20260729`를 만들고, `vmate_private.prompt_lockdown_backup_manifest_20260729`에 두 backup의 count, ordered key+room-version hash, payload hash를 고정합니다. Source parity는 같은 transaction에서 scrub 전에 검증합니다. 적용 후 source는 의도적으로 달라지므로 workflow는 source parity를 다시 요구하지 않고 immutable manifest와 backup count/hash, `PUBLIC`·`anon`·`authenticated`·`service_role`의 schema/table 권한 부재만 검증합니다. 이 logical backup은 database owner용 복구 자료이며 자동 rollback이나 physical backup을 대체하는 일반 경로가 아닙니다. 복구가 필요하면 database owner 세션에서 manifest parity를 먼저 확인하고, migration 하단의 conditional forward-restore transaction을 사용해 scrub sentinel과 `room_version_before + 1` 상태가 그대로인 행만 복원한 뒤 version fence가 `room_version_before + 2`인지 검증합니다.
 
 `backend-stabilization` read-only baseline으로 cutover한 version은 이미 post-lockdown DB에서 검증된 복원 대상입니다. 이 version을 복원할 때는 `rollback_mode: post-lockdown`과 baseline-backed cutover evidence를 사용하고 `lockdown_evidence_run_id`는 비워 둡니다. Expand-backed cutover의 post-lockdown 복원은 기존처럼 그 cutover에 결속된 lockdown evidence가 필요합니다.
 

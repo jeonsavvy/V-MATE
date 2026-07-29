@@ -58,12 +58,6 @@ jobs:
       EXPECTED_WRANGLER_ENV: ${{ vars.WRANGLER_ENV }}
       PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_WORKER_BASE_URL }}
       PRODUCTION_WORKER_NAME: ${{ vars.PRODUCTION_WORKER_NAME }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      GH_TOKEN: ${{ github.token }}
 
     steps:
       - uses: actions/checkout@v6
@@ -76,7 +70,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Validate staging-only target and secret presence
+      - name: Validate staging-only target
         shell: bash
         run: |
           set -euo pipefail
@@ -90,9 +84,10 @@ jobs:
           [[ "$origin" == "$expected" && "$origin" != "$production" ]] || { echo '::error::staging origin guard mismatch'; exit 1; }
           [[ "$WORKER_NAME" == "$EXPECTED_WORKER_NAME" && "$WORKER_NAME" != "$PRODUCTION_WORKER_NAME" ]] || { echo '::error::staging Worker guard mismatch'; exit 1; }
           [[ "$WORKER_VERSION_ID" =~ ^[A-Za-z0-9_-]+$ && "$EXPAND_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::version or expand evidence input is invalid'; exit 1; }
-          [[ -n "$CLOUDFLARE_API_TOKEN" && -n "$CLOUDFLARE_ACCOUNT_ID" && -n "$SUPABASE_URL" && -n "$SUPABASE_ANON_KEY" && -n "$SUPABASE_SERVICE_ROLE_KEY" ]] || { echo '::error::required staging secret is not configured'; exit 1; }
 
       - name: Verify matching expand evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -121,9 +116,13 @@ jobs:
           NODE
 
       - name: Prove selected Worker remains at zero traffic
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         shell: bash
         run: |
           set -euo pipefail
+          [[ -n "$CLOUDFLARE_API_TOKEN" && -n "$CLOUDFLARE_ACCOUNT_ID" ]] || { echo '::error::required staging Cloudflare credential is not configured'; exit 1; }
           npx --no-install wrangler deployments status --env "$EXPECTED_WRANGLER_ENV" --name "$WORKER_NAME" --json > deployment.json
           node <<'NODE'
           const source = JSON.parse(require('node:fs').readFileSync('deployment.json', 'utf8'));
@@ -132,9 +131,14 @@ jobs:
           NODE
 
       - name: Run approved synthetic A/B smoke through the zero-traffic override
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         shell: bash
         run: |
           set -euo pipefail
+          [[ -n "$SUPABASE_URL" && -n "$SUPABASE_ANON_KEY" && -n "$SUPABASE_SERVICE_ROLE_KEY" ]] || { echo '::error::required staging Supabase HTTP credential is not configured'; exit 1; }
           mkdir -p private-artifacts artifacts
           node scripts/staging-synthetic-smoke.mjs --base-url "$BASE_URL" --project-ref "$PROJECT_REF" --worker-name "$WORKER_NAME" --version-id "$WORKER_VERSION_ID" --output private-artifacts/result.json --confirm-staging-writes true
 

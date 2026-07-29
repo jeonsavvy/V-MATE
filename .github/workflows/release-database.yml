@@ -31,7 +31,7 @@ on:
         required: false
         type: string
       backup_evidence_run_id:
-        description: Required before apply-expand and prompt-privacy apply-lockdown; GitHub run containing approved backup readiness evidence
+        description: Required before apply-expand and prompt-privacy apply-lockdown except the approved production prompt-privacy prelaunch path
         required: false
         type: string
       synthetic_evidence_run_id:
@@ -39,7 +39,11 @@ on:
         required: false
         type: string
       staging_privilege_evidence_run_id:
-        description: Required before production apply-expand; completed staging post-lockdown privilege smoke for this commit
+        description: Standard path before production apply-expand; completed staging post-lockdown privilege smoke for this commit
+        required: false
+        type: string
+      prelaunch_evidence_run_id:
+        description: Prelaunch-only current attestation; apply-lockdown may renew the original expand attestation within six hours
         required: false
         type: string
 
@@ -68,6 +72,7 @@ jobs:
       BACKUP_EVIDENCE_RUN_ID: ${{ inputs.backup_evidence_run_id }}
       SYNTHETIC_EVIDENCE_RUN_ID: ${{ inputs.synthetic_evidence_run_id }}
       STAGING_PRIVILEGE_EVIDENCE_RUN_ID: ${{ inputs.staging_privilege_evidence_run_id }}
+      PRELAUNCH_EVIDENCE_RUN_ID: ${{ inputs.prelaunch_evidence_run_id }}
       RELEASE_TRACK: ${{ inputs.release_track }}
 
     steps:
@@ -149,19 +154,42 @@ jobs:
             [[ "$WORKER_VERSION_ID" =~ ^[A-Za-z0-9_-]+$ ]] || { echo '::error::worker_version_id is required for lockdown'; exit 1; }
             [[ "$WORKER_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::worker_evidence_run_id is required for lockdown'; exit 1; }
           fi
+          prelaunch=false
+          [[ "$PRELAUNCH_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] && prelaunch=true
+          if [[ -n "$PRELAUNCH_EVIDENCE_RUN_ID" && "$prelaunch" != true ]]; then
+            echo '::error::prelaunch_evidence_run_id is not canonical'; exit 1
+          fi
+          if [[ "$prelaunch" == true && ! ( '${{ inputs.target }}' == 'production' && '${{ inputs.release_track }}' == 'prompt-privacy' && ( '${{ inputs.operation }}' == 'apply-expand' || '${{ inputs.operation }}' == 'apply-lockdown' ) ) ]]; then
+            echo '::error::prelaunch evidence is limited to production prompt-privacy apply operations'; exit 1
+          fi
           if [[ '${{ inputs.operation }}' == 'apply-expand' || ( '${{ inputs.release_track }}' == 'prompt-privacy' && '${{ inputs.operation }}' == 'apply-lockdown' ) ]]; then
-            [[ "$BACKUP_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::backup_evidence_run_id is required before apply-expand and prompt-privacy apply-lockdown'; exit 1; }
+            if [[ "$prelaunch" == true ]]; then
+              [[ -z "$BACKUP_EVIDENCE_RUN_ID" ]] || { echo '::error::prelaunch and physical backup evidence are mutually exclusive'; exit 1; }
+            else
+              [[ "$BACKUP_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::backup_evidence_run_id is required before apply-expand and prompt-privacy apply-lockdown unless the approved prelaunch path applies'; exit 1; }
+            fi
           fi
           if [[ '${{ inputs.target }}' == 'production' && '${{ inputs.operation }}' == 'apply-expand' ]]; then
-            [[ "$STAGING_PRIVILEGE_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::staging_privilege_evidence_run_id is required before production apply-expand'; exit 1; }
-            [[ "$STAGING_PROJECT_REF" =~ ^[a-z0-9]{8,32}$ && "$STAGING_PROJECT_REF" != "$PRODUCTION_PROJECT_REF" ]] || { echo '::error::staging project guard is not configured or is not distinct from production'; exit 1; }
+            staging=false
+            [[ "$STAGING_PRIVILEGE_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] && staging=true
+            if [[ -n "$STAGING_PRIVILEGE_EVIDENCE_RUN_ID" && "$staging" != true ]]; then
+              echo '::error::staging_privilege_evidence_run_id is not canonical'; exit 1
+            fi
+            if [[ '${{ inputs.release_track }}' == 'prompt-privacy' ]]; then
+              [[ "$staging" != "$prelaunch" ]] || { echo '::error::exactly one staging privilege or prelaunch evidence run is required'; exit 1; }
+            else
+              [[ "$prelaunch" == false && "$staging" == true ]] || { echo '::error::staging_privilege_evidence_run_id is required before production apply-expand'; exit 1; }
+            fi
+            if [[ "$staging" == true ]]; then
+              [[ "$STAGING_PROJECT_REF" =~ ^[a-z0-9]{8,32}$ && "$STAGING_PROJECT_REF" != "$PRODUCTION_PROJECT_REF" ]] || { echo '::error::staging project guard is not configured or is not distinct from production'; exit 1; }
+            fi
           fi
           if [[ '${{ inputs.target }}' == 'staging' && '${{ inputs.operation }}' == 'apply-lockdown' ]]; then
             [[ "$SYNTHETIC_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::synthetic_evidence_run_id is required before staging apply-lockdown'; exit 1; }
           fi
 
       - name: Verify approved backup readiness before expand or prompt privacy lockdown
-        if: ${{ inputs.operation == 'apply-expand' || (inputs.release_track == 'prompt-privacy' && inputs.operation == 'apply-lockdown') }}
+        if: ${{ (inputs.operation == 'apply-expand' || (inputs.release_track == 'prompt-privacy' && inputs.operation == 'apply-lockdown')) && inputs.prelaunch_evidence_run_id == '' }}
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -196,8 +224,84 @@ jobs:
           if (!valid) process.exit(1);
           NODE
 
+      - name: Verify fresh production prelaunch attestation
+        if: ${{ inputs.target == 'production' && inputs.release_track == 'prompt-privacy' && (inputs.operation == 'apply-expand' || inputs.operation == 'apply-lockdown') && inputs.prelaunch_evidence_run_id != '' }}
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/prelaunch-attestation
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PRELAUNCH_EVIDENCE_RUN_ID" > artifacts/prelaunch-attestation/run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release-prelaunch-attestation.yml" > artifacts/prelaunch-attestation/workflow.json
+          gh run download "$PRELAUNCH_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "prelaunch-attestation-evidence-production-$PRELAUNCH_EVIDENCE_RUN_ID" --dir artifacts/prelaunch-attestation
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const files = [];
+          const walk = (directory) => fs.readdirSync(directory, { withFileTypes: true }).forEach((entry) => {
+            const item = path.join(directory, entry.name);
+            if (entry.isDirectory()) walk(item); else if (entry.name === 'prelaunch-attestation-evidence.json') files.push(item);
+          });
+          walk('artifacts/prelaunch-attestation');
+          if (files.length !== 1) process.exit(1);
+          const evidence = JSON.parse(fs.readFileSync(files[0], 'utf8'));
+          const run = JSON.parse(fs.readFileSync('artifacts/prelaunch-attestation/run.json', 'utf8'));
+          const workflow = JSON.parse(fs.readFileSync('artifacts/prelaunch-attestation/workflow.json', 'utf8'));
+          const expectedPath = '.github/workflows/release-prelaunch-attestation.yml';
+          const expectedKeys = [
+            'allPassed', 'attestedAt', 'catalogStateCaptured', 'catalogStateHash',
+            'commit', 'defaultBranchCiPassed', 'operation',
+            'prelaunchDirectApproved', 'productionProjectGuardPassed', 'projectRefHash',
+            'protectedStateCaptured', 'protectedStateHash', 'queryMode', 'releaseTrack',
+            'rowCountHash', 'rowCountSnapshotCaptured', 'schemaVersion', 'target',
+          ];
+          const exactShape = JSON.stringify(Object.keys(evidence).sort()) === JSON.stringify(expectedKeys.sort());
+          const refHash = crypto.createHash('sha256').update(process.env.PROJECT_REF).digest('hex');
+          const attestedAt = Date.parse(evidence.attestedAt || '');
+          const fresh = Number.isFinite(attestedAt)
+            && Date.now() >= attestedAt
+            && Date.now() - attestedAt <= 6 * 60 * 60 * 1000;
+          const runBound = run.id === Number(process.env.PRELAUNCH_EVIDENCE_RUN_ID)
+            && run.conclusion === 'success'
+            && run.status === 'completed'
+            && run.event === 'workflow_dispatch'
+            && run.head_sha === process.env.GITHUB_SHA
+            && run.head_branch === process.env.DEFAULT_BRANCH
+            && run.path === expectedPath
+            && workflow.path === expectedPath
+            && run.workflow_id === workflow.id;
+          const valid = exactShape
+            && runBound
+            && evidence.schemaVersion === 2
+            && evidence.target === 'production'
+            && evidence.operation === 'prelaunch-direct-attestation'
+            && evidence.queryMode === 'supabase_read_only_user'
+            && evidence.releaseTrack === 'prompt-privacy'
+            && evidence.commit === process.env.GITHUB_SHA
+            && evidence.projectRefHash === refHash
+            && /^[a-f0-9]{64}$/.test(String(evidence.catalogStateHash || ''))
+            && /^[a-f0-9]{64}$/.test(String(evidence.rowCountHash || ''))
+            && /^[a-f0-9]{64}$/.test(String(evidence.protectedStateHash || ''))
+            && evidence.catalogStateCaptured === true
+            && evidence.rowCountSnapshotCaptured === true
+            && evidence.protectedStateCaptured === true
+            && evidence.prelaunchDirectApproved === true
+            && evidence.productionProjectGuardPassed === true
+            && evidence.defaultBranchCiPassed === true
+            && evidence.allPassed === true
+            && fresh;
+          if (!valid) process.exit(1);
+          fs.appendFileSync(
+            process.env.GITHUB_ENV,
+            `PRELAUNCH_CURRENT_CATALOG_STATE_HASH=${evidence.catalogStateHash}\nPRELAUNCH_CURRENT_ROW_COUNT_HASH=${evidence.rowCountHash}\nPRELAUNCH_CURRENT_PROTECTED_STATE_HASH=${evidence.protectedStateHash}\n`,
+          );
+          NODE
+
       - name: Verify successful staging post-lockdown privilege smoke before production expand
-        if: ${{ inputs.target == 'production' && inputs.operation == 'apply-expand' }}
+        if: ${{ inputs.target == 'production' && inputs.operation == 'apply-expand' && inputs.staging_privilege_evidence_run_id != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -290,6 +394,7 @@ jobs:
       - name: Verify compatible Worker cutover evidence before lockdown
         if: ${{ inputs.operation == 'apply-lockdown' }}
         env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
@@ -324,6 +429,7 @@ jobs:
             && run.status === 'completed'
             && run.event === 'workflow_dispatch'
             && run.head_sha === process.env.GITHUB_SHA
+            && run.head_branch === process.env.DEFAULT_BRANCH
             && run.path === expectedWorkflowPath
             && workflow.path === expectedWorkflowPath
             && run.workflow_id === workflow.id;
@@ -363,6 +469,134 @@ jobs:
             process.env.GITHUB_ENV,
             `LOCKDOWN_EXPAND_EVIDENCE_RUN_ID=${evidence.expandEvidenceRunId}\nLOCKDOWN_PREVIOUS_STABLE_VERSION_ID=${evidence.previousStableVersionId}\n`,
           );
+          NODE
+
+      - name: Verify prelaunch evidence matches the production expand chain
+        if: ${{ inputs.target == 'production' && inputs.release_track == 'prompt-privacy' && inputs.operation == 'apply-lockdown' && inputs.prelaunch_evidence_run_id != '' }}
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/prelaunch-expand
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$LOCKDOWN_EXPAND_EVIDENCE_RUN_ID" > artifacts/prelaunch-expand/run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release-database.yml" > artifacts/prelaunch-expand/workflow.json
+          node <<'NODE'
+          const fs = require('node:fs');
+          const run = JSON.parse(fs.readFileSync('artifacts/prelaunch-expand/run.json', 'utf8'));
+          const workflow = JSON.parse(fs.readFileSync('artifacts/prelaunch-expand/workflow.json', 'utf8'));
+          const expectedPath = '.github/workflows/release-database.yml';
+          const runBound = run.id === Number(process.env.LOCKDOWN_EXPAND_EVIDENCE_RUN_ID)
+            && run.conclusion === 'success'
+            && run.status === 'completed'
+            && run.event === 'workflow_dispatch'
+            && run.head_sha === process.env.GITHUB_SHA
+            && run.head_branch === process.env.DEFAULT_BRANCH
+            && run.path === expectedPath
+            && workflow.path === expectedPath
+            && run.workflow_id === workflow.id;
+          if (!runBound) throw new Error('Expand evidence run metadata is not bound to release-database on this default-branch commit.');
+          NODE
+          gh run download "$LOCKDOWN_EXPAND_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "database-release-evidence-production-$LOCKDOWN_EXPAND_EVIDENCE_RUN_ID" --dir artifacts/prelaunch-expand
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const files = [];
+          const walk = (directory) => fs.readdirSync(directory, { withFileTypes: true }).forEach((entry) => {
+            const item = path.join(directory, entry.name);
+            if (entry.isDirectory()) walk(item); else if (entry.name === 'database-release-evidence.json') files.push(item);
+          });
+          walk('artifacts/prelaunch-expand');
+          if (files.length !== 1) process.exit(1);
+          const evidence = JSON.parse(fs.readFileSync(files[0], 'utf8'));
+          const refHash = crypto.createHash('sha256').update(process.env.PROJECT_REF).digest('hex');
+          const valid = evidence.schemaVersion === 3
+            && evidence.target === 'production'
+            && evidence.operation === 'apply-expand'
+            && evidence.releaseTrack === 'prompt-privacy'
+            && evidence.migration === '20260729000000_prompt_read_views_expand.sql'
+            && evidence.commit === process.env.GITHUB_SHA
+            && evidence.projectRefHash === refHash
+            && /^[0-9]+$/.test(String(evidence.prelaunchOriginalEvidenceRunId || ''))
+            && evidence.prelaunchRenewalEvidenceRunId === null
+            && /^[a-f0-9]{64}$/.test(String(evidence.prelaunchOriginalCatalogStateHash || ''))
+            && evidence.prelaunchOriginalRowCountHash === process.env.PRELAUNCH_CURRENT_ROW_COUNT_HASH
+            && evidence.prelaunchOriginalProtectedStateHash === process.env.PRELAUNCH_CURRENT_PROTECTED_STATE_HASH
+            && evidence.backupEvidenceRunId === null
+            && Number.isFinite(Date.parse(evidence.appliedAt || ''));
+          if (!valid) process.exit(1);
+          fs.appendFileSync(
+            process.env.GITHUB_ENV,
+            `PRELAUNCH_ORIGINAL_EVIDENCE_RUN_ID=${evidence.prelaunchOriginalEvidenceRunId}\nPRELAUNCH_ORIGINAL_CATALOG_STATE_HASH=${evidence.prelaunchOriginalCatalogStateHash}\nPRELAUNCH_ORIGINAL_ROW_COUNT_HASH=${evidence.prelaunchOriginalRowCountHash}\nPRELAUNCH_ORIGINAL_PROTECTED_STATE_HASH=${evidence.prelaunchOriginalProtectedStateHash}\n`,
+          );
+          NODE
+
+      - name: Verify prompt privacy logical backup source contract
+        if: ${{ inputs.release_track == 'prompt-privacy' && (inputs.operation == 'dry-run-lockdown' || inputs.operation == 'apply-lockdown') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+          const source = fs.readFileSync('supabase/migrations/20260729010000_private_prompt_reads_lockdown.sql', 'utf8');
+          const normalized = source.replace(/--[^\n]*/g, ' ').replace(/\s+/g, ' ').toLowerCase();
+          const schema = 'vmate_private';
+          const stateTable = `${schema}.prompt_lockdown_room_state_backup_20260729`;
+          const greetingTable = `${schema}.prompt_lockdown_greeting_backup_20260729`;
+          const manifestTable = `${schema}.prompt_lockdown_backup_manifest_20260729`;
+          const tableBlock = (table) => normalized.match(new RegExp(`create table ${table.replaceAll('.', '\\.')} \\((.*?)\\);`))?.[1] || '';
+          const stateBlock = tableBlock(stateTable);
+          const greetingBlock = tableBlock(greetingTable);
+          const manifestBlock = tableBlock(manifestTable);
+          const requireColumns = (block, columns, label) => {
+            if (!block || !columns.every((column) => new RegExp(`\\b${column}\\b`).test(block))) {
+              throw new Error(`${label} logical backup columns are incomplete.`);
+            }
+          };
+          requireColumns(stateBlock, ['room_id', 'room_version_before', 'current_situation', 'location', 'relationship_state', 'world_notes_json', 'updated_at'], 'Room state');
+          requireColumns(greetingBlock, ['message_id', 'room_id', 'room_version_before', 'role', 'sequence_no', 'content_json'], 'Greeting');
+          requireColumns(manifestBlock, [
+            'singleton', 'state_count', 'greeting_count', 'state_key_version_hash',
+            'greeting_key_version_hash', 'state_payload_hash', 'greeting_payload_hash', 'captured_at',
+          ], 'Manifest');
+          if (!/\broom_id\b[^,)]*\bprimary key\b|\bprimary key\s*\(\s*room_id\s*\)/.test(stateBlock)) throw new Error('Room state logical backup primary key is absent.');
+          if (!/\bmessage_id\b[^,)]*\bprimary key\b|\bprimary key\s*\(\s*message_id\s*\)/.test(greetingBlock)) throw new Error('Greeting logical backup primary key is absent.');
+          const stateInsert = normalized.indexOf(`insert into ${stateTable}`);
+          const greetingInsert = normalized.indexOf(`insert into ${greetingTable}`);
+          const manifestInsert = normalized.indexOf(`insert into ${manifestTable}`);
+          const stateUpdate = normalized.indexOf('update public.room_state_summaries');
+          const greetingUpdate = normalized.indexOf('update public.room_messages');
+          if (!(stateInsert >= 0 && stateInsert < stateUpdate
+            && greetingInsert >= 0 && greetingInsert < greetingUpdate
+            && manifestInsert > stateInsert && manifestInsert > greetingInsert
+            && manifestInsert < stateUpdate && manifestInsert < greetingUpdate)) {
+            throw new Error('Logical backups must be populated before destructive prompt scrubbing.');
+          }
+          const stateGuard = normalized.slice(stateInsert, stateUpdate);
+          const greetingGuard = normalized.slice(greetingInsert, greetingUpdate);
+          if (!stateGuard.includes('raise exception') || !stateGuard.includes('public.room_state_summaries') || stateGuard.split(stateTable).length < 3) {
+            throw new Error('Room state source-key backup guard is absent.');
+          }
+          if (!greetingGuard.includes('raise exception') || !greetingGuard.includes('public.room_messages') || greetingGuard.split(greetingTable).length < 3) {
+            throw new Error('Greeting source-key backup guard is absent.');
+          }
+          if (!normalized.includes('prompt_lockdown_manifest_update_delete_guard_20260729')
+            || !normalized.includes('prompt_lockdown_manifest_truncate_guard_20260729')
+            || !normalized.includes('prompt lockdown backup manifest is immutable')) {
+            throw new Error('Immutable logical backup manifest guards are absent.');
+          }
+          for (const table of [stateTable, greetingTable, manifestTable]) {
+            for (const role of ['public', 'anon', 'authenticated', 'service_role']) {
+              const denied = new RegExp(`revoke all on table[\\s\\S]{0,700}${table.replaceAll('.', '\\.')}[\\s\\S]{0,700}from[\\s\\S]{0,200}\\b${role}\\b`).test(normalized);
+              if (!denied) throw new Error(`Logical backup table denial is absent for ${role}.`);
+            }
+          }
+          for (const role of ['public', 'anon', 'authenticated', 'service_role']) {
+            const denied = new RegExp(`revoke all on schema ${schema} from[\\s\\S]{0,200}\\b${role}\\b`).test(normalized);
+            if (!denied) throw new Error(`Private schema denial is absent for ${role}.`);
+          }
           NODE
 
       - name: Build migration chain through selected stage
@@ -548,11 +782,219 @@ jobs:
           }
           NODE
 
+      - name: Recheck prelaunch data and catalog immediately before apply
+        if: ${{ startsWith(inputs.operation, 'apply-') && inputs.prelaunch_evidence_run_id != '' }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$SUPABASE_ACCESS_TOKEN" ]] || { echo '::error::Database read credential is not configured'; exit 1; }
+          workdir=$(mktemp -d "$RUNNER_TEMP/vmate-prelaunch-current-XXXXXX")
+          trap 'rm -rf -- "$workdir"' EXIT
+          node scripts/run-supabase-read-only-query.mjs --project-ref "$PROJECT_REF" --sql-file scripts/capture-release-state.sql --output "$workdir/release-state.json"
+          node scripts/run-supabase-read-only-query.mjs --project-ref "$PROJECT_REF" --sql-file scripts/capture-migration-state.sql --output "$workdir/migration-state.json"
+          node scripts/run-supabase-read-only-query.mjs --project-ref "$PROJECT_REF" --sql-file scripts/capture-prelaunch-row-counts.sql --output "$workdir/row-counts.json"
+          node scripts/run-supabase-read-only-query.mjs --project-ref "$PROJECT_REF" --sql-file scripts/capture-prelaunch-protected-state.sql --output "$workdir/protected-state.json"
+          node - "$workdir" <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const workdir = process.argv[2];
+          const readJson = (file) => JSON.parse(fs.readFileSync(path.join(workdir, file), 'utf8'));
+          const firstRow = (value) => Array.isArray(value)
+            ? value[0]
+            : Array.isArray(value?.data)
+              ? value.data[0]
+              : Array.isArray(value?.result)
+                ? value.result[0]
+                : value && typeof value === 'object'
+                  ? value
+                  : undefined;
+          const release = firstRow(readJson('release-state.json'));
+          const migration = firstRow(readJson('migration-state.json'));
+          const counts = firstRow(readJson('row-counts.json'))?.row_counts;
+          const protectedState = firstRow(readJson('protected-state.json'));
+          const expectedTables = [
+            'account_storage_cleanup_fences', 'app_settings', 'auth_users', 'bookmarks', 'character_assets',
+            'characters', 'chat_messages', 'chat_usage_daily', 'chat_usage_events',
+            'content_moderation', 'content_moderation_actions', 'content_reports', 'owner_users',
+            'profiles', 'recent_views', 'room_messages', 'room_state_summaries', 'rooms',
+            'storage_deletion_outbox', 'storage_objects', 'world_assets', 'worlds',
+          ];
+          const canonicalFingerprint = (value) => /^[a-f0-9]{32}$/.test(String(value || ''));
+          if (!canonicalFingerprint(release?.release_state_fingerprint)
+            || !canonicalFingerprint(migration?.migration_rows_fingerprint)
+            || !canonicalFingerprint(protectedState?.protected_state_fingerprint)
+            || !counts || typeof counts !== 'object' || Array.isArray(counts)
+            || JSON.stringify(Object.keys(counts).sort()) !== JSON.stringify([...expectedTables].sort())
+            || !expectedTables.every((table) => Number.isSafeInteger(Number(counts[table])) && Number(counts[table]) >= 0)) {
+            throw new Error('Current prelaunch fingerprint result is invalid.');
+          }
+          const canonicalCounts = Object.fromEntries(expectedTables.sort().map((table) => [table, String(counts[table])]));
+          const hmac = (value) => crypto.createHmac('sha256', process.env.SUPABASE_ACCESS_TOKEN).update(value).digest('hex');
+          const current = {
+            catalog: hmac(JSON.stringify([release.release_state_fingerprint, migration.migration_rows_fingerprint])),
+            rows: hmac(JSON.stringify(canonicalCounts)),
+            protectedState: hmac(protectedState.protected_state_fingerprint),
+          };
+          const unchanged = current.catalog === process.env.PRELAUNCH_CURRENT_CATALOG_STATE_HASH
+            && current.rows === process.env.PRELAUNCH_CURRENT_ROW_COUNT_HASH
+            && current.protectedState === process.env.PRELAUNCH_CURRENT_PROTECTED_STATE_HASH;
+          if (!unchanged) throw new Error('Production database changed after the current prelaunch attestation; renew attestation before applying.');
+          fs.appendFileSync(process.env.GITHUB_ENV, 'PRELAUNCH_DRIFT_VERIFIED=true\n');
+          NODE
+
       - name: Apply exactly the approved migration stage
         if: ${{ startsWith(inputs.operation, 'apply-') }}
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
         run: npx --no-install supabase db push --workdir "$SUPABASE_WORKDIR" --linked
+
+      - name: Verify immutable prompt backup manifest and role denial after lockdown
+        if: ${{ inputs.release_track == 'prompt-privacy' && inputs.operation == 'apply-lockdown' }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$SUPABASE_WORKDIR/verify_prompt_logical_backups.sql" <<'SQL'
+          begin;
+          do $$
+          declare
+            manifest vmate_private.prompt_lockdown_backup_manifest_20260729%rowtype;
+            backup_state_count bigint;
+            backup_greeting_count bigint;
+            backup_state_hash text;
+            backup_greeting_hash text;
+            backup_state_payload_hash text;
+            backup_greeting_payload_hash text;
+          begin
+            if to_regclass('vmate_private.prompt_lockdown_room_state_backup_20260729') is null
+              or to_regclass('vmate_private.prompt_lockdown_greeting_backup_20260729') is null
+              or to_regclass('vmate_private.prompt_lockdown_backup_manifest_20260729') is null then
+              raise exception 'prompt logical backup contract is absent';
+            end if;
+            if (select count(*) from vmate_private.prompt_lockdown_backup_manifest_20260729) <> 1 then
+              raise exception 'prompt logical backup manifest cardinality mismatch';
+            end if;
+            select * into strict manifest
+            from vmate_private.prompt_lockdown_backup_manifest_20260729
+            where singleton;
+            select
+              count(*),
+              encode(sha256(convert_to(coalesce(string_agg(
+                backup.room_id::text || ':' || backup.room_version_before::text,
+                E'\n' order by backup.room_id
+              ), ''), 'UTF8')), 'hex')
+            into backup_state_count, backup_state_hash
+            from vmate_private.prompt_lockdown_room_state_backup_20260729 backup;
+            select
+              count(*),
+              encode(sha256(convert_to(coalesce(string_agg(
+                backup.message_id::text || ':' || backup.room_id::text || ':'
+                  || backup.room_version_before::text,
+                E'\n' order by backup.message_id
+              ), ''), 'UTF8')), 'hex')
+            into backup_greeting_count, backup_greeting_hash
+            from vmate_private.prompt_lockdown_greeting_backup_20260729 backup;
+            select encode(sha256(convert_to(coalesce(string_agg(
+              jsonb_build_array(
+                backup.room_id::text,
+                backup.room_version_before,
+                backup.current_situation,
+                backup.location,
+                backup.relationship_state,
+                backup.world_notes_json,
+                extract(epoch from backup.updated_at)
+              )::text,
+              E'\n' order by backup.room_id
+            ), ''), 'UTF8')), 'hex')
+            into backup_state_payload_hash
+            from vmate_private.prompt_lockdown_room_state_backup_20260729 backup;
+            select encode(sha256(convert_to(coalesce(string_agg(
+              jsonb_build_array(
+                backup.message_id::text,
+                backup.room_id::text,
+                backup.room_version_before,
+                backup.role,
+                backup.sequence_no,
+                backup.content_json
+              )::text,
+              E'\n' order by backup.message_id
+            ), ''), 'UTF8')), 'hex')
+            into backup_greeting_payload_hash
+            from vmate_private.prompt_lockdown_greeting_backup_20260729 backup;
+            if manifest.state_count is distinct from backup_state_count
+              or manifest.greeting_count is distinct from backup_greeting_count
+              or manifest.state_key_version_hash is distinct from backup_state_hash
+              or manifest.greeting_key_version_hash is distinct from backup_greeting_hash
+              or manifest.state_payload_hash is distinct from backup_state_payload_hash
+              or manifest.greeting_payload_hash is distinct from backup_greeting_payload_hash
+              or manifest.captured_at is null then
+              raise exception 'prompt logical backup manifest parity failed';
+            end if;
+            if not exists (
+              select 1
+              from pg_catalog.pg_trigger trigger_record
+              join pg_catalog.pg_class relation on relation.oid = trigger_record.tgrelid
+              join pg_catalog.pg_namespace namespace on namespace.oid = relation.relnamespace
+              where namespace.nspname = 'vmate_private'
+                and relation.relname = 'prompt_lockdown_backup_manifest_20260729'
+                and trigger_record.tgname = 'prompt_lockdown_manifest_update_delete_guard_20260729'
+                and not trigger_record.tgisinternal
+                and trigger_record.tgenabled <> 'D'
+            ) or not exists (
+              select 1
+              from pg_catalog.pg_trigger trigger_record
+              join pg_catalog.pg_class relation on relation.oid = trigger_record.tgrelid
+              join pg_catalog.pg_namespace namespace on namespace.oid = relation.relnamespace
+              where namespace.nspname = 'vmate_private'
+                and relation.relname = 'prompt_lockdown_backup_manifest_20260729'
+                and trigger_record.tgname = 'prompt_lockdown_manifest_truncate_guard_20260729'
+                and not trigger_record.tgisinternal
+                and trigger_record.tgenabled <> 'D'
+            ) then raise exception 'prompt logical backup manifest immutability guard is absent'; end if;
+            if exists (
+              select 1
+              from pg_catalog.pg_class relation
+              join pg_catalog.pg_namespace namespace on namespace.oid = relation.relnamespace
+              cross join lateral pg_catalog.aclexplode(coalesce(relation.relacl, pg_catalog.acldefault('r', relation.relowner))) privilege
+              where namespace.nspname = 'vmate_private'
+                and relation.relname in (
+                  'prompt_lockdown_room_state_backup_20260729',
+                  'prompt_lockdown_greeting_backup_20260729',
+                  'prompt_lockdown_backup_manifest_20260729'
+                )
+                and privilege.grantee = 0
+            ) then raise exception 'PUBLIC retains a prompt logical backup table privilege'; end if;
+            if exists (
+              select 1
+              from pg_catalog.unnest(array['anon', 'authenticated', 'service_role']) roles(role_name)
+              cross join pg_catalog.unnest(array[
+                'vmate_private.prompt_lockdown_room_state_backup_20260729',
+                'vmate_private.prompt_lockdown_greeting_backup_20260729',
+                'vmate_private.prompt_lockdown_backup_manifest_20260729'
+              ]) relations(relation_name)
+              cross join pg_catalog.unnest(array['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER']) privileges(privilege_name)
+              where pg_catalog.has_table_privilege(roles.role_name, relations.relation_name, privileges.privilege_name)
+            ) then raise exception 'an API role retains a prompt logical backup table privilege'; end if;
+            if exists (
+              select 1
+              from pg_catalog.pg_namespace namespace
+              cross join lateral pg_catalog.aclexplode(coalesce(namespace.nspacl, pg_catalog.acldefault('n', namespace.nspowner))) privilege
+              where namespace.nspname = 'vmate_private' and privilege.grantee = 0
+            ) then raise exception 'PUBLIC retains a prompt logical backup schema privilege'; end if;
+            if exists (
+              select 1
+              from pg_catalog.unnest(array['anon', 'authenticated', 'service_role']) roles(role_name)
+              cross join pg_catalog.unnest(array['USAGE', 'CREATE']) privileges(privilege_name)
+              where pg_catalog.has_schema_privilege(roles.role_name, 'vmate_private', privileges.privilege_name)
+            ) then raise exception 'an API role retains a prompt logical backup schema privilege'; end if;
+          end $$;
+          rollback;
+          SQL
+          npx --no-install supabase db query --workdir "$SUPABASE_WORKDIR" --linked --file "$SUPABASE_WORKDIR/verify_prompt_logical_backups.sql" > /dev/null
 
       - name: Verify complete service-only v2 RPC contract after apply
         if: ${{ startsWith(inputs.operation, 'apply-') }}
@@ -638,8 +1080,16 @@ jobs:
           const fs = require('node:fs');
           const operation = '${{ inputs.operation }}';
           const applied = operation.startsWith('apply-');
-          const backupRequired = operation === 'apply-expand'
-            || (process.env.RELEASE_TRACK === 'prompt-privacy' && operation === 'apply-lockdown');
+          const prelaunch = /^[0-9]+$/.test(process.env.PRELAUNCH_EVIDENCE_RUN_ID || '');
+          const prelaunchEligible = '${{ inputs.target }}' === 'production'
+            && process.env.RELEASE_TRACK === 'prompt-privacy'
+            && (operation === 'apply-expand' || operation === 'apply-lockdown');
+          if (prelaunch && !prelaunchEligible) throw new Error('Prelaunch evidence is outside its approved scope.');
+          if (prelaunch && process.env.PRELAUNCH_DRIFT_VERIFIED !== 'true') {
+            throw new Error('Current prelaunch drift verification is absent.');
+          }
+          const backupRequired = !prelaunch && (operation === 'apply-expand'
+            || (process.env.RELEASE_TRACK === 'prompt-privacy' && operation === 'apply-lockdown'));
           if (backupRequired && !/^[0-9]+$/.test(process.env.BACKUP_EVIDENCE_RUN_ID || '')) {
             throw new Error('Required backup evidence run ID is absent.');
           }
@@ -652,6 +1102,31 @@ jobs:
           const stateFingerprint = stateMatches[0];
           const migrationStateMatches = fs.readFileSync(migrationStatePath, 'utf8').match(/\b[a-f0-9]{32}\b/g) || [];
           if (migrationStateMatches.length !== 1) throw new Error('Migration row fingerprint was not canonical.');
+          const prelaunchOriginalEvidenceRunId = prelaunch
+            ? operation === 'apply-expand'
+              ? process.env.PRELAUNCH_EVIDENCE_RUN_ID
+              : process.env.PRELAUNCH_ORIGINAL_EVIDENCE_RUN_ID
+            : null;
+          const prelaunchOriginalCatalogStateHash = prelaunch
+            ? operation === 'apply-expand'
+              ? process.env.PRELAUNCH_CURRENT_CATALOG_STATE_HASH
+              : process.env.PRELAUNCH_ORIGINAL_CATALOG_STATE_HASH
+            : null;
+          const prelaunchOriginalRowCountHash = prelaunch
+            ? operation === 'apply-expand'
+              ? process.env.PRELAUNCH_CURRENT_ROW_COUNT_HASH
+              : process.env.PRELAUNCH_ORIGINAL_ROW_COUNT_HASH
+            : null;
+          const prelaunchOriginalProtectedStateHash = prelaunch
+            ? operation === 'apply-expand'
+              ? process.env.PRELAUNCH_CURRENT_PROTECTED_STATE_HASH
+              : process.env.PRELAUNCH_ORIGINAL_PROTECTED_STATE_HASH
+            : null;
+          if (prelaunch && (!/^[0-9]+$/.test(String(prelaunchOriginalEvidenceRunId || ''))
+            || ![prelaunchOriginalCatalogStateHash, prelaunchOriginalRowCountHash, prelaunchOriginalProtectedStateHash]
+              .every((value) => /^[a-f0-9]{64}$/.test(String(value || ''))))) {
+            throw new Error('Original prelaunch evidence binding is incomplete.');
+          }
           const evidence = {
             schemaVersion: 3,
             target: '${{ inputs.target }}',
@@ -670,6 +1145,16 @@ jobs:
             previousStableWorkerVersionId: operation === 'apply-lockdown' ? process.env.LOCKDOWN_PREVIOUS_STABLE_VERSION_ID : null,
             expandEvidenceRunId: operation === 'apply-lockdown' ? process.env.LOCKDOWN_EXPAND_EVIDENCE_RUN_ID : null,
             backupEvidenceRunId: backupRequired ? process.env.BACKUP_EVIDENCE_RUN_ID : null,
+            prelaunchOriginalEvidenceRunId,
+            prelaunchRenewalEvidenceRunId: prelaunch && operation === 'apply-lockdown' ? process.env.PRELAUNCH_EVIDENCE_RUN_ID : null,
+            prelaunchOriginalCatalogStateHash,
+            prelaunchOriginalRowCountHash,
+            prelaunchOriginalProtectedStateHash,
+            prelaunchRenewalCatalogStateHash: prelaunch && operation === 'apply-lockdown' ? process.env.PRELAUNCH_CURRENT_CATALOG_STATE_HASH : null,
+            prelaunchRenewalRowCountHash: prelaunch && operation === 'apply-lockdown' ? process.env.PRELAUNCH_CURRENT_ROW_COUNT_HASH : null,
+            prelaunchRenewalProtectedStateHash: prelaunch && operation === 'apply-lockdown' ? process.env.PRELAUNCH_CURRENT_PROTECTED_STATE_HASH : null,
+            prelaunchDriftVerified: prelaunch ? true : null,
+            immutablePromptBackupManifestVerified: process.env.RELEASE_TRACK === 'prompt-privacy' && operation === 'apply-lockdown' ? true : null,
             syntheticEvidenceRunId: '${{ inputs.target }}' === 'staging' && '${{ inputs.operation }}' === 'apply-lockdown' ? process.env.SYNTHETIC_EVIDENCE_RUN_ID : null,
           };
           fs.writeFileSync('artifacts/database-release-evidence.json', `${JSON.stringify(evidence, null, 2)}\n`);

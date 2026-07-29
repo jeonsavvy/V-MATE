@@ -30,7 +30,6 @@ jobs:
     timeout-minutes: 15
     environment: ${{ inputs.target == 'production' && 'production-db-preflight' || 'staging-db-preflight' }}
     env:
-      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       PROJECT_REF: ${{ inputs.project_ref }}
       EXPECTED_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
       PRODUCTION_PROJECT_REF: ${{ vars.PRODUCTION_SUPABASE_PROJECT_REF }}
@@ -51,7 +50,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          [[ -n "$SUPABASE_ACCESS_TOKEN" ]] || { echo '::error::Database release credential is not configured'; exit 1; }
           [[ "$PROJECT_REF" =~ ^[a-z0-9]{8,32}$ && "$PROJECT_REF" == "$EXPECTED_PROJECT_REF" && "$PRODUCTION_PROJECT_REF" =~ ^[a-z0-9]{8,32}$ ]] || { echo '::error::database project guard mismatch'; exit 1; }
           if [[ '${{ inputs.target }}' == 'production' ]]; then
             [[ "$PROJECT_REF" == "$PRODUCTION_PROJECT_REF" && "$PITR_READINESS_APPROVED" == 'PITR_APPROVED' ]] || { echo '::error::production PITR readiness requires protected-environment approval'; exit 1; }
@@ -60,9 +58,12 @@ jobs:
           fi
 
       - name: Capture sanitized physical backup readiness metadata
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
+          [[ -n "$SUPABASE_ACCESS_TOKEN" ]] || { echo '::error::Database release credential is not configured'; exit 1; }
           mkdir -p private-artifacts artifacts
           trap 'rm -rf private-artifacts' EXIT
           # `supabase backups list` is read-only. Do not invoke `supabase backups restore` here.

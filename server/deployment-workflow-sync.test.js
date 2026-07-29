@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { runInNewContext } from 'node:vm';
+import { parseDocument } from 'yaml';
 import { runSupabaseReadOnlyQuery } from '../scripts/run-supabase-read-only-query.mjs';
+import { selectSupabaseProjectApiKeys } from '../scripts/select-supabase-project-api-keys.mjs';
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(dirname, '..');
@@ -11,9 +15,63 @@ const repoRoot = path.resolve(dirname, '..');
 const readUtf8 = async (relativePath) =>
   readFile(path.join(repoRoot, relativePath), 'utf8');
 
+test('release workflow credentials are absent from job and npm ci environments', async () => {
+  const releaseWorkflows = [
+    'release-backup-readiness.yml',
+    'release-database-baseline-attestation.yml',
+    'release-database.yml',
+    'release-prelaunch-attestation.yml',
+    'release-post-lockdown-observation.yml',
+    'release-post-lockdown-privilege-smoke.yml',
+    'release-staging-synthetic-smoke.yml',
+    'release-worker.yml',
+  ];
+  const credentialContext = /\$\{\{[\s\S]*?(?:\bsecrets(?:\.|\[)|\bgithub\.token\b)[\s\S]*?\}\}/i;
+  const credentialName = /(?:^|_)(?:TOKEN|SECRET|PASSWORD|CREDENTIALS?|KEY)(?:$|_)|^(?:SUPABASE_URL|CLOUDFLARE_ACCOUNT_ID)$/i;
+
+  for (const file of releaseWorkflows) {
+    const source = await readUtf8(`.github/workflows/${file}`);
+    const document = parseDocument(source, { uniqueKeys: true, version: '1.2' });
+    assert.deepEqual(document.errors, [], `${file} must parse as YAML`);
+    for (const [jobName, job] of Object.entries(document.toJS().jobs || {})) {
+      for (const [name, value] of Object.entries(job?.env || {})) {
+        assert.equal(credentialName.test(name) || credentialContext.test(String(value)), false, `${file} job ${jobName} env ${name}`);
+      }
+      for (const [stepIndex, step] of (job?.steps || []).entries()) {
+        if (typeof step?.run !== 'string' || !/\bnpm\s+ci\b/.test(step.run)) continue;
+        for (const [name, value] of Object.entries(step.env || {})) {
+          assert.equal(credentialName.test(name) || credentialContext.test(String(value)), false, `${file} npm ci step ${stepIndex + 1} env ${name}`);
+        }
+      }
+    }
+  }
+});
+
 test('github ci is read-only and Worker release requires a manual zero-traffic gate', async () => {
   const ci = await readUtf8('.github/workflows/ci.yml');
   const release = await readUtf8('.github/workflows/release-worker.yml');
+  const releaseWorkflow = parseDocument(release, { uniqueKeys: true, version: '1.2' }).toJS();
+  const shadowEvidenceStep = releaseWorkflow.jobs.release.steps.find(
+    (step) => step.name === 'Verify current-commit shadow upload and immutable version metadata',
+  );
+  const databaseEvidenceStep = releaseWorkflow.jobs.release.steps.find(
+    (step) => step.name === 'Verify matching database evidence before serving the new Worker',
+  );
+  const rollbackEvidenceStep = releaseWorkflow.jobs.release.steps.find(
+    (step) => step.name === 'Verify evidence-bound manual rollback target',
+  );
+  const captureBeforeStep = releaseWorkflow.jobs.release.steps.find(
+    (step) => step.name === 'Capture deployment before operation',
+  );
+  const uploadVersionStep = releaseWorkflow.jobs.release.steps.find(
+    (step) => step.name === 'Upload and register a zero-traffic Worker version',
+  );
+  const captureAfterStep = releaseWorkflow.jobs.release.steps.find(
+    (step) => step.name === 'Capture and verify deployment after operation',
+  );
+  const releaseEvidenceUpload = releaseWorkflow.jobs.release.steps.find(
+    (step) => step.name === 'Upload release evidence',
+  );
   const baseline = await readUtf8('.github/workflows/release-database-baseline-attestation.yml');
   const smoke = await readUtf8('scripts/smoke-release.mjs');
   const baselineAllowlist = baseline
@@ -115,12 +173,39 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(release, /AUTHORIZED_DOMAIN_RELEASE_SHA/);
   assert.match(release, /actions\/runs\/\$BASELINE_EVIDENCE_RUN_ID/);
   assert.match(release, /actions\/workflows\/release-database-baseline-attestation\.yml/);
+  assert.match(release, /actions\/runs\/\$EXPAND_EVIDENCE_RUN_ID/);
+  assert.match(release, /actions\/workflows\/release-database\.yml/);
+  assert.equal(releaseWorkflow.jobs.release.env.DEFAULT_BRANCH, '${{ github.event.repository.default_branch }}');
+  for (const binding of [
+    /run\.id === Number\(process\.env\.SHADOW_EVIDENCE_RUN_ID\)/,
+    /run\.conclusion === 'success'/,
+    /run\.status === 'completed'/,
+    /run\.event === 'workflow_dispatch'/,
+    /run\.head_sha === process\.env\.GITHUB_SHA/,
+    /run\.head_branch === process\.env\.DEFAULT_BRANCH/,
+    /run\.path === expectedPath/,
+    /workflow\.path === expectedPath/,
+    /run\.workflow_id === workflow\.id/,
+    /gh run download "\$SHADOW_EVIDENCE_RUN_ID"/,
+  ]) assert.match(shadowEvidenceStep.run, binding);
   assert.match(release, /run\.workflow_id === workflow\.id/);
   assert.match(release, /run\.path === expectedPath/);
   assert.match(release, /workflow\.path === expectedPath/);
   assert.match(release, /node <<'NODE'\r?\n          const fs = require\('node:fs'\);[\s\S]*?\r?\n          NODE\r?\n            gh run download/);
   assert.doesNotMatch(release, /!\s+git diff --quiet/);
   assert.match(release, /wrangler versions upload[\s\S]*--var "ALLOWED_ORIGINS:\$release_allowed_origins"/);
+  assert.match(databaseEvidenceStep.run, /mktemp -d "\$RUNNER_TEMP\/vmate-database-evidence-/);
+  assert.match(databaseEvidenceStep.run, /trap 'rm -rf -- "\$DATABASE_VERIFY_DIR"' EXIT/);
+  assert.match(rollbackEvidenceStep.run, /mktemp -d "\$RUNNER_TEMP\/vmate-rollback-evidence-/);
+  assert.match(rollbackEvidenceStep.run, /run\.head_branch === process\.env\.DEFAULT_BRANCH/);
+  assert.match(captureBeforeStep.run, /mktemp "\$RUNNER_TEMP\/vmate-deployment-before-/);
+  assert.match(uploadVersionStep.run, /mktemp "\$RUNNER_TEMP\/vmate-wrangler-output-/);
+  assert.match(captureAfterStep.run, /mktemp "\$RUNNER_TEMP\/vmate-deployment-after-/);
+  assert.doesNotMatch(release, /artifacts\/(?:database-evidence|rollback-evidence|deployment-before\.json|deployment-after\.json|wrangler-output\.jsonl)/);
+  assert.deepEqual(
+    releaseEvidenceUpload.with.path.trim().split(/\r?\n/).sort(),
+    ['artifacts/automatic-rollback.json', 'artifacts/release-evidence.json'].sort(),
+  );
   assert.match(baseline, /environment: production-db-baseline-attestation/);
   assert.match(baseline, /READ_ONLY_BASELINE_APPROVED/);
   assert.match(baseline, /AUTHORIZED_DOMAIN_RELEASE_SHA/);
@@ -180,6 +265,10 @@ test('read-only database attestation uses only the dedicated Management API endp
 
 test('database release stages expand and lockdown separately behind evidence gates', async () => {
   const release = await readUtf8('.github/workflows/release-database.yml');
+  const releaseWorkflow = parseDocument(release, { uniqueKeys: true, version: '1.2' }).toJS();
+  const cutoverEvidenceStep = releaseWorkflow.jobs.release.steps.find(
+    (step) => step.name === 'Verify compatible Worker cutover evidence before lockdown',
+  );
   const fingerprintQuery = await readUtf8('scripts/capture-release-state.sql');
   const migrationFingerprintQuery = await readUtf8('scripts/capture-migration-state.sql');
   const jobEnvironment = release.match(/    env:\r?\n([\s\S]*?)\r?\n\r?\n    steps:/)?.[1] || '';
@@ -197,12 +286,70 @@ test('database release stages expand and lockdown separately behind evidence gat
   assert.match(release, /db push[\s\S]*--dry-run/);
   assert.match(release, /PROJECT_REF.*EXPECTED_PROJECT_REF/);
   assert.match(release, /backup_evidence_run_id/);
-  assert.match(release, /backup_evidence_run_id is required before apply-expand and prompt-privacy apply-lockdown/);
-  assert.match(release, /inputs\.operation \}\}' == 'apply-expand' \|\| \( '\$\{\{ inputs\.release_track \}\}' == 'prompt-privacy' && '\$\{\{ inputs\.operation \}\}' == 'apply-lockdown' \)/);
+  assert.match(release, /backup_evidence_run_id is required before apply-expand and prompt-privacy apply-lockdown unless the approved prelaunch path applies/);
   assert.match(release, /Verify approved backup readiness before expand or prompt privacy lockdown/);
-  assert.match(release, /inputs\.operation == 'apply-expand' \|\| \(inputs\.release_track == 'prompt-privacy' && inputs\.operation == 'apply-lockdown'\)/);
-  assert.match(release, /const backupRequired = operation === 'apply-expand'[\s\S]*process\.env\.RELEASE_TRACK === 'prompt-privacy' && operation === 'apply-lockdown'/);
+  assert.match(release, /inputs\.prelaunch_evidence_run_id == ''/);
+  assert.match(release, /const backupRequired = !prelaunch && \(operation === 'apply-expand'[\s\S]*process\.env\.RELEASE_TRACK === 'prompt-privacy' && operation === 'apply-lockdown'/);
   assert.match(release, /backupEvidenceRunId: backupRequired \? process\.env\.BACKUP_EVIDENCE_RUN_ID : null/);
+  assert.match(release, /prelaunch_evidence_run_id/);
+  assert.match(release, /PRELAUNCH_EVIDENCE_RUN_ID/);
+  assert.match(release, /exactly one staging privilege or prelaunch evidence run is required/);
+  assert.match(release, /prelaunch and physical backup evidence are mutually exclusive/);
+  assert.match(release, /Verify fresh production prelaunch attestation/);
+  assert.match(release, /actions\/workflows\/release-prelaunch-attestation\.yml/);
+  assert.match(release, /prelaunch-attestation-evidence-production-/);
+  assert.match(release, /run\.workflow_id === workflow\.id/);
+  assert.match(release, /run\.head_sha === process\.env\.GITHUB_SHA/);
+  assert.match(release, /Date\.now\(\) - attestedAt <= 6 \* 60 \* 60 \* 1000/);
+  assert.match(release, /evidence\.prelaunchDirectApproved === true/);
+  assert.match(release, /evidence\.productionProjectGuardPassed === true/);
+  assert.match(release, /evidence\.defaultBranchCiPassed === true/);
+  assert.match(release, /Verify prelaunch evidence matches the production expand chain/);
+  assert.match(release, /actions\/runs\/\$LOCKDOWN_EXPAND_EVIDENCE_RUN_ID/);
+  assert.match(release, /actions\/workflows\/release-database\.yml/);
+  assert.equal(cutoverEvidenceStep.env.DEFAULT_BRANCH, '${{ github.event.repository.default_branch }}');
+  for (const binding of [
+    /run\.id === Number\(process\.env\.WORKER_EVIDENCE_RUN_ID\)/,
+    /run\.conclusion === 'success'/,
+    /run\.status === 'completed'/,
+    /run\.event === 'workflow_dispatch'/,
+    /run\.head_sha === process\.env\.GITHUB_SHA/,
+    /run\.head_branch === process\.env\.DEFAULT_BRANCH/,
+    /run\.path === expectedWorkflowPath/,
+    /workflow\.path === expectedWorkflowPath/,
+    /run\.workflow_id === workflow\.id/,
+    /gh run download "\$WORKER_EVIDENCE_RUN_ID"/,
+  ]) assert.match(cutoverEvidenceStep.run, binding);
+  assert.match(release, /evidence\.prelaunchOriginalRowCountHash === process\.env\.PRELAUNCH_CURRENT_ROW_COUNT_HASH/);
+  assert.match(release, /evidence\.prelaunchOriginalProtectedStateHash === process\.env\.PRELAUNCH_CURRENT_PROTECTED_STATE_HASH/);
+  assert.match(release, /prelaunchOriginalEvidenceRunId/);
+  assert.match(release, /prelaunchRenewalEvidenceRunId/);
+  assert.match(release, /prelaunchRenewalCatalogStateHash/);
+  assert.match(release, /Recheck prelaunch data and catalog immediately before apply/);
+  assert.match(release, /current\.catalog === process\.env\.PRELAUNCH_CURRENT_CATALOG_STATE_HASH/);
+  assert.match(release, /current\.rows === process\.env\.PRELAUNCH_CURRENT_ROW_COUNT_HASH/);
+  assert.match(release, /current\.protectedState === process\.env\.PRELAUNCH_CURRENT_PROTECTED_STATE_HASH/);
+  assert.match(release, /Verify prompt privacy logical backup source contract/);
+  assert.match(release, /vmate_private\.prompt_lockdown_room_state_backup_20260729/);
+  assert.match(release, /vmate_private\.prompt_lockdown_greeting_backup_20260729/);
+  assert.match(release, /vmate_private\.prompt_lockdown_backup_manifest_20260729/);
+  assert.match(release, /Logical backups must be populated before destructive prompt scrubbing/);
+  assert.match(release, /Verify immutable prompt backup manifest and role denial after lockdown/);
+  assert.match(release, /prompt logical backup manifest parity failed/);
+  assert.match(release, /state_payload_hash/);
+  assert.match(release, /greeting_payload_hash/);
+  assert.match(release, /PUBLIC retains a prompt logical backup table privilege/);
+  assert.match(release, /pg_catalog\.unnest\(array\['anon', 'authenticated', 'service_role'\]\)/);
+  assert.match(release, /immutablePromptBackupManifestVerified:/);
+  const postApplyBackupCheck = release.match(/- name: Verify immutable prompt backup manifest[\s\S]*?(?=\n      - name: Verify complete service-only)/)?.[0] || '';
+  assert.doesNotMatch(postApplyBackupCheck, /from public\.room_state_summaries|from public\.room_messages/);
+  const sourceCheck = release
+    .match(/- name: Verify prompt privacy logical backup source contract[\s\S]*?node <<'NODE'\r?\n([\s\S]*?)\r?\n\s+NODE/)?.[1]
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^ {10}/, ''))
+    .join('\n');
+  assert.ok(sourceCheck);
+  assert.doesNotThrow(() => runInNewContext(sourceCheck, { require: createRequire(import.meta.url) }));
   assert.match(release, /synthetic_evidence_run_id/);
   assert.match(release, /staging_privilege_evidence_run_id/);
   assert.match(release, /STAGING_PRIVILEGE_EVIDENCE_RUN_ID/);
@@ -248,6 +395,7 @@ test('database release stages expand and lockdown separately behind evidence gat
   assert.doesNotMatch(fingerprintQuery, /pg_catalog\.coalesce/);
   assert.doesNotMatch(fingerprintQuery, /\b(?:from|join|left join)\s+pg_(?:class|namespace|attribute|attrdef|constraint|policy|proc|trigger)\b/i);
   assert.match(fingerprintQuery, /release_state_fingerprint/);
+  assert.match(fingerprintQuery, /'vmate_private'/);
   assert.match(release, /scripts\/capture-migration-state\.sql/);
   assert.match(migrationFingerprintQuery, /to_jsonb\(migration_record\)/);
   assert.match(migrationFingerprintQuery, /migration_rows_fingerprint/);
@@ -258,6 +406,54 @@ test('database release stages expand and lockdown separately behind evidence gat
   assert.match(release, /path: artifacts\/database-release-evidence\.json/);
   assert.match(release, /retention-days: 7/);
   assert.doesNotMatch(release, /path: artifacts\/\s*$/m);
+});
+
+test('prelaunch direct production attestation is protected, read-only, fresh, and sanitized', async () => {
+  const attestation = await readUtf8('.github/workflows/release-prelaunch-attestation.yml');
+  const release = await readUtf8('.github/workflows/release-database.yml');
+  const rowCounts = await readUtf8('scripts/capture-prelaunch-row-counts.sql');
+  const protectedState = await readUtf8('scripts/capture-prelaunch-protected-state.sql');
+  const evidenceBlock = attestation.match(/const evidence = \{([\s\S]*?)\n\s+\};/)?.[1] || '';
+  const jobEnvironment = attestation.match(/    env:\r?\n([\s\S]*?)\r?\n\r?\n    steps:/)?.[1] || '';
+
+  assert.match(attestation, /workflow_dispatch:/);
+  assert.match(attestation, /environment: production-db-preflight/);
+  assert.match(attestation, /PRELAUNCH_DIRECT_APPROVED/);
+  assert.match(attestation, /\$PROJECT_REF" == "\$EXPECTED_PROJECT_REF"/);
+  assert.match(attestation, /\$PROJECT_REF" == "\$PRODUCTION_PROJECT_REF"/);
+  assert.match(attestation, /Require successful CI for this default-branch commit/);
+  assert.match(attestation, /actions\/workflows\/ci\.yml\/runs\?head_sha=/);
+  assert.match(attestation, /Database contracts \(local Docker only\)/);
+  assert.match(attestation, /run-supabase-read-only-query\.mjs/);
+  assert.match(attestation, /scripts\/capture-release-state\.sql/);
+  assert.match(attestation, /scripts\/capture-migration-state\.sql/);
+  assert.match(attestation, /catalogStateHash/);
+  assert.match(attestation, /rowCountHash/);
+  assert.match(attestation, /protectedStateHash/);
+  assert.match(attestation, /createHmac\('sha256', evidenceKey\)/);
+  assert.match(rowCounts, /from auth\.users/);
+  assert.match(rowCounts, /from storage\.objects/);
+  assert.match(protectedState, /from auth\.users/);
+  assert.match(protectedState, /character_record\.prompt_profile_json/);
+  assert.match(protectedState, /world_record\.world_rules_markdown/);
+  assert.match(protectedState, /room_record\.resolved_prompt_snapshot_json/);
+  assert.match(protectedState, /from public\.room_state_summaries/);
+  assert.match(protectedState, /message_record\.sequence_no = 1/);
+  assert.match(protectedState, /from storage\.objects/);
+  assert.match(protectedState, /order by kind, sort_key/);
+  assert.match(attestation, /queryMode: 'supabase_read_only_user'/);
+  assert.match(attestation, /prelaunchDirectApproved:/);
+  assert.match(attestation, /productionProjectGuardPassed: true/);
+  assert.match(attestation, /defaultBranchCiPassed: true/);
+  assert.match(attestation, /trap 'rm -rf -- "\$workdir"' EXIT/);
+  assert.match(attestation, /if: \$\{\{ success\(\) \}\}/);
+  assert.match(attestation, /prelaunch-attestation-evidence-production-/);
+  assert.match(release, /Date\.now\(\) >= attestedAt/);
+  assert.match(release, /Date\.now\(\) - attestedAt <= 6 \* 60 \* 60 \* 1000/);
+  assert.doesNotMatch(evidenceBlock, /\b(?:rowCounts|actualCounts|projectRef):/);
+  assert.doesNotMatch(jobEnvironment, /SUPABASE_ACCESS_TOKEN|GH_TOKEN/);
+  assert.doesNotMatch(attestation, /run: npm ci/);
+  assert.doesNotMatch(attestation, /supabase db push|supabase db query|confirm-remote-writes|^\s*(?:insert|update|delete)\s+/im);
 });
 
 test('every remote database phase gate enforces the complete service-only v2 RPC set', async () => {
@@ -317,6 +513,11 @@ test('backup readiness and staging synthetic smoke are approval-gated and target
 
 test('post-lockdown privilege and delayed observation remain evidence-bound without grant restoration', async () => {
   const privilege = await readUtf8('.github/workflows/release-post-lockdown-privilege-smoke.yml');
+  const privilegeWorkflow = parseDocument(privilege, { uniqueKeys: true, version: '1.2' }).toJS();
+  const privilegeJob = privilegeWorkflow.jobs.smoke;
+  const httpProbe = privilegeJob.steps.find(
+    (step) => step.name === 'Verify actual remote anon and authenticated HTTP privilege boundaries',
+  );
   const observation = await readUtf8('.github/workflows/release-post-lockdown-observation.yml');
 
   assert.match(privilege, /apply-lockdown/);
@@ -343,6 +544,18 @@ test('post-lockdown privilege and delayed observation remain evidence-bound with
   assert.match(privilege, /gatewayScenarios/);
   assert.match(privilege, /sqlRoleProbePassed: sqlPassed/);
   assert.match(privilege, /httpGatewayProbePassed: remotePassed/);
+  for (const secretName of ['SUPABASE_ACCESS_TOKEN', 'SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY']) {
+    assert.equal(Object.hasOwn(privilegeJob.env || {}, secretName), false, `${secretName} must not persist at job scope`);
+  }
+  assert.deepEqual(httpProbe.env, { SUPABASE_ACCESS_TOKEN: '${{ secrets.SUPABASE_ACCESS_TOKEN }}' });
+  assert.match(httpProbe.run, /api-keys\?reveal=true/);
+  assert.match(httpProbe.run, /scripts\/select-supabase-project-api-keys\.mjs/);
+  assert.match(httpProbe.run, /chmod 600 "\$key_file" "\$selected_key_file"/);
+  assert.match(httpProbe.run, /trap 'rm -f -- "\$key_file" "\$selected_key_file"' EXIT/);
+  assert.match(httpProbe.run, /::add-mask::\$SUPABASE_ANON_KEY/);
+  assert.match(httpProbe.run, /::add-mask::\$SUPABASE_SERVICE_ROLE_KEY/);
+  assert.match(httpProbe.run, /unset SUPABASE_ACCESS_TOKEN[\s\S]*node scripts\/remote-privilege-smoke\.mjs/);
+  assert.doesNotMatch(httpProbe.run, /GITHUB_ENV|(?:SUPABASE_ACCESS_TOKEN|SUPABASE_ANON_KEY|SUPABASE_SERVICE_ROLE_KEY)[^\n]*(?:artifacts|evidence)/);
   assert.doesNotMatch(privilege, /\bgrant\s+(?:all|insert|update|delete|execute)/i);
   assert.doesNotMatch(privilege, /\brevoke\s+/i);
 
@@ -353,6 +566,30 @@ test('post-lockdown privilege and delayed observation remain evidence-bound with
   assert.match(observation, /lock\.workerVersionId === process\.env\.WORKER_VERSION_ID/);
   assert.match(observation, /previousStableWorkerVersionId/);
   assert.match(observation, /check-worker-observability\.mjs/);
+});
+
+test('Supabase project API key selection is exact and fail-closed', () => {
+  const anon = { type: 'legacy', name: 'anon', api_key: 'fake-anon-key', disabled: false };
+  const service = { type: 'legacy', name: 'service_role', api_key: 'fake-service-key' };
+  assert.deepEqual(selectSupabaseProjectApiKeys([anon, service]), {
+    anonKey: 'fake-anon-key',
+    serviceRoleKey: 'fake-service-key',
+  });
+
+  for (const invalid of [
+    null,
+    {},
+    [],
+    [anon],
+    [service],
+    [anon, { ...anon, api_key: 'second-anon-key' }, service],
+    [anon, service, { ...service, api_key: 'second-service-key' }],
+    [{ ...anon, disabled: true }, service],
+    [anon, { ...service, disabled: true }],
+    [{ ...anon, api_key: '' }, service],
+    [anon, { ...service, api_key: ' fake-service-key ' }],
+    [anon, { ...service, api_key: anon.api_key }],
+  ]) assert.throws(() => selectSupabaseProjectApiKeys(invalid));
 });
 
 test('local database harness refuses linked or remote targets and runs fresh plus upgrade contracts', async () => {
@@ -420,7 +657,13 @@ test('operations documentation records manual approved release, runtime prerequi
   assert.match(operationsDoc, /VITE_SUPABASE_ANON_KEY|VITE_SUPABASE_PUBLISHABLE_KEY/);
   assert.match(operationsDoc, /VITE_CHAT_API_BASE_URL/);
   assert.match(operationsDoc, /versions deploy/);
-  assert.match(operationsDoc, /prompt-privacy:apply-lockdown.*6시간.*backup evidence.*필수/);
+  assert.match(operationsDoc, /일반 경로의 `prompt-privacy:apply-lockdown`.*6시간.*physical backup evidence.*필수/);
+  assert.match(operationsDoc, /Prelaunch direct 경로만 같은 6시간 제한의 attestation으로 이 gate를 대체/);
+  assert.match(operationsDoc, /vmate_private\.prompt_lockdown_room_state_backup_20260729/);
+  assert.match(operationsDoc, /vmate_private\.prompt_lockdown_greeting_backup_20260729/);
+  assert.match(operationsDoc, /vmate_private\.prompt_lockdown_backup_manifest_20260729/);
+  assert.match(operationsDoc, /original과 renewal run ID/);
+  assert.match(operationsDoc, /current catalog·row-count·보호 데이터 HMAC/);
   assert.match(operationsDoc, /baseline-backed cutover evidence/);
   assert.match(operationsDoc, /lockdown_evidence_run_id.*비워/);
 });

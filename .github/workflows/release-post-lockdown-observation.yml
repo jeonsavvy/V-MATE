@@ -70,10 +70,6 @@ jobs:
       EXPECTED_WRANGLER_ENV: ${{ vars.WRANGLER_ENV }}
       PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_WORKER_BASE_URL }}
       PRODUCTION_WORKER_NAME: ${{ vars.PRODUCTION_WORKER_NAME }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_OBSERVABILITY_TOKEN: ${{ secrets.CLOUDFLARE_OBSERVABILITY_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      GH_TOKEN: ${{ github.token }}
 
     steps:
       - uses: actions/checkout@v6
@@ -99,10 +95,11 @@ jobs:
           [[ "$origin" == "$expected" && "$WORKER_NAME" == "$EXPECTED_WORKER_NAME" ]] || { echo '::error::environment target guard mismatch'; exit 1; }
           if [[ '${{ inputs.target }}' == 'staging' ]]; then [[ "$origin" != "$production" && "$WORKER_NAME" != "$PRODUCTION_WORKER_NAME" && "$WRANGLER_ENV" == "$EXPECTED_WRANGLER_ENV" ]] || { echo '::error::staging target guard mismatch'; exit 1; }; else [[ "$origin" == "$production" && "$WORKER_NAME" == "$PRODUCTION_WORKER_NAME" && -z "$WRANGLER_ENV" ]] || { echo '::error::production target guard mismatch'; exit 1; }; fi
           [[ "$WORKER_VERSION_ID" =~ ^[A-Za-z0-9_-]+$ && "$BASELINE_WORKER_VERSION_ID" =~ ^[A-Za-z0-9_-]+$ && "$LOCKDOWN_EVIDENCE_RUN_ID" =~ ^[0-9]+$ && "$PRIVILEGE_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::version or evidence input is invalid'; exit 1; }
-          [[ -n "$CLOUDFLARE_API_TOKEN" && -n "$CLOUDFLARE_OBSERVABILITY_TOKEN" && -n "$CLOUDFLARE_ACCOUNT_ID" ]] || { echo '::error::required observability credential is absent'; exit 1; }
           node -e 'const elapsed=Date.now()-Date.parse(process.env.LOCKDOWN_COMPLETED_AT); if (!Number.isFinite(elapsed)||elapsed<24*60*60*1000||elapsed>7*24*60*60*1000) process.exit(1)' || { echo '::error::manual observation must occur 24 hours to 7 days after lockdown'; exit 1; }
 
       - name: Verify lockdown and privilege evidence binding
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -145,21 +142,34 @@ jobs:
           NODE
 
       - name: Verify v2 Worker remains the serving version
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         shell: bash
         run: |
           set -euo pipefail
+          [[ -n "$CLOUDFLARE_API_TOKEN" && -n "$CLOUDFLARE_ACCOUNT_ID" ]] || { echo '::error::required Cloudflare deployment credential is absent'; exit 1; }
           args=(--env ""); if [[ -n "$WRANGLER_ENV" ]]; then args=(--env "$WRANGLER_ENV"); fi
           npx --no-install wrangler deployments status "${args[@]}" --name "$WORKER_NAME" --json > deployment.json
           node <<'NODE'
           const source = JSON.parse(require('node:fs').readFileSync('deployment.json', 'utf8')); const entries = []; const visit = (value) => { if (Array.isArray(value)) return value.forEach(visit); if (!value || typeof value !== 'object') return; if (typeof value.version_id === 'string' && Number.isFinite(Number(value.percentage))) entries.push({ id: value.version_id, percentage: Number(value.percentage) }); Object.values(value).forEach(visit); }; visit(source); if (!entries.some((entry) => entry.id === process.env.WORKER_VERSION_ID && entry.percentage === 100)) process.exit(1);
           NODE
 
-      - name: Run delayed smoke and one-hour observability gate
+      - name: Run delayed smoke
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p artifacts
           node scripts/smoke-release.mjs --base-url "$BASE_URL" --worker-name "$WORKER_NAME" --version-id "$WORKER_VERSION_ID" | tee artifacts/post-lockdown-smoke.log
+
+      - name: Enforce one-hour observability gate
+        env:
+          CLOUDFLARE_OBSERVABILITY_TOKEN: ${{ secrets.CLOUDFLARE_OBSERVABILITY_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$CLOUDFLARE_OBSERVABILITY_TOKEN" && -n "$CLOUDFLARE_ACCOUNT_ID" ]] || { echo '::error::required observability credential is absent'; exit 1; }
           window_end=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           window_start=$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)
           node scripts/check-worker-observability.mjs --account-id "$CLOUDFLARE_ACCOUNT_ID" --worker-name "$WORKER_NAME" --version-id "$WORKER_VERSION_ID" --baseline-version-id "$BASELINE_WORKER_VERSION_ID" --window-start "$window_start" --window-end "$window_end" --output artifacts/post-lockdown-observability.json

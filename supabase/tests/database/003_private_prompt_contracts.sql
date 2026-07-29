@@ -1,6 +1,6 @@
 begin;
 
-select plan(24);
+select plan(29);
 
 select ok(
   to_regclass('public.public_character_catalog') is not null
@@ -79,6 +79,176 @@ select ok(
   and has_table_privilege('authenticated', 'public.owned_room_summaries', 'SELECT'),
   'room summaries require authentication'
 );
+select ok(
+  to_regnamespace('vmate_private') is not null
+  and to_regclass('vmate_private.prompt_lockdown_room_state_backup_20260729') is not null
+  and to_regclass('vmate_private.prompt_lockdown_greeting_backup_20260729') is not null
+  and to_regclass('vmate_private.prompt_lockdown_backup_manifest_20260729') is not null
+  and (
+    select array_agg(column_name::text order by ordinal_position)
+    from information_schema.columns
+    where table_schema = 'vmate_private'
+      and table_name = 'prompt_lockdown_room_state_backup_20260729'
+  ) = array[
+    'room_id', 'room_version_before', 'current_situation', 'location',
+    'relationship_state', 'world_notes_json', 'updated_at'
+  ]::text[]
+  and (
+    select array_agg(column_name::text order by ordinal_position)
+    from information_schema.columns
+    where table_schema = 'vmate_private'
+      and table_name = 'prompt_lockdown_greeting_backup_20260729'
+  ) = array[
+    'message_id', 'room_id', 'room_version_before',
+    'role', 'sequence_no', 'content_json'
+  ]::text[]
+  and (
+    select array_agg(column_name::text order by ordinal_position)
+    from information_schema.columns
+    where table_schema = 'vmate_private'
+      and table_name = 'prompt_lockdown_backup_manifest_20260729'
+  ) = array[
+    'singleton', 'state_count', 'greeting_count',
+    'state_key_version_hash', 'greeting_key_version_hash',
+    'state_payload_hash', 'greeting_payload_hash', 'captured_at'
+  ]::text[]
+  and not exists (
+    select 1
+    from pg_class relation
+    join pg_namespace namespace on namespace.oid = relation.relnamespace
+    where namespace.nspname = 'vmate_private'
+      and relation.relname in (
+        'prompt_lockdown_room_state_backup_20260729',
+        'prompt_lockdown_greeting_backup_20260729',
+        'prompt_lockdown_backup_manifest_20260729'
+      )
+      and not relation.relrowsecurity
+  ),
+  'dedicated prompt-lockdown backups and manifest have the exact private shape and RLS'
+);
+select ok(
+  not exists (
+    select 1
+    from (values ('anon'), ('authenticated'), ('service_role')) as roles(role_name)
+    cross join (values ('USAGE'), ('CREATE')) as privileges(privilege_name)
+    where has_schema_privilege(roles.role_name, 'vmate_private', privileges.privilege_name)
+  )
+  and not exists (
+    select 1
+    from (values ('anon'), ('authenticated'), ('service_role')) as roles(role_name)
+    cross join (values
+      ('vmate_private.prompt_lockdown_room_state_backup_20260729'),
+      ('vmate_private.prompt_lockdown_greeting_backup_20260729'),
+      ('vmate_private.prompt_lockdown_backup_manifest_20260729')
+    ) as relations(relation_name)
+    cross join (values
+      ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE'),
+      ('TRUNCATE'), ('REFERENCES'), ('TRIGGER')
+    ) as privileges(privilege_name)
+    where has_table_privilege(
+      roles.role_name,
+      relations.relation_name,
+      privileges.privilege_name
+    )
+  )
+  and not exists (
+    select 1
+    from pg_namespace namespace
+    cross join lateral aclexplode(
+      coalesce(namespace.nspacl, acldefault('n', namespace.nspowner))
+    ) as privilege
+    where namespace.nspname = 'vmate_private'
+      and privilege.grantee = 0
+  )
+  and not exists (
+    select 1
+    from pg_class relation
+    join pg_namespace namespace on namespace.oid = relation.relnamespace
+    cross join lateral aclexplode(
+      coalesce(relation.relacl, acldefault('r', relation.relowner))
+    ) as privilege
+    where namespace.nspname = 'vmate_private'
+      and relation.relname in (
+        'prompt_lockdown_room_state_backup_20260729',
+        'prompt_lockdown_greeting_backup_20260729',
+        'prompt_lockdown_backup_manifest_20260729'
+      )
+      and privilege.grantee = 0
+  ),
+  'PUBLIC and runtime roles have no schema or table ACL on lockdown evidence'
+);
+select ok(
+  exists (
+    select 1
+    from vmate_private.prompt_lockdown_backup_manifest_20260729 manifest
+    where manifest.singleton
+      and manifest.captured_at is not null
+      and manifest.state_count = (
+        select count(*)
+        from vmate_private.prompt_lockdown_room_state_backup_20260729
+      )
+      and manifest.greeting_count = (
+        select count(*)
+        from vmate_private.prompt_lockdown_greeting_backup_20260729
+      )
+      and manifest.state_key_version_hash = (
+        select encode(sha256(convert_to(coalesce(string_agg(
+          backup.room_id::text || ':' || backup.room_version_before::text,
+          E'\n' order by backup.room_id
+        ), ''), 'UTF8')), 'hex')
+        from vmate_private.prompt_lockdown_room_state_backup_20260729 backup
+      )
+      and manifest.greeting_key_version_hash = (
+        select encode(sha256(convert_to(coalesce(string_agg(
+          backup.message_id::text || ':' || backup.room_id::text || ':'
+            || backup.room_version_before::text,
+          E'\n' order by backup.message_id
+        ), ''), 'UTF8')), 'hex')
+        from vmate_private.prompt_lockdown_greeting_backup_20260729 backup
+      )
+      and manifest.state_payload_hash = (
+        select encode(sha256(convert_to(coalesce(string_agg(
+          jsonb_build_array(
+            backup.room_id::text,
+            backup.room_version_before,
+            backup.current_situation,
+            backup.location,
+            backup.relationship_state,
+            backup.world_notes_json,
+            extract(epoch from backup.updated_at)
+          )::text,
+          E'\n' order by backup.room_id
+        ), ''), 'UTF8')), 'hex')
+        from vmate_private.prompt_lockdown_room_state_backup_20260729 backup
+      )
+      and manifest.greeting_payload_hash = (
+        select encode(sha256(convert_to(coalesce(string_agg(
+          jsonb_build_array(
+            backup.message_id::text,
+            backup.room_id::text,
+            backup.room_version_before,
+            backup.role,
+            backup.sequence_no,
+            backup.content_json
+          )::text,
+          E'\n' order by backup.message_id
+        ), ''), 'UTF8')), 'hex')
+        from vmate_private.prompt_lockdown_greeting_backup_20260729 backup
+      )
+  ),
+  'the immutable manifest matches both versioned backup tables'
+);
+select throws_like(
+  $$update vmate_private.prompt_lockdown_backup_manifest_20260729
+    set captured_at = captured_at$$,
+  '%manifest is immutable%',
+  'the lockdown manifest rejects updates'
+);
+select throws_like(
+  $$delete from vmate_private.prompt_lockdown_backup_manifest_20260729$$,
+  '%manifest is immutable%',
+  'the lockdown manifest rejects deletion'
+);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
@@ -119,8 +289,12 @@ insert into public.rooms (
   'a3000000-0000-4000-8000-000000000003', 'a4000000-0000-4000-8000-000000000004',
   'Prompt room', '{}'::jsonb, '{"basePromptSnapshot":"composed room secret"}'::jsonb, 1
 );
-insert into public.room_messages (room_id, role, content_json, sequence_no)
-values ('a5000000-0000-4000-8000-000000000005', 'assistant', '{"response":"safe greeting"}'::jsonb, 1);
+insert into public.room_messages (id, room_id, role, content_json, sequence_no)
+values (
+  'a6000000-0000-4000-8000-000000000006',
+  'a5000000-0000-4000-8000-000000000005', 'assistant',
+  '{"response":"safe greeting"}'::jsonb, 1
+);
 
 set local role anon;
 select set_config('request.jwt.claim.role', 'anon', true);

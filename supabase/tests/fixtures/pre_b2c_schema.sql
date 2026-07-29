@@ -698,16 +698,48 @@ insert into public.worlds (
 
 insert into public.rooms (
   id, user_id, character_id, title, bridge_profile_json, resolved_prompt_snapshot_json
-) values (
-  '93000000-0000-4000-8000-000000000003', '91000000-0000-4000-8000-000000000001',
-  '92000000-0000-4000-8000-000000000002', 'Sequence upgrade room', '{}'::jsonb,
-  '{"basePromptSnapshot":"upgrade room prompt secret"}'::jsonb
-) on conflict (id) do nothing;
+) values
+  (
+    '93000000-0000-4000-8000-000000000003', '91000000-0000-4000-8000-000000000001',
+    '92000000-0000-4000-8000-000000000002', 'Sequence upgrade room', '{}'::jsonb,
+    '{"basePromptSnapshot":"upgrade room prompt secret"}'::jsonb
+  ),
+  (
+    '93100000-0000-4000-8000-000000000010', '91000000-0000-4000-8000-000000000001',
+    '92000000-0000-4000-8000-000000000002', 'Lockdown restore room', '{}'::jsonb,
+    '{"basePromptSnapshot":"restore room prompt secret"}'::jsonb
+  ),
+  (
+    '93100000-0000-4000-8000-000000000011', '91000000-0000-4000-8000-000000000001',
+    '92000000-0000-4000-8000-000000000002', 'Lockdown guarded room', '{}'::jsonb,
+    '{"basePromptSnapshot":"guarded room prompt secret"}'::jsonb
+  )
+on conflict (id) do nothing;
+
+insert into public.room_state_summaries (
+  room_id, current_situation, location, relationship_state,
+  world_notes_json, updated_at
+) values
+  (
+    '93100000-0000-4000-8000-000000000010',
+    'Restore original situation', 'Restore original location',
+    'Restore original relationship', '[{"note":"restore original world note"}]'::jsonb,
+    '2026-06-29T10:00:00Z'
+  ),
+  (
+    '93100000-0000-4000-8000-000000000011',
+    'Guarded original situation', 'Guarded original location',
+    'Guarded original relationship', '[{"note":"guarded original world note"}]'::jsonb,
+    '2026-06-29T11:00:00Z'
+  )
+on conflict (room_id) do nothing;
 
 alter table public.room_messages add column if not exists sequence_no bigint;
 insert into public.room_messages (id, room_id, role, content_json, created_at, sequence_no)
 values
   ('94000000-0000-4000-8000-000000000004', '93000000-0000-4000-8000-000000000003', 'user', '{"text":"first"}'::jsonb, '2026-06-30T00:00:00Z', 1),
   ('94000000-0000-4000-8000-000000000005', '93000000-0000-4000-8000-000000000003', 'assistant', '{"text":"second"}'::jsonb, '2026-06-30T00:00:00Z', null),
-  ('94000000-0000-4000-8000-000000000006', '93000000-0000-4000-8000-000000000003', 'assistant', '{"text":"third"}'::jsonb, '2026-06-30T00:00:01Z', null)
+  ('94000000-0000-4000-8000-000000000006', '93000000-0000-4000-8000-000000000003', 'assistant', '{"text":"third"}'::jsonb, '2026-06-30T00:00:01Z', null),
+  ('94100000-0000-4000-8000-000000000010', '93100000-0000-4000-8000-000000000010', 'assistant', '{"response":"restore original greeting"}'::jsonb, '2026-06-29T10:00:00Z', 1),
+  ('94100000-0000-4000-8000-000000000011', '93100000-0000-4000-8000-000000000011', 'assistant', '{"response":"guarded original greeting"}'::jsonb, '2026-06-29T11:00:00Z', 1)
 on conflict (id) do nothing;

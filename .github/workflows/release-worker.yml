@@ -77,10 +77,6 @@ jobs:
       name: ${{ inputs.target == 'production' && format('production-{0}', inputs.operation) || 'staging' }}
       url: ${{ inputs.base_url }}
     env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_OBSERVABILITY_TOKEN: ${{ secrets.CLOUDFLARE_OBSERVABILITY_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       BASE_URL: ${{ inputs.base_url }}
       WORKER_NAME: ${{ inputs.worker_name }}
       INPUT_VERSION_ID: ${{ inputs.version_id }}
@@ -98,7 +94,6 @@ jobs:
       ROLLBACK_EVIDENCE_RUN_ID: ${{ inputs.rollback_evidence_run_id }}
       LOCKDOWN_EVIDENCE_RUN_ID: ${{ inputs.lockdown_evidence_run_id }}
       DATABASE_RELEASE_TRACK: ${{ inputs.database_release_track }}
-      GH_TOKEN: ${{ github.token }}
       AUTHORIZED_DOMAIN_RELEASE_SHA: ${{ vars.AUTHORIZED_DOMAIN_RELEASE_SHA }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
 
@@ -117,7 +112,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Validate approved target and credentials
+      - name: Validate approved target
         shell: bash
         run: |
           set -euo pipefail
@@ -172,7 +167,6 @@ jobs:
           fi
           [[ "$EXPECTED_SUPABASE_PROJECT_REF" =~ ^[a-z0-9]{8,32}$ ]] || { echo '::error::approved Supabase project ref is missing or invalid'; exit 1; }
           if [[ '${{ inputs.operation }}' == 'rollback' ]]; then
-            [[ -n "$SUPABASE_ACCESS_TOKEN" ]] || { echo '::error::Rollback database-state read credential is not configured'; exit 1; }
             [[ "$ROLLBACK_MODE" == 'pre-lockdown' || "$ROLLBACK_MODE" == 'post-lockdown' ]] || { echo '::error::rollback_mode must be pre-lockdown or post-lockdown'; exit 1; }
             [[ "$ROLLBACK_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::rollback_evidence_run_id is required for manual rollback'; exit 1; }
             if [[ "$ROLLBACK_MODE" == 'pre-lockdown' ]]; then
@@ -181,28 +175,29 @@ jobs:
               [[ -z "$LOCKDOWN_EVIDENCE_RUN_ID" || "$LOCKDOWN_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::lockdown_evidence_run_id must be canonical when supplied'; exit 1; }
             fi
           fi
-          [[ -n "$CLOUDFLARE_API_TOKEN" ]] || { echo '::error::Cloudflare credential is not configured for this environment'; exit 1; }
-          [[ -n "$CLOUDFLARE_ACCOUNT_ID" ]] || { echo '::error::Cloudflare account binding is not configured for this environment'; exit 1; }
-          if [[ '${{ inputs.operation }}' == 'cutover' ]]; then
-            [[ -n "$CLOUDFLARE_OBSERVABILITY_TOKEN" ]] || { echo '::error::Scoped Worker observability credential is not configured for this environment'; exit 1; }
-          fi
 
       - name: Verify matching database evidence before serving the new Worker
         if: ${{ inputs.operation != 'rollback' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p artifacts/database-evidence
+          export DATABASE_VERIFY_DIR
+          DATABASE_VERIFY_DIR=$(mktemp -d "$RUNNER_TEMP/vmate-database-evidence-XXXXXX")
+          trap 'rm -rf -- "$DATABASE_VERIFY_DIR"' EXIT
           if [[ "$BASELINE_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]]; then
-            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BASELINE_EVIDENCE_RUN_ID" > artifacts/database-evidence/baseline-run.json
-            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release-database-baseline-attestation.yml" > artifacts/database-evidence/baseline-workflow.json
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BASELINE_EVIDENCE_RUN_ID" > "$DATABASE_VERIFY_DIR/baseline-run.json"
+            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release-database-baseline-attestation.yml" > "$DATABASE_VERIFY_DIR/baseline-workflow.json"
             node <<'NODE'
           const fs = require('node:fs');
-          const run = JSON.parse(fs.readFileSync('artifacts/database-evidence/baseline-run.json', 'utf8'));
-          const workflow = JSON.parse(fs.readFileSync('artifacts/database-evidence/baseline-workflow.json', 'utf8'));
+          const path = require('node:path');
+          const run = JSON.parse(fs.readFileSync(path.join(process.env.DATABASE_VERIFY_DIR, 'baseline-run.json'), 'utf8'));
+          const workflow = JSON.parse(fs.readFileSync(path.join(process.env.DATABASE_VERIFY_DIR, 'baseline-workflow.json'), 'utf8'));
           const defaultBranch = process.env.DEFAULT_BRANCH;
           const expectedPath = '.github/workflows/release-database-baseline-attestation.yml';
-          const valid = run.conclusion === 'success'
+          const valid = run.id === Number(process.env.BASELINE_EVIDENCE_RUN_ID)
+            && run.conclusion === 'success'
             && run.status === 'completed'
             && run.event === 'workflow_dispatch'
             && run.head_sha === process.env.GITHUB_SHA
@@ -212,9 +207,28 @@ jobs:
             && run.workflow_id === workflow.id;
           if (!valid) throw new Error('Baseline evidence run metadata does not bind to the approved attestation workflow and current default-branch commit.');
           NODE
-            gh run download "$BASELINE_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "database-baseline-evidence-production-$BASELINE_EVIDENCE_RUN_ID" --dir artifacts/database-evidence
+            gh run download "$BASELINE_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "database-baseline-evidence-production-$BASELINE_EVIDENCE_RUN_ID" --dir "$DATABASE_VERIFY_DIR/artifact"
           else
-            gh run download "$EXPAND_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "database-release-evidence-${{ inputs.target }}-$EXPAND_EVIDENCE_RUN_ID" --dir artifacts/database-evidence
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$EXPAND_EVIDENCE_RUN_ID" > "$DATABASE_VERIFY_DIR/expand-run.json"
+            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release-database.yml" > "$DATABASE_VERIFY_DIR/expand-workflow.json"
+            node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const run = JSON.parse(fs.readFileSync(path.join(process.env.DATABASE_VERIFY_DIR, 'expand-run.json'), 'utf8'));
+          const workflow = JSON.parse(fs.readFileSync(path.join(process.env.DATABASE_VERIFY_DIR, 'expand-workflow.json'), 'utf8'));
+          const expectedPath = '.github/workflows/release-database.yml';
+          const valid = run.id === Number(process.env.EXPAND_EVIDENCE_RUN_ID)
+            && run.conclusion === 'success'
+            && run.status === 'completed'
+            && run.event === 'workflow_dispatch'
+            && run.head_sha === process.env.GITHUB_SHA
+            && run.head_branch === process.env.DEFAULT_BRANCH
+            && run.path === expectedPath
+            && workflow.path === expectedPath
+            && run.workflow_id === workflow.id;
+          if (!valid) throw new Error('Expand evidence run metadata does not bind to release-database on this default-branch commit.');
+          NODE
+            gh run download "$EXPAND_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "database-release-evidence-${{ inputs.target }}-$EXPAND_EVIDENCE_RUN_ID" --dir "$DATABASE_VERIFY_DIR/artifact"
           fi
           node <<'NODE'
           const crypto = require('node:crypto');
@@ -225,7 +239,7 @@ jobs:
             const item = path.join(directory, entry.name);
             if (entry.isDirectory()) walk(item); else if (entry.name === 'database-release-evidence.json' || entry.name === 'database-baseline-evidence.json') files.push(item);
           });
-          walk('artifacts/database-evidence');
+          walk(process.env.DATABASE_VERIFY_DIR);
           if (files.length !== 1) process.exit(1);
           const evidence = JSON.parse(fs.readFileSync(files[0], 'utf8'));
           const projectRef = process.env.EXPECTED_SUPABASE_PROJECT_REF;
@@ -264,9 +278,14 @@ jobs:
 
       - name: Verify current-commit shadow upload and immutable version metadata
         if: ${{ inputs.operation == 'smoke' || inputs.operation == 'cutover' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         shell: bash
         run: |
           set -euo pipefail
+          [[ -n "$CLOUDFLARE_API_TOKEN" && -n "$CLOUDFLARE_ACCOUNT_ID" ]] || { echo '::error::Cloudflare release credential is not configured for this environment'; exit 1; }
           export SHADOW_VERIFY_DIR
           SHADOW_VERIFY_DIR=$(mktemp -d "$RUNNER_TEMP/vmate-shadow-evidence-XXXXXX")
           trap 'rm -rf -- "$SHADOW_VERIFY_DIR"' EXIT
@@ -300,6 +319,7 @@ jobs:
             && run.status === 'completed'
             && run.event === 'workflow_dispatch'
             && run.head_sha === process.env.GITHUB_SHA
+            && run.head_branch === process.env.DEFAULT_BRANCH
             && run.path === expectedPath
             && workflow.path === expectedPath
             && run.workflow_id === workflow.id;
@@ -364,15 +384,19 @@ jobs:
 
       - name: Verify evidence-bound manual rollback target
         if: ${{ inputs.operation == 'rollback' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p artifacts/rollback-evidence
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ROLLBACK_EVIDENCE_RUN_ID" > artifacts/rollback-evidence/release-run.json
-          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release-worker.yml" > artifacts/rollback-evidence/release-workflow.json
-          gh run download "$ROLLBACK_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "release-evidence-${{ inputs.target }}-$ROLLBACK_EVIDENCE_RUN_ID" --dir artifacts/rollback-evidence/release
+          export ROLLBACK_VERIFY_DIR
+          ROLLBACK_VERIFY_DIR=$(mktemp -d "$RUNNER_TEMP/vmate-rollback-evidence-XXXXXX")
+          trap 'rm -rf -- "$ROLLBACK_VERIFY_DIR"' EXIT
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ROLLBACK_EVIDENCE_RUN_ID" > "$ROLLBACK_VERIFY_DIR/release-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release-worker.yml" > "$ROLLBACK_VERIFY_DIR/release-workflow.json"
+          gh run download "$ROLLBACK_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "release-evidence-${{ inputs.target }}-$ROLLBACK_EVIDENCE_RUN_ID" --dir "$ROLLBACK_VERIFY_DIR/release"
           if [[ "$ROLLBACK_MODE" == 'post-lockdown' && "$LOCKDOWN_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]]; then
-            gh run download "$LOCKDOWN_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "database-release-evidence-${{ inputs.target }}-$LOCKDOWN_EVIDENCE_RUN_ID" --dir artifacts/rollback-evidence/lockdown
+            gh run download "$LOCKDOWN_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "database-release-evidence-${{ inputs.target }}-$LOCKDOWN_EVIDENCE_RUN_ID" --dir "$ROLLBACK_VERIFY_DIR/lockdown"
           fi
           node <<'NODE'
           const crypto = require('node:crypto');
@@ -388,9 +412,9 @@ jobs:
             if (files.length !== 1) process.exit(1);
             return JSON.parse(fs.readFileSync(files[0], 'utf8'));
           };
-          const release = findOne('artifacts/rollback-evidence/release', 'release-evidence.json');
-          const run = JSON.parse(fs.readFileSync('artifacts/rollback-evidence/release-run.json', 'utf8'));
-          const workflow = JSON.parse(fs.readFileSync('artifacts/rollback-evidence/release-workflow.json', 'utf8'));
+          const release = findOne(path.join(process.env.ROLLBACK_VERIFY_DIR, 'release'), 'release-evidence.json');
+          const run = JSON.parse(fs.readFileSync(path.join(process.env.ROLLBACK_VERIFY_DIR, 'release-run.json'), 'utf8'));
+          const workflow = JSON.parse(fs.readFileSync(path.join(process.env.ROLLBACK_VERIFY_DIR, 'release-workflow.json'), 'utf8'));
           const refHash = crypto.createHash('sha256').update(process.env.EXPECTED_SUPABASE_PROJECT_REF).digest('hex');
           const expectedOrigin = new URL(process.env.BASE_URL).origin;
           const expectedExpandMigration = {
@@ -420,6 +444,7 @@ jobs:
             && run.status === 'completed'
             && run.event === 'workflow_dispatch'
             && run.head_sha === process.env.GITHUB_SHA
+            && run.head_branch === process.env.DEFAULT_BRANCH
             && run.path === expectedWorkflowPath
             && workflow.path === expectedWorkflowPath
             && run.workflow_id === workflow.id;
@@ -454,7 +479,7 @@ jobs:
             if (!validBaselineRollback) process.exit(1);
           } else {
             if (!/^[0-9]+$/.test(String(process.env.LOCKDOWN_EVIDENCE_RUN_ID || ''))) process.exit(1);
-            const lockdown = findOne('artifacts/rollback-evidence/lockdown', 'database-release-evidence.json');
+            const lockdown = findOne(path.join(process.env.ROLLBACK_VERIFY_DIR, 'lockdown'), 'database-release-evidence.json');
             const validLockdown = lockdown.schemaVersion === 3
               && lockdown.target === '${{ inputs.target }}'
               && lockdown.operation === 'apply-lockdown'
@@ -473,9 +498,12 @@ jobs:
 
       - name: Prove live database rollback phase
         if: ${{ inputs.operation == 'rollback' }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
+          [[ -n "$SUPABASE_ACCESS_TOKEN" ]] || { echo '::error::Rollback database-state read credential is not configured'; exit 1; }
           workdir=$(mktemp -d "$RUNNER_TEMP/vmate-rollback-state-XXXXXX")
           trap 'rm -rf -- "$workdir"' EXIT
           mkdir -p "$workdir/supabase"
@@ -716,15 +744,23 @@ jobs:
         run: npm run build && npm run release:manifest
 
       - name: Capture deployment before operation
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         shell: bash
         run: |
           set -euo pipefail
+          [[ -n "$CLOUDFLARE_API_TOKEN" ]] || { echo '::error::Cloudflare credential is not configured for this environment'; exit 1; }
+          [[ -n "$CLOUDFLARE_ACCOUNT_ID" ]] || { echo '::error::Cloudflare account binding is not configured for this environment'; exit 1; }
           mkdir -p artifacts
+          export DEPLOYMENT_STATUS_FILE
+          DEPLOYMENT_STATUS_FILE=$(mktemp "$RUNNER_TEMP/vmate-deployment-before-XXXXXX.json")
+          trap 'rm -f -- "$DEPLOYMENT_STATUS_FILE"' EXIT
           args=(--env "")
           if [[ -n "$WRANGLER_ENV" ]]; then args=(--env "$WRANGLER_ENV"); fi
-          npx --no-install wrangler deployments status "${args[@]}" --name "$WORKER_NAME" --json > artifacts/deployment-before.json
+          npx --no-install wrangler deployments status "${args[@]}" --name "$WORKER_NAME" --json > "$DEPLOYMENT_STATUS_FILE"
           previous_stable_version_id=$(node <<'NODE'
-          const source = JSON.parse(require('node:fs').readFileSync('artifacts/deployment-before.json', 'utf8'));
+          const source = JSON.parse(require('node:fs').readFileSync(process.env.DEPLOYMENT_STATUS_FILE, 'utf8'));
           const candidates = [];
           const visit = (value) => {
             if (Array.isArray(value)) return value.forEach(visit);
@@ -743,6 +779,9 @@ jobs:
 
       - name: Apply production Custom Domain trigger before shadow upload
         if: ${{ inputs.target == 'production' && inputs.operation == 'shadow' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         shell: bash
         run: |
           set -euo pipefail
@@ -753,6 +792,9 @@ jobs:
       - name: Upload and register a zero-traffic Worker version
         id: shadow
         if: ${{ inputs.operation == 'shadow' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         shell: bash
         run: |
           set -euo pipefail
@@ -760,7 +802,9 @@ jobs:
           if [[ -n "$WRANGLER_ENV" ]]; then args=(--env "$WRANGLER_ENV"); fi
           stable_version_id="$PREVIOUS_STABLE_VERSION_ID"
           [[ -n "$stable_version_id" ]] || { echo '::error::Could not determine the current stable Worker version'; exit 1; }
-          export WRANGLER_OUTPUT_FILE_PATH="$PWD/artifacts/wrangler-output.jsonl"
+          export WRANGLER_OUTPUT_FILE_PATH
+          WRANGLER_OUTPUT_FILE_PATH=$(mktemp "$RUNNER_TEMP/vmate-wrangler-output-XXXXXX.jsonl")
+          trap 'rm -f -- "$WRANGLER_OUTPUT_FILE_PATH"' EXIT
           version_tag="github-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           release_allowed_origins="$APPROVED_ORIGIN"
           if [[ '${{ inputs.target }}' == 'production' ]]; then
@@ -770,7 +814,7 @@ jobs:
           version_id=$(node - "$version_tag" <<'NODE'
           const fs = require('node:fs');
           const expectedTag = process.argv[2];
-          const entries = fs.readFileSync('artifacts/wrangler-output.jsonl', 'utf8').trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+          const entries = fs.readFileSync(process.env.WRANGLER_OUTPUT_FILE_PATH, 'utf8').trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
           const matches = entries.filter((entry) => entry.type === 'version-upload' && entry.version_id && (!entry.version_tag || entry.version_tag === expectedTag));
           if (matches.length !== 1) process.exit(1);
           process.stdout.write(matches[0].version_id);
@@ -817,6 +861,9 @@ jobs:
 
       - name: Cut over atomically to selected version
         if: ${{ inputs.operation == 'cutover' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         shell: bash
         run: |
           set -euo pipefail
@@ -827,6 +874,9 @@ jobs:
 
       - name: Roll back atomically to selected compatible version
         if: ${{ inputs.operation == 'rollback' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         shell: bash
         run: |
           set -euo pipefail
@@ -837,14 +887,19 @@ jobs:
       - name: Capture and verify deployment after operation
         shell: bash
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           SHADOW_VERSION_ID: ${{ steps.shadow.outputs.version_id }}
           STABLE_VERSION_ID: ${{ steps.shadow.outputs.stable_version_id }}
         run: |
           set -euo pipefail
+          export DEPLOYMENT_STATUS_FILE
+          DEPLOYMENT_STATUS_FILE=$(mktemp "$RUNNER_TEMP/vmate-deployment-after-XXXXXX.json")
+          trap 'rm -f -- "$DEPLOYMENT_STATUS_FILE"' EXIT
           args=(--env ""); if [[ -n "$WRANGLER_ENV" ]]; then args=(--env "$WRANGLER_ENV"); fi
-          npx --no-install wrangler deployments status "${args[@]}" --name "$WORKER_NAME" --json > artifacts/deployment-after.json
+          npx --no-install wrangler deployments status "${args[@]}" --name "$WORKER_NAME" --json > "$DEPLOYMENT_STATUS_FILE"
           node <<'NODE'
-          const source = JSON.parse(require('node:fs').readFileSync('artifacts/deployment-after.json', 'utf8'));
+          const source = JSON.parse(require('node:fs').readFileSync(process.env.DEPLOYMENT_STATUS_FILE, 'utf8'));
           const entries = [];
           const visit = (value) => {
             if (Array.isArray(value)) return value.forEach(visit);
@@ -896,9 +951,13 @@ jobs:
 
       - name: Enforce post-cutover observability gates
         if: ${{ inputs.operation == 'cutover' }}
+        env:
+          CLOUDFLARE_OBSERVABILITY_TOKEN: ${{ secrets.CLOUDFLARE_OBSERVABILITY_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         shell: bash
         run: |
           set -euo pipefail
+          [[ -n "$CLOUDFLARE_OBSERVABILITY_TOKEN" && -n "$CLOUDFLARE_ACCOUNT_ID" ]] || { echo '::error::Scoped Worker observability credential is not configured for this environment'; exit 1; }
           observation_end=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           node scripts/check-worker-observability.mjs \
             --account-id "$CLOUDFLARE_ACCOUNT_ID" \
@@ -911,6 +970,9 @@ jobs:
 
       - name: Restore the previous stable version after a failed cutover gate
         if: ${{ failure() && inputs.operation == 'cutover' && env.CUTOVER_STARTED_AT != '' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1005,5 +1067,7 @@ jobs:
         if: ${{ always() }}
         with:
           name: release-evidence-${{ inputs.target }}-${{ github.run_id }}
-          path: artifacts/
-          if-no-files-found: error
+          path: |
+            artifacts/release-evidence.json
+            artifacts/automatic-rollback.json
+          if-no-files-found: warn
