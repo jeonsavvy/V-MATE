@@ -121,12 +121,8 @@ V-MATE는 긴 대화를 위해 시작 설정, 누적 요약, 최근 대화, 현�
 - Worker는 `window.__V_MATE_RUNTIME_ENV__`를 HTML에 주입합니다.
 - `wrangler.jsonc`는 `keep_vars: true`와 `run_worker_first`를 사용합니다.
 
-### Production URL contract
-- 공식 주소는 `https://v-mate.satinode.com`입니다.
-- `https://v-mate.jeonsavvy.workers.dev`는 기존 포트폴리오 링크 호환성을 위해 계속 제공하며, redirect하지 않습니다.
-- production release 환경은 `WORKER_BASE_URL`과 `PRODUCTION_WORKER_BASE_URL`을 공식 주소로 등록해야 합니다. release workflow는 고정된 기존 Workers.dev 주소를 포함해 두 hostname을 각각 smoke합니다.
-- Supabase Auth Redirect URLs에는 공식·기존 주소의 루트와 `/auth/recovery`를 모두 유지합니다.
-- Worker version rollback은 Custom Domain route를 제거하지 않습니다. route 제거는 기존 Workers.dev 주소를 보존하는 별도 외부 변경으로만 수행합니다.
+### 공식 주소
+- [v-mate.satinode.com](https://v-mate.satinode.com)
 
 ## 빠른 시작
 
