@@ -290,6 +290,9 @@ const validateWorkflow = (file, source) => {
       'shadow.schemaVersion === 4',
       'schemaVersion: 4',
       'baselineServingVersionId',
+      'baselineV3Keys',
+      'previousBaselineEvidenceRunId',
+      'servingCutoverEvidenceRunId',
       'serving Worker changed after the baseline attestation',
       'release.previousStableVersionId === process.env.INPUT_VERSION_ID',
       'ROLLBACK_SOURCE_VERSION_ID=${process.env.INPUT_VERSION_ID}',
@@ -426,7 +429,9 @@ const validateWorkflow = (file, source) => {
       'privilege_evidence_run_id:',
       'verification_evidence_run_id:',
       'previous_baseline_evidence_run_id:',
+      'serving_cutover_evidence_run_id:',
       'Verify previous read-only baseline renewal source',
+      'Verify serving cutover since renewed baseline',
       'Verify deployed post-lockdown lineage',
       '20260727000000',
       '20260727025134',
@@ -447,16 +452,23 @@ const validateWorkflow = (file, source) => {
       '71437e126b6b647e3f50ff91d98bd3f3f27a535e4be3df00f1a39d22b49f5533',
       'd6600ea38a78da1ee3a4c4779dd459250f887908eb40b13bbd3f64adb1c9437c',
       'Current database fingerprints do not match the applied lockdown evidence.',
+      'schemaVersion: 3',
+      'previousBaselineEvidenceRunId:',
+      'servingCutoverEvidenceRunId:',
     ]) {
       if (!source.includes(required)) fail(file, `missing read-only baseline attestation guard: ${required}`)
     }
     const renewalStep = root.jobs?.attest?.steps?.find((step) => step?.name === 'Verify previous read-only baseline renewal source')
+    const servingCutoverStep = root.jobs?.attest?.steps?.find((step) => step?.name === 'Verify serving cutover since renewed baseline')
     const originalLineageStep = root.jobs?.attest?.steps?.find((step) => step?.name === 'Verify deployed post-lockdown lineage')
     if (renewalStep?.if !== "${{ inputs.previous_baseline_evidence_run_id != '' }}" || renewalStep?.env?.GH_TOKEN !== '${{ github.token }}') {
       fail(file, 'previous baseline renewal is not isolated behind its explicit input and step-scoped GitHub token')
     }
     if (originalLineageStep?.if !== "${{ inputs.previous_baseline_evidence_run_id == '' }}") {
       fail(file, 'original post-lockdown lineage path is not preserved as the opposite renewal mode')
+    }
+    if (servingCutoverStep?.if !== "${{ inputs.previous_baseline_evidence_run_id != '' && inputs.serving_cutover_evidence_run_id != '' }}" || servingCutoverStep?.env?.GH_TOKEN !== '${{ github.token }}') {
+      fail(file, 'serving cutover renewal is not isolated behind both explicit lineage inputs and a step-scoped GitHub token')
     }
     for (const required of [
       'actions/runs/$PREVIOUS_BASELINE_EVIDENCE_RUN_ID',
@@ -485,10 +497,40 @@ const validateWorkflow = (file, source) => {
     if (String(renewalStep?.run).includes('database-release-evidence-production-')) {
       fail(file, 'previous baseline renewal still depends on the expiring original lockdown artifact')
     }
+    for (const required of [
+      'actions/runs/$SERVING_CUTOVER_EVIDENCE_RUN_ID',
+      'actions/workflows/release-worker.yml',
+      'release-evidence-production-$SERVING_CUTOVER_EVIDENCE_RUN_ID',
+      "run.conclusion === 'success'",
+      "run.status === 'completed'",
+      "run.event === 'workflow_dispatch'",
+      'run.head_sha === evidence.commit',
+      'run.head_branch === process.env.DEFAULT_BRANCH',
+      'run.path === expectedWorkflowPath',
+      'workflow.path === expectedWorkflowPath',
+      'run.workflow_id === workflow.id',
+      "evidence.operation === 'cutover'",
+      "evidence.databaseEvidenceMode === 'baseline'",
+      'evidence.baselineEvidenceRunId === process.env.PREVIOUS_BASELINE_EVIDENCE_RUN_ID',
+      'evidence.baselineServingVersionId === process.env.LINEAGE_WORKER_VERSION_ID',
+      'evidence.previousStableVersionId === process.env.LINEAGE_WORKER_VERSION_ID',
+      'evidence.versionTag === `github-${evidence.shadowEvidenceRunId}-${evidence.shadowRunAttempt}`',
+      'evidence.smokePassed === true',
+      'evidence.monitorChecks === 1',
+      'LINEAGE_WORKER_VERSION_ID=${evidence.versionId}',
+      'LINEAGE_PREVIOUS_STABLE_VERSION_ID=${evidence.previousStableVersionId}',
+      'git merge-base --is-ancestor "$PREVIOUS_BASELINE_COMMIT" "$SERVING_CUTOVER_COMMIT"',
+      'git merge-base --is-ancestor "$SERVING_CUTOVER_COMMIT" "$GITHUB_SHA"',
+    ]) {
+      if (!String(servingCutoverStep?.run).includes(required)) fail(file, `serving cutover renewal is missing: ${required}`)
+    }
     const baselineScopeStep = root.jobs?.attest?.steps?.find((step) => step?.name === 'Validate protected read-only baseline scope')
     if (!baselineScopeStep) fail(file, 'protected read-only baseline scope step is absent')
     if (!/git diff --quiet "\$BASELINE_SOURCE_SHA" "\$GITHUB_SHA" -- supabase\/migrations\//.test(String(baselineScopeStep.run))) {
       fail(file, 'read-only baseline attestation does not prove the trusted migration tree is unchanged')
+    }
+    if (!String(baselineScopeStep.run).includes('serving cutover evidence requires previous baseline evidence')) {
+      fail(file, 'serving cutover evidence can be detached from the previous baseline renewal source')
     }
     if (/allowed-baseline-files|change scope is not allowlisted|-- supabase server\/platform server\/chat-handler\.js worker\.js/.test(String(baselineScopeStep.run))) {
       fail(file, 'read-only baseline attestation still relies on a release-specific allowlist or runtime-surface ban')

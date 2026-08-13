@@ -111,6 +111,9 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   const baselineRenewalStep = baselineWorkflow.jobs.attest.steps.find(
     (step) => step.name === 'Verify previous read-only baseline renewal source',
   );
+  const baselineServingCutoverStep = baselineWorkflow.jobs.attest.steps.find(
+    (step) => step.name === 'Verify serving cutover since renewed baseline',
+  );
   const baselineOriginalLineageStep = baselineWorkflow.jobs.attest.steps.find(
     (step) => step.name === 'Verify deployed post-lockdown lineage',
   );
@@ -354,9 +357,16 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(baseline, /privilege_evidence_run_id:/);
   assert.match(baseline, /verification_evidence_run_id:/);
   assert.ok(baselineWorkflow.on.workflow_dispatch.inputs.previous_baseline_evidence_run_id);
+  assert.ok(baselineWorkflow.on.workflow_dispatch.inputs.serving_cutover_evidence_run_id);
   assert.ok(baselineRenewalStep);
+  assert.ok(baselineServingCutoverStep);
   assert.equal(baselineRenewalStep.if, "${{ inputs.previous_baseline_evidence_run_id != '' }}");
   assert.equal(baselineRenewalStep.env.GH_TOKEN, '${{ github.token }}');
+  assert.equal(
+    baselineServingCutoverStep.if,
+    "${{ inputs.previous_baseline_evidence_run_id != '' && inputs.serving_cutover_evidence_run_id != '' }}",
+  );
+  assert.equal(baselineServingCutoverStep.env.GH_TOKEN, '${{ github.token }}');
   assert.equal(baselineOriginalLineageStep.if, "${{ inputs.previous_baseline_evidence_run_id == '' }}");
   for (const required of [
     'actions/runs/$PREVIOUS_BASELINE_EVIDENCE_RUN_ID',
@@ -383,6 +393,42 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
     assert.match(baselineRenewalStep.run, new RegExp(required.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   }
   assert.doesNotMatch(baselineRenewalStep.run, /database-release-evidence-production-/);
+  for (const required of [
+    'actions/runs/$SERVING_CUTOVER_EVIDENCE_RUN_ID',
+    'actions/workflows/release-worker.yml',
+    'release-evidence-production-$SERVING_CUTOVER_EVIDENCE_RUN_ID',
+    "run.conclusion === 'success'",
+    "run.status === 'completed'",
+    "run.event === 'workflow_dispatch'",
+    'run.head_sha === evidence.commit',
+    'run.head_branch === process.env.DEFAULT_BRANCH',
+    'run.path === expectedWorkflowPath',
+    'workflow.path === expectedWorkflowPath',
+    'run.workflow_id === workflow.id',
+    "evidence.operation === 'cutover'",
+    "evidence.databaseEvidenceMode === 'baseline'",
+    'evidence.baselineEvidenceRunId === process.env.PREVIOUS_BASELINE_EVIDENCE_RUN_ID',
+    'evidence.baselineServingVersionId === process.env.LINEAGE_WORKER_VERSION_ID',
+    'evidence.previousStableVersionId === process.env.LINEAGE_WORKER_VERSION_ID',
+    'evidence.versionTag === `github-${evidence.shadowEvidenceRunId}-${evidence.shadowRunAttempt}`',
+    'evidence.smokePassed === true',
+    'evidence.monitorChecks === 1',
+    'LINEAGE_WORKER_VERSION_ID=${evidence.versionId}',
+    'LINEAGE_PREVIOUS_STABLE_VERSION_ID=${evidence.previousStableVersionId}',
+    'git merge-base --is-ancestor "$PREVIOUS_BASELINE_COMMIT" "$SERVING_CUTOVER_COMMIT"',
+    'git merge-base --is-ancestor "$SERVING_CUTOVER_COMMIT" "$GITHUB_SHA"',
+  ]) {
+    assert.match(baselineServingCutoverStep.run, new RegExp(required.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
+  assert.match(
+    baselineScopeStep.run,
+    /serving cutover evidence requires previous baseline evidence/,
+  );
+  assert.match(baseline, /schemaVersion: 3/);
+  assert.match(baseline, /previousBaselineEvidenceRunId:/);
+  assert.match(baseline, /servingCutoverEvidenceRunId:/);
+  assert.match(release, /baselineV3Keys/);
+  assert.match(release, /evidence\.schemaVersion === 3/);
   assert.match(baseline, /Verify deployed post-lockdown lineage/);
   assert.match(baseline, /084b38123a37e70d3fa51093fe44b39098a36bc2/);
   assert.match(baseline, /b2b997f6c0eec183509cf2bc4241fc29eb2f6b7e/);

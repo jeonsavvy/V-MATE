@@ -307,7 +307,7 @@ jobs:
             'safeViewsUseSecurityBarrier', 'safeViewDefinitionsMatch',
             'servicePromptColumnsReadable',
           ];
-          const baselineKeys = [
+          const baselineV2Keys = [
             'allPassed', 'attestedAt', 'baselineSourceSha', 'commit', 'invariants',
             'lockdownAppliedAt', 'lockdownCommit', 'lockdownEvidenceRunId',
             'lockdownMigrationAlias', 'lockdownMigrationAliasHash', 'lockdownStateAttestedAt',
@@ -317,9 +317,20 @@ jobs:
             'releaseTrack', 'remoteStateFingerprint', 'schemaVersion', 'target',
             'verificationCommit', 'verificationEvidenceRunId', 'workerVersionId',
           ];
+          const baselineV3Keys = [
+            ...baselineV2Keys,
+            'previousBaselineEvidenceRunId', 'servingCutoverEvidenceRunId',
+          ];
+          const canonicalOptionalRunId = (value) => value === null || /^[0-9]+$/.test(String(value));
+          const baselineEvidenceShape = evidence.schemaVersion === 2
+            ? JSON.stringify(Object.keys(evidence).sort()) === JSON.stringify(baselineV2Keys.sort())
+            : evidence.schemaVersion === 3
+              && JSON.stringify(Object.keys(evidence).sort()) === JSON.stringify(baselineV3Keys.sort())
+              && canonicalOptionalRunId(evidence.previousBaselineEvidenceRunId)
+              && canonicalOptionalRunId(evidence.servingCutoverEvidenceRunId)
+              && (evidence.servingCutoverEvidenceRunId === null || evidence.previousBaselineEvidenceRunId !== null);
           const valid = baseline
-            ? JSON.stringify(Object.keys(evidence).sort()) === JSON.stringify(baselineKeys.sort())
-              && evidence.schemaVersion === 2
+            ? baselineEvidenceShape
               && evidence.target === 'production'
               && evidence.operation === 'read-only-post-lockdown-baseline-attestation'
               && evidence.queryMode === 'supabase_read_only_user'

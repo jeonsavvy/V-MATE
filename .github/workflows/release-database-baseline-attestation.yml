@@ -32,6 +32,10 @@ on:
         description: Optional unexpired successful baseline evidence used to renew lineage after an original artifact expires
         required: false
         type: string
+      serving_cutover_evidence_run_id:
+        description: Optional successful cutover evidence proving a newer Worker now serves the renewed baseline
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -56,6 +60,7 @@ jobs:
       PRIVILEGE_EVIDENCE_RUN_ID: ${{ inputs.privilege_evidence_run_id }}
       VERIFICATION_EVIDENCE_RUN_ID: ${{ inputs.verification_evidence_run_id }}
       PREVIOUS_BASELINE_EVIDENCE_RUN_ID: ${{ inputs.previous_baseline_evidence_run_id }}
+      SERVING_CUTOVER_EVIDENCE_RUN_ID: ${{ inputs.serving_cutover_evidence_run_id }}
       BASELINE_SOURCE_SHA: 084b38123a37e70d3fa51093fe44b39098a36bc2
       POST_LOCKDOWN_EVIDENCE_SHA: b2b997f6c0eec183509cf2bc4241fc29eb2f6b7e
       AUTHORIZED_BASELINE_RELEASE_SHA: ${{ vars.AUTHORIZED_BASELINE_RELEASE_SHA }}
@@ -80,6 +85,8 @@ jobs:
           [[ "$RELEASE_TRACK" == 'prompt-privacy' ]] || { echo '::error::post-lockdown baseline requires the prompt-privacy track'; exit 1; }
           [[ "$LOCKDOWN_EVIDENCE_RUN_ID" =~ ^[0-9]+$ && "$PRIVILEGE_EVIDENCE_RUN_ID" =~ ^[0-9]+$ && "$VERIFICATION_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::post-lockdown evidence run IDs must be canonical'; exit 1; }
           [[ -z "$PREVIOUS_BASELINE_EVIDENCE_RUN_ID" || "$PREVIOUS_BASELINE_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::previous baseline evidence run ID must be canonical'; exit 1; }
+          [[ -z "$SERVING_CUTOVER_EVIDENCE_RUN_ID" || "$SERVING_CUTOVER_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::serving cutover evidence run ID must be canonical'; exit 1; }
+          [[ -z "$SERVING_CUTOVER_EVIDENCE_RUN_ID" || -n "$PREVIOUS_BASELINE_EVIDENCE_RUN_ID" ]] || { echo '::error::serving cutover evidence requires previous baseline evidence'; exit 1; }
           [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ && "$AUTHORIZED_BASELINE_RELEASE_SHA" =~ ^[0-9a-f]{40}$ && "$GITHUB_SHA" == "$AUTHORIZED_BASELINE_RELEASE_SHA" ]] || { echo '::error::authorized baseline release SHA guard mismatch'; exit 1; }
           git merge-base --is-ancestor "$BASELINE_SOURCE_SHA" "$GITHUB_SHA" || { echo '::error::baseline source is not an ancestor of this commit'; exit 1; }
           git merge-base --is-ancestor "$POST_LOCKDOWN_EVIDENCE_SHA" "$GITHUB_SHA" || { echo '::error::post-lockdown evidence source is not an ancestor of this commit'; exit 1; }
@@ -150,7 +157,7 @@ jobs:
             'safeViewsUseSecurityBarrier', 'safeViewDefinitionsMatch',
             'servicePromptColumnsReadable',
           ];
-          const expectedEvidenceKeys = [
+          const baselineV2Keys = [
             'allPassed', 'attestedAt', 'baselineSourceSha', 'commit', 'invariants',
             'lockdownAppliedAt', 'lockdownCommit', 'lockdownEvidenceRunId',
             'lockdownMigrationAlias', 'lockdownMigrationAliasHash', 'lockdownStateAttestedAt',
@@ -160,8 +167,13 @@ jobs:
             'remoteStateFingerprint', 'schemaVersion', 'target', 'verificationCommit',
             'verificationEvidenceRunId', 'workerVersionId',
           ];
+          const baselineV3Keys = [
+            ...baselineV2Keys,
+            'previousBaselineEvidenceRunId', 'servingCutoverEvidenceRunId',
+          ];
           const canonicalVersion = (value) => typeof value === 'string' && /^[A-Za-z0-9_-]+$/.test(value);
           const canonicalDate = (value) => Number.isFinite(Date.parse(value || ''));
+          const canonicalOptionalRunId = (value) => value === null || /^[0-9]+$/.test(String(value));
           const runBound = run.id === Number(process.env.PREVIOUS_BASELINE_EVIDENCE_RUN_ID)
             && run.conclusion === 'success'
             && run.status === 'completed'
@@ -171,8 +183,14 @@ jobs:
             && run.path === expectedWorkflowPath
             && workflow.path === expectedWorkflowPath
             && run.workflow_id === workflow.id;
-          const evidenceBound = JSON.stringify(Object.keys(evidence).sort()) === JSON.stringify(expectedEvidenceKeys.sort())
-            && evidence.schemaVersion === 2
+          const evidenceShape = evidence.schemaVersion === 2
+            ? JSON.stringify(Object.keys(evidence).sort()) === JSON.stringify(baselineV2Keys.sort())
+            : evidence.schemaVersion === 3
+              && JSON.stringify(Object.keys(evidence).sort()) === JSON.stringify(baselineV3Keys.sort())
+              && canonicalOptionalRunId(evidence.previousBaselineEvidenceRunId)
+              && canonicalOptionalRunId(evidence.servingCutoverEvidenceRunId)
+              && (evidence.servingCutoverEvidenceRunId === null || evidence.previousBaselineEvidenceRunId !== null);
+          const evidenceBound = evidenceShape
             && evidence.target === 'production'
             && evidence.operation === 'read-only-post-lockdown-baseline-attestation'
             && evidence.queryMode === 'supabase_read_only_user'
@@ -211,6 +229,8 @@ jobs:
           if (!runBound || !evidenceBound) throw new Error('Previous baseline evidence is not bound to an approved successful lineage attestation.');
           fs.writeFileSync(process.env.RENEWAL_COMMIT_FILE, `${evidence.commit}\n`);
           fs.appendFileSync(process.env.GITHUB_ENV, [
+            `PREVIOUS_BASELINE_COMMIT=${evidence.commit}`,
+            `PREVIOUS_BASELINE_ATTESTED_AT=${evidence.attestedAt}`,
             `LOCKDOWN_REMOTE_STATE_FINGERPRINT=${evidence.remoteStateFingerprint}`,
             `LOCKDOWN_MIGRATION_ROWS_FINGERPRINT=${evidence.migrationRowsFingerprint}`,
             `LINEAGE_WORKER_VERSION_ID=${evidence.workerVersionId}`,
@@ -225,6 +245,117 @@ jobs:
           [[ "$PREVIOUS_BASELINE_COMMIT" != "$GITHUB_SHA" ]] || { echo '::error::previous baseline must precede the current release'; exit 1; }
           git merge-base --is-ancestor "$PREVIOUS_BASELINE_COMMIT" "$GITHUB_SHA" || { echo '::error::previous baseline commit is not an ancestor of this release'; exit 1; }
           git diff --quiet "$PREVIOUS_BASELINE_COMMIT" "$GITHUB_SHA" -- supabase/migrations/ || { echo '::error::baseline renewal cannot cross a database migration change'; exit 1; }
+
+      - name: Verify serving cutover since renewed baseline
+        if: ${{ inputs.previous_baseline_evidence_run_id != '' && inputs.serving_cutover_evidence_run_id != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SERVING_CUTOVER_DIR
+          SERVING_CUTOVER_DIR=$(mktemp -d "$RUNNER_TEMP/vmate-serving-cutover-XXXXXX")
+          trap 'rm -rf -- "$SERVING_CUTOVER_DIR"' EXIT
+          export SERVING_CUTOVER_COMMIT_FILE="$SERVING_CUTOVER_DIR/commit.txt"
+          mkdir -p "$SERVING_CUTOVER_DIR/artifact"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SERVING_CUTOVER_EVIDENCE_RUN_ID" > "$SERVING_CUTOVER_DIR/run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release-worker.yml" > "$SERVING_CUTOVER_DIR/workflow.json"
+          gh run download "$SERVING_CUTOVER_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "release-evidence-production-$SERVING_CUTOVER_EVIDENCE_RUN_ID" --dir "$SERVING_CUTOVER_DIR/artifact"
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const read = (...parts) => JSON.parse(fs.readFileSync(path.join(process.env.SERVING_CUTOVER_DIR, ...parts), 'utf8'));
+          const run = read('run.json');
+          const workflow = read('workflow.json');
+          const evidence = read('artifact', 'release-evidence.json');
+          const expectedWorkflowPath = '.github/workflows/release-worker.yml';
+          const expectedEvidenceKeys = [
+            'baselineEvidenceRunId', 'baselineServingVersionId', 'baselineWindow', 'baseUrl',
+            'commit', 'completedAt', 'databaseEvidenceMode', 'databaseReleaseTrack',
+            'expandAppliedAt', 'expandBridgePrelaunchEvidenceRunId', 'expandEvidenceCommit',
+            'expandEvidenceRunId', 'expandMigration', 'expandProjectRefHash', 'lockdownEvidenceRunId',
+            'monitorChecks', 'monitorMinutes', 'observabilityMetrics', 'observabilityPassed',
+            'observabilityWindow', 'operation', 'previousStableVersionId', 'projectRefHash',
+            'rollbackEvidenceRunId', 'rollbackMode', 'rollbackSourceVersionId', 'schemaVersion',
+            'shadowEvidenceRunId', 'shadowRunAttempt', 'smokePassed', 'target', 'v2Compatible',
+            'versionCreatedAt', 'versionId', 'versionMessage', 'versionMetadataHash', 'versionTag',
+            'workerName',
+          ];
+          const canonicalVersion = (value) => typeof value === 'string' && /^[A-Za-z0-9_-]+$/.test(value);
+          const canonicalDate = (value) => Number.isFinite(Date.parse(value || ''));
+          const projectRefHash = crypto.createHash('sha256').update(process.env.PROJECT_REF).digest('hex');
+          const runBound = run.id === Number(process.env.SERVING_CUTOVER_EVIDENCE_RUN_ID)
+            && run.conclusion === 'success'
+            && run.status === 'completed'
+            && run.event === 'workflow_dispatch'
+            && run.head_sha === evidence.commit
+            && run.head_branch === process.env.DEFAULT_BRANCH
+            && run.path === expectedWorkflowPath
+            && workflow.path === expectedWorkflowPath
+            && run.workflow_id === workflow.id;
+          const immutableVersionBound = canonicalVersion(evidence.versionId)
+            && evidence.versionId !== process.env.LINEAGE_WORKER_VERSION_ID
+            && /^[0-9]+$/.test(String(evidence.shadowEvidenceRunId || ''))
+            && Number.isInteger(evidence.shadowRunAttempt)
+            && evidence.shadowRunAttempt >= 1
+            && evidence.versionTag === `github-${evidence.shadowEvidenceRunId}-${evidence.shadowRunAttempt}`
+            && evidence.versionMessage === evidence.commit
+            && canonicalDate(evidence.versionCreatedAt)
+            && /^[a-f0-9]{64}$/.test(String(evidence.versionMetadataHash || ''));
+          const evidenceBound = JSON.stringify(Object.keys(evidence).sort()) === JSON.stringify(expectedEvidenceKeys.sort())
+            && evidence.schemaVersion === 4
+            && evidence.target === 'production'
+            && evidence.operation === 'cutover'
+            && /^[0-9a-f]{40}$/.test(String(evidence.commit || ''))
+            && evidence.workerName === 'v-mate'
+            && evidence.baseUrl === 'https://v-mate.satinode.com'
+            && evidence.projectRefHash === projectRefHash
+            && evidence.databaseEvidenceMode === 'baseline'
+            && evidence.databaseReleaseTrack === process.env.RELEASE_TRACK
+            && evidence.baselineEvidenceRunId === process.env.PREVIOUS_BASELINE_EVIDENCE_RUN_ID
+            && evidence.baselineServingVersionId === process.env.LINEAGE_WORKER_VERSION_ID
+            && evidence.previousStableVersionId === process.env.LINEAGE_WORKER_VERSION_ID
+            && evidence.v2Compatible === true
+            && evidence.expandEvidenceRunId === ''
+            && evidence.expandEvidenceCommit === null
+            && evidence.expandBridgePrelaunchEvidenceRunId === null
+            && evidence.expandProjectRefHash === ''
+            && evidence.expandAppliedAt === ''
+            && evidence.expandMigration === null
+            && evidence.rollbackMode === null
+            && evidence.rollbackEvidenceRunId === null
+            && evidence.rollbackSourceVersionId === null
+            && evidence.lockdownEvidenceRunId === null
+            && evidence.smokePassed === true
+            && evidence.monitorChecks === 1
+            && evidence.monitorMinutes === 0
+            && evidence.observabilityPassed === null
+            && evidence.observabilityMetrics === null
+            && evidence.observabilityWindow === null
+            && evidence.baselineWindow === null
+            && immutableVersionBound
+            && canonicalDate(process.env.PREVIOUS_BASELINE_ATTESTED_AT)
+            && canonicalDate(evidence.completedAt)
+            && canonicalDate(run.created_at)
+            && canonicalDate(run.updated_at)
+            && Date.parse(process.env.PREVIOUS_BASELINE_ATTESTED_AT) <= Date.parse(evidence.versionCreatedAt)
+            && Date.parse(evidence.versionCreatedAt) <= Date.parse(run.created_at)
+            && Date.parse(run.created_at) <= Date.parse(evidence.completedAt)
+            && Date.parse(evidence.completedAt) <= Date.parse(run.updated_at);
+          if (!runBound || !evidenceBound) throw new Error('Serving cutover evidence is not bound to the renewed baseline and immutable Worker version.');
+          fs.writeFileSync(process.env.SERVING_CUTOVER_COMMIT_FILE, `${evidence.commit}\n`);
+          fs.appendFileSync(process.env.GITHUB_ENV, [
+            `LINEAGE_WORKER_VERSION_ID=${evidence.versionId}`,
+            `LINEAGE_PREVIOUS_STABLE_VERSION_ID=${evidence.previousStableVersionId}`,
+            '',
+          ].join('\n'));
+          NODE
+          SERVING_CUTOVER_COMMIT=$(<"$SERVING_CUTOVER_COMMIT_FILE")
+          [[ "$SERVING_CUTOVER_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::serving cutover commit is invalid'; exit 1; }
+          git merge-base --is-ancestor "$PREVIOUS_BASELINE_COMMIT" "$SERVING_CUTOVER_COMMIT" || { echo '::error::serving cutover does not descend from the renewed baseline'; exit 1; }
+          git merge-base --is-ancestor "$SERVING_CUTOVER_COMMIT" "$GITHUB_SHA" || { echo '::error::serving cutover commit is not an ancestor of this release'; exit 1; }
+          git diff --quiet "$PREVIOUS_BASELINE_COMMIT" "$SERVING_CUTOVER_COMMIT" -- supabase/migrations/ || { echo '::error::serving cutover cannot cross a database migration change'; exit 1; }
 
       - name: Verify deployed post-lockdown lineage
         if: ${{ inputs.previous_baseline_evidence_run_id == '' }}
@@ -639,7 +770,7 @@ jobs:
           const migrationList = fs.readFileSync('private-artifacts/migration-list.json');
           const lockdownMigrationAlias = { sourceVersion: '20260727000000', remoteVersion: '20260727025134', remoteName: 'backend_stabilization_lockdown' };
           const evidence = {
-            schemaVersion: 2,
+            schemaVersion: 3,
             target: 'production',
             operation: 'read-only-post-lockdown-baseline-attestation',
             queryMode: 'supabase_read_only_user',
@@ -651,6 +782,8 @@ jobs:
             lockdownEvidenceRunId: process.env.LOCKDOWN_EVIDENCE_RUN_ID,
             privilegeEvidenceRunId: process.env.PRIVILEGE_EVIDENCE_RUN_ID,
             verificationEvidenceRunId: process.env.VERIFICATION_EVIDENCE_RUN_ID,
+            previousBaselineEvidenceRunId: process.env.PREVIOUS_BASELINE_EVIDENCE_RUN_ID || null,
+            servingCutoverEvidenceRunId: process.env.SERVING_CUTOVER_EVIDENCE_RUN_ID || null,
             lockdownCommit: process.env.BASELINE_SOURCE_SHA,
             privilegeCommit: process.env.POST_LOCKDOWN_EVIDENCE_SHA,
             verificationCommit: process.env.POST_LOCKDOWN_EVIDENCE_SHA,
