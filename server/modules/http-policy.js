@@ -36,8 +36,8 @@ const trimRateLimitStoreToCapacity = (maxKeys, now) => {
     }
 };
 
-export const parseAllowedOrigins = () => {
-    const raw = (process.env.ALLOWED_ORIGINS || '').trim();
+export const parseAllowedOrigins = (environment = process.env) => {
+    const raw = String(environment?.ALLOWED_ORIGINS || '').trim();
     if (raw === cachedAllowedOriginsRaw && cachedAllowedOrigins) {
         return cachedAllowedOrigins;
     }
@@ -96,13 +96,13 @@ const isOriginlessSameOriginBrowserRequest = (requestOrigin, requestHeaders) => 
     return fetchSite === 'same-origin';
 };
 
-export const isOriginAllowed = (origin, requestOrigin = '', requestHeaders = undefined) => {
-    if (shouldAllowAllOrigins()) {
+export const isOriginAllowed = (origin, requestOrigin = '', requestHeaders = undefined, environment = process.env) => {
+    if (shouldAllowAllOrigins(environment)) {
         return true;
     }
 
     if (!origin) {
-        if (shouldAllowRequestsWithoutOrigin()) {
+        if (shouldAllowRequestsWithoutOrigin(environment)) {
             return true;
         }
 
@@ -114,13 +114,13 @@ export const isOriginAllowed = (origin, requestOrigin = '', requestHeaders = und
     if (normalizedRequestOrigin && normalized === normalizedRequestOrigin) {
         return true;
     }
-    const allowlist = parseAllowedOrigins();
+    const allowlist = parseAllowedOrigins(environment);
     return allowlist.has(normalized);
 };
 
-const resolveClientIp = (event) => {
+const resolveClientIp = (event, environment = process.env) => {
     const headers = event?.headers || {};
-    const trustProxyHeaders = shouldTrustProxyHeaders();
+    const trustProxyHeaders = shouldTrustProxyHeaders(environment);
     const trustedAdapter = event?.requestContext?.trustedProxy === true;
     const cfConnectingIp = headers['cf-connecting-ip'] || headers['CF-Connecting-IP'];
     if (cfConnectingIp && (trustedAdapter || trustProxyHeaders)) {
@@ -134,7 +134,7 @@ const resolveClientIp = (event) => {
         }
     }
 
-    if (trustProxyHeaders && shouldTrustForwardedFor()) {
+    if (trustProxyHeaders && shouldTrustForwardedFor(environment)) {
         const forwardedFor = headers['x-forwarded-for'] || headers['X-Forwarded-For'];
         if (forwardedFor) {
             const extracted = String(forwardedFor).split(',')[0].trim();
@@ -147,8 +147,8 @@ const resolveClientIp = (event) => {
     return '';
 };
 
-export const getClientKey = (event, origin) => {
-    const ip = resolveClientIp(event);
+export const getClientKey = (event, origin, environment = process.env) => {
+    const ip = resolveClientIp(event, environment);
     if (ip) return `ip:${ip}`;
 
     const normalizedOrigin = origin ? normalizeOrigin(origin) : '';
@@ -163,9 +163,9 @@ export const getClientKey = (event, origin) => {
     return 'anonymous:unknown';
 };
 
-export const checkRateLimit = (key) => {
-    const { windowMs, maxRequests } = getRateLimitConfig();
-    const maxKeys = getRateLimitMaxKeys();
+export const checkRateLimit = (key, environment = process.env) => {
+    const { windowMs, maxRequests } = getRateLimitConfig(environment);
+    const maxKeys = getRateLimitMaxKeys(environment);
     const now = Date.now();
     rateLimitGcTick += 1;
 

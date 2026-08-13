@@ -388,6 +388,111 @@ test('room chat passes the loaded room and prompt context to the atomic commit',
   assert.equal(commitInput.expectedVersion, 4);
 });
 
+test('public catalog reads use the injected runtime environment without process env sync', async () => {
+  clearPersistenceEnvironment();
+  delete process.env.SUPABASE_URL;
+  const runtimeEnvironment = {
+    APP_ENV: 'production',
+    REQUIRE_CONFIGURED_SUPABASE_URL: 'true',
+    SUPABASE_URL: 'https://runtime-project.supabase.co',
+    SUPABASE_ANON_KEY: 'runtime-public-key',
+  };
+  const requests = [];
+  globalThis.fetch = async (url) => {
+    requests.push(String(url));
+    const requestUrl = String(url);
+    if (requestUrl.includes('/rest/v1/app_settings')) {
+      return new Response('null', { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+
+  const result = await handlePlatformApi({
+    event: { httpMethod: 'GET', path: '/api/home', headers: {} },
+    headers: { 'Content-Type': 'application/json' },
+    startedAtMs: Date.now(),
+    traceId: 'trace-runtime-home',
+    runtimeEnvironment,
+  });
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(JSON.parse(result.body).home.defaultTab, 'characters');
+  assert.equal(requests.length, 3);
+  assert.ok(requests.every((url) => url.startsWith('https://runtime-project.supabase.co/')));
+});
+
+test('owner routes evaluate owner capability once before repository work', async () => {
+  clearPersistenceEnvironment();
+  const runtimeEnvironment = {
+    APP_ENV: 'production',
+    REQUIRE_CONFIGURED_SUPABASE_URL: 'true',
+    SUPABASE_URL: 'https://runtime-project.supabase.co',
+    SUPABASE_ANON_KEY: 'runtime-public-key',
+    SUPABASE_SERVICE_ROLE_KEY: 'runtime-service-key',
+  };
+  let ownerChecks = 0;
+  globalThis.fetch = async (url) => {
+    const requestUrl = String(url);
+    if (requestUrl.includes('/auth/v1/user')) {
+      return new Response(JSON.stringify({ id: 'owner-1' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (requestUrl.includes('/rest/v1/rpc/is_owner_user')) {
+      ownerChecks += 1;
+      return new Response('true', { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (requestUrl.includes('/rest/v1/app_settings')) {
+      return new Response('null', { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+
+  const result = await handlePlatformApi({
+    event: { httpMethod: 'GET', path: '/api/ops/dashboard', headers: { authorization: 'Bearer owner-token' } },
+    headers: { 'Content-Type': 'application/json' },
+    startedAtMs: Date.now(),
+    traceId: 'trace-owner-once',
+    runtimeEnvironment,
+  });
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(ownerChecks, 1);
+});
+
+test('room chat refunds and rejects malformed structured model output', async () => {
+  clearPersistenceEnvironment();
+  process.env.GOOGLE_API_KEY = 'test-key';
+  let refundCalls = 0;
+  let commitCalls = 0;
+  const room = { id: 'room-invalid-output', version: 2, character: { slug: 'mika' } };
+  const store = {
+    async getRoom() { return room; },
+    async reserveChatQuota() {
+      return { allowed: true, disposition: 'reserved', roomVersion: 2, limit: 30, remaining: 29, resetAt: '2026-07-27T15:00:00.000Z' };
+    },
+    async refundChatQuota() { refundCalls += 1; },
+    async getRoomPromptContext() { return { promptSnapshot: 'safe prompt' }; },
+    async getRoomHistoryForModel() { return []; },
+    async commitRoomTurn() { commitCalls += 1; return room; },
+  };
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    candidates: [{ content: { parts: [{ text: 'not structured model output' }] } }],
+  }), { status: 200, headers: { 'content-type': 'application/json' } });
+
+  const result = await handleRoomChat({
+    event: { headers: {}, body: JSON.stringify({ userMessage: 'continue', clientRequestId: 'request-invalid-output' }) },
+    headers: { 'Content-Type': 'application/json' },
+    startedAtMs: Date.now(),
+    traceId: 'trace-invalid-output',
+    roomId: room.id,
+    storeOverride: store,
+  });
+
+  assert.equal(result.statusCode, 502);
+  assert.equal(JSON.parse(result.body).error_code, 'RESPONSE_INVALID_FORMAT');
+  assert.equal(refundCalls, 1);
+  assert.equal(commitCalls, 0);
+});
+
 test('room chat blocks a whitespace-chunked encoded master prompt before commit', async () => {
   clearPersistenceEnvironment();
   process.env.GOOGLE_API_KEY = 'test-key';

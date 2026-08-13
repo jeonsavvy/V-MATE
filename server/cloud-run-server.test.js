@@ -640,14 +640,22 @@ test('forwards /api/chat request to provided chat handler', async () => {
   process.env.ALLOW_ALL_ORIGINS = 'false';
   process.env.ALLOWED_ORIGINS = 'http://localhost:5173';
 
-  const observed = { called: false, event: null };
-  const { baseUrl, close } = await startServer(async (event) => {
+  const observed = { called: false, event: null, context: null };
+  const { baseUrl, close } = await startServer(async (event, context) => {
     observed.called = true;
     observed.event = event;
+    observed.context = context;
     return {
       statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ok: true, source: 'chat-handler' }),
+      headers: {
+        'Content-Type': 'application/json',
+        'X-V-MATE-Trace-Id': 'handler-must-not-replace-ingress-trace',
+      },
+      body: JSON.stringify({
+        ok: true,
+        source: 'chat-handler',
+        trace_id: context.traceId,
+      }),
     };
   });
 
@@ -660,12 +668,20 @@ test('forwards /api/chat request to provided chat handler', async () => {
 
     assert.equal(response.status, 200);
     const payload = await response.json();
-    assert.deepEqual(payload, { ok: true, source: 'chat-handler' });
+    assert.deepEqual(payload, {
+      ok: true,
+      source: 'chat-handler',
+      trace_id: observed.context.traceId,
+    });
     assert.equal(observed.called, true);
     assert.equal(observed.event.httpMethod, 'POST');
     assert.match(String(observed.event.body), /userMessage/);
     assert.equal(response.headers.get('access-control-allow-origin'), 'http://localhost:5173');
-    assert.equal(typeof response.headers.get('x-v-mate-trace-id'), 'string');
+    assert.equal(response.headers.get('x-v-mate-trace-id'), observed.context.traceId);
+    assert.equal(observed.event.requestContext.traceId, observed.context.traceId);
+    assert.equal(observed.context.requestContext.traceId, observed.context.traceId);
+    assert.equal(Object.isFrozen(observed.context), true);
+    assert.equal(Object.isFrozen(observed.context.runtimeConfig), true);
     assert.equal(response.headers.get('cache-control'), 'no-store, max-age=0');
     assert.equal(response.headers.get('pragma'), 'no-cache');
   } finally {
@@ -741,7 +757,11 @@ test('falls back to empty chatHandlerContext when cloud run context resolver thr
     assert.equal(response.status, 200);
     const payload = await response.json();
     assert.deepEqual(payload, { ok: true });
-    assert.deepEqual(observed.context, {});
+    assert.equal(typeof observed.context?.traceId, 'string');
+    assert.equal(observed.context?.requestContext?.traceId, observed.context?.traceId);
+    assert.equal(observed.context?.runtimeConfig?.environment?.ALLOWED_ORIGINS, 'http://localhost:5173');
+    assert.equal(observed.context?.checkRateLimit, undefined);
+    assert.equal(observed.context?.promptCache, undefined);
   } finally {
     await close();
   }

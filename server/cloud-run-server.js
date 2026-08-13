@@ -1,14 +1,14 @@
 import http from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { handler as chatHandler } from './chat-handler.js';
-import { buildHeaders, CORS_ALLOWED_METHODS, isOriginAllowed } from './modules/http-policy.js';
-import { buildApiErrorResult } from './modules/http-response.js';
+import { executeApiIngress } from './modules/api-ingress.js';
+import { CORS_ALLOWED_METHODS } from './modules/http-policy.js';
 import { mergeChatHandlerContexts, resolveChatHandlerContext } from './modules/chat-handler-context.js';
-import { getRequestBodyLimitBytes } from './modules/runtime-config.js';
-import { resolveRuntimeChatHandlerContext } from './modules/runtime-chat-context.js';
+import { createRuntimeConfig } from './modules/runtime-config.js';
+import { resolveRuntimeEnvironmentChatContext } from './modules/runtime-environment-chat-context.js';
+import { createRuntimeEnvironment } from './modules/runtime-environment.js';
 import { toSafeErrorMeta } from './modules/safe-error-meta.js';
 import { logServerInfo, logServerWarn } from './modules/server-logger.js';
-import { createTraceId } from './modules/trace-id.js';
 import { handlePlatformApi } from './platform/api.js';
 
 // Cloud Run adapter는 Worker와 같은 API 계약을 Node HTTP 서버로 재현한다.
@@ -28,7 +28,7 @@ const normalizeHeaders = (headers) =>
     );
 
 // Node 스트림에서도 Worker와 같은 body 제한을 먼저 적용한다.
-const readRawBody = (req) =>
+const readRawBody = (req, maxBodyBytes) =>
     new Promise((resolve, reject) => {
         if (req.method === 'GET' || req.method === 'HEAD') {
             resolve('');
@@ -38,7 +38,6 @@ const readRawBody = (req) =>
         let body = '';
         let byteLength = 0;
         let settled = false;
-        const maxBodyBytes = getRequestBodyLimitBytes();
         const contentLengthHeader = req.headers?.['content-length'];
         const contentLength = Number.parseInt(String(contentLengthHeader || ''), 10);
         if (Number.isFinite(contentLength) && contentLength > maxBodyBytes) {
@@ -87,7 +86,7 @@ const readRawBody = (req) =>
         req.on('error', rejectOnce);
     });
 
-const toEvent = async (req, url) => ({
+const toEvent = async (req, url, maxBodyBytes, requestContext) => ({
     httpMethod: req.method || 'GET',
     headers: {
         ...normalizeHeaders(req.headers),
@@ -95,7 +94,8 @@ const toEvent = async (req, url) => ({
     },
     path: url.pathname,
     queryStringParameters: Object.fromEntries(url.searchParams.entries()),
-    body: await readRawBody(req),
+    requestContext: { traceId: requestContext.traceId },
+    body: await readRawBody(req, maxBodyBytes),
 });
 
 const sendResult = (res, result, fallbackHeaders = DEFAULT_HEADERS) => {
@@ -110,8 +110,13 @@ export const createCloudRunServer = ({
     chatHandlerImpl = chatHandler,
     chatHandlerContext = {},
     runtimeEnv = process.env,
-} = {}) =>
-    http.createServer(async (req, res) => {
+    runtimeConfig,
+} = {}) => {
+    const resolvedRuntimeConfig = runtimeConfig || createRuntimeConfig(
+        createRuntimeEnvironment(process.env, runtimeEnv)
+    );
+
+    return http.createServer(async (req, res) => {
         const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
 
         // healthz는 배포 환경에서 가장 먼저 확인하는 단순 생존 신호로 유지한다.
@@ -130,83 +135,66 @@ export const createCloudRunServer = ({
             return;
         }
 
-        const requestStartedAt = Date.now();
-        const requestTraceId = createTraceId();
         const origin = req.headers?.origin;
-        const originAllowed = isOriginAllowed(origin, url.origin, req.headers);
-        const responseHeaders = {
-            ...buildHeaders(originAllowed, origin, {
-                allowedMethods: isChatPath ? CORS_ALLOWED_METHODS.chat : CORS_ALLOWED_METHODS.platform,
-            }),
-            'X-V-MATE-Trace-Id': requestTraceId,
-        };
+        const result = await executeApiIngress({
+            origin,
+            requestOrigin: url.origin,
+            requestHeaders: req.headers,
+            allowedMethods: isChatPath ? CORS_ALLOWED_METHODS.chat : CORS_ALLOWED_METHODS.platform,
+            runtimeConfig: resolvedRuntimeConfig,
+            bodyTooLargeMessage: 'Request body too large',
+            createEvent: (requestContext) => toEvent(
+                req,
+                url,
+                resolvedRuntimeConfig.requestBodyLimitBytes,
+                requestContext
+            ),
+            handle: async ({ event, requestContext }) => {
+                // chat과 platform 흐름을 나눠야 동일한 가드레일을 유지하면서도 제품 API를 확장하기 쉽다.
+                if (!isChatPath) {
+                    return handlePlatformApi({
+                        event,
+                        headers: requestContext.responseHeaders,
+                        startedAtMs: requestContext.startedAtMs,
+                        traceId: requestContext.traceId,
+                        requestContext,
+                        runtimeConfig: resolvedRuntimeConfig,
+                        runtimeEnvironment: resolvedRuntimeConfig.environment,
+                    });
+                }
 
-        if (!originAllowed) {
-            sendResult(res, buildApiErrorResult({
-                statusCode: 403,
-                headers: responseHeaders,
-                startedAtMs: requestStartedAt,
-                traceId: requestTraceId,
-                error: 'Origin is not allowed.',
-                errorCode: 'ORIGIN_NOT_ALLOWED',
-            }));
-            return;
-        }
-
-        try {
-            const event = await toEvent(req, url);
-            let result;
-
-            // chat과 platform 흐름을 나눠야 동일한 가드레일을 유지하면서도 제품 API를 확장하기 쉽다.
-            if (isChatPath) {
                 const configuredContext = await resolveChatHandlerContext({
                     chatHandlerContext,
-                    resolverInput: { req },
+                    resolverInput: {
+                        req,
+                        requestContext,
+                        runtimeConfig: resolvedRuntimeConfig,
+                        env: resolvedRuntimeConfig.environment,
+                    },
                     onError: (error) => {
                         logServerWarn('[V-MATE] Request context resolver failed, using empty context', {
-                            traceId: requestTraceId,
+                            traceId: requestContext.traceId,
                             ...toSafeErrorMeta(error),
                         });
                     },
                 });
-                const runtimeContext = resolveRuntimeChatHandlerContext({
-                    env: runtimeEnv,
-                    traceId: requestTraceId,
+                const runtimeContext = resolveRuntimeEnvironmentChatContext({
+                    runtimeConfig: resolvedRuntimeConfig,
+                    traceId: requestContext.traceId,
                 });
-                const handlerContext = mergeChatHandlerContexts(runtimeContext, configuredContext);
-                result = await chatHandlerImpl(event, handlerContext);
-            } else {
-                result = await handlePlatformApi({
-                    event,
-                    headers: responseHeaders,
-                    startedAtMs: requestStartedAt,
-                    traceId: requestTraceId,
+                const handlerContext = Object.freeze({
+                    ...mergeChatHandlerContexts(runtimeContext, configuredContext),
+                    traceId: requestContext.traceId,
+                    requestContext,
+                    runtimeConfig: resolvedRuntimeConfig,
+                    runtimeEnvironment: resolvedRuntimeConfig.environment,
                 });
-            }
-            sendResult(res, result, responseHeaders);
-        } catch (error) {
-            if (error?.code === 'REQUEST_BODY_TOO_LARGE') {
-                sendResult(res, buildApiErrorResult({
-                    statusCode: 413,
-                    headers: responseHeaders,
-                    startedAtMs: requestStartedAt,
-                    traceId: requestTraceId,
-                    error: 'Request body too large',
-                    errorCode: 'REQUEST_BODY_TOO_LARGE',
-                }));
-                return;
-            }
-
-            sendResult(res, buildApiErrorResult({
-                statusCode: 500,
-                headers: responseHeaders,
-                startedAtMs: requestStartedAt,
-                traceId: requestTraceId,
-                error: 'Internal server error.',
-                errorCode: 'INTERNAL_SERVER_ERROR',
-            }));
-        }
+                return chatHandlerImpl(event, handlerContext);
+            },
+        });
+        sendResult(res, result, result?.headers);
     });
+};
 
 const runAsCli = () => {
     const server = createCloudRunServer();

@@ -10,7 +10,6 @@ export interface PlatformPageChromeProps {
   onSearchSubmit: (value: string) => void
   onNavigate: (path: string) => void
   onEditorDirtyChange?: (isDirty: boolean) => void
-  getNavigationGeneration?: () => number
   onAuthRequest: () => void
   onSignOut: () => void
   onDeleteAccount: () => Promise<void>

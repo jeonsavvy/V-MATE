@@ -111,27 +111,24 @@ const resolveApiBaseUrl = () => {
 
 // 인증이 필요한 요청만 지연 토큰 조회를 수행해 비로그인 탐색 흐름을 가볍게 유지한다.
 const resolveAccessToken = async () => {
-  const supabaseModule = await import('@/lib/supabase')
-  if (!supabaseModule.isSupabaseConfigured()) {
-    return null
-  }
-
-  const supabase = await supabaseModule.resolveSupabaseClient()
-  if (!supabase) {
+  const { loadAuthSession } = await import('@/lib/authSession')
+  const session = await loadAuthSession()
+  if (session.status === 'unavailable') {
     throw new PlatformApiError({ status: 503, code: 'FEATURE_TEMPORARILY_UNAVAILABLE' })
   }
+  return session.accessToken
+}
 
-  let sessionResult
-  try {
-    sessionResult = await supabase.auth.getSession()
-  } catch {
-    throw new PlatformApiError({ status: 503, code: 'FEATURE_TEMPORARILY_UNAVAILABLE' })
-  }
-  const { data, error } = sessionResult
-  if (error) throw new PlatformApiError({ status: 503, code: 'FEATURE_TEMPORARILY_UNAVAILABLE' })
-  if (!data?.session?.access_token) return null
+type SuccessEnvelope = Record<string, unknown> & { data?: unknown; payload?: unknown }
 
-  return data.session.access_token
+// New dispatcher envelopes and the direct legacy payload both terminate here.
+export const decodeEndpointSuccess = <T>(input: unknown): T => {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return input as T
+  const envelope = input as SuccessEnvelope
+  const isVersionedEnvelope = typeof envelope.trace_id === 'string' || typeof envelope.api_version === 'string'
+  if (isVersionedEnvelope && Object.prototype.hasOwnProperty.call(envelope, 'data')) return envelope.data as T
+  if (envelope.success === true && Object.prototype.hasOwnProperty.call(envelope, 'payload')) return envelope.payload as T
+  return input as T
 }
 
 const request = async <T>(path: string, init?: RequestInit & { auth?: boolean; optionalAuth?: boolean }): Promise<T> => {
@@ -159,8 +156,11 @@ const request = async <T>(path: string, init?: RequestInit & { auth?: boolean; o
     throw new PlatformApiError({ status: response.ok ? 502 : response.status, code: 'INVALID_API_RESPONSE' })
   }
 
-  const data = await response.json().catch(() => ({}))
+  const rawData: unknown = await response.json().catch(() => ({}))
   if (!response.ok) {
+    const data = rawData && typeof rawData === 'object' && !Array.isArray(rawData)
+      ? rawData as Record<string, unknown>
+      : {}
     const rawDetails = typeof data.details === 'object' && data.details !== null ? data.details as Record<string, unknown> : {}
     const rawQuota = typeof rawDetails.quota === 'object' && rawDetails.quota !== null ? rawDetails.quota as Record<string, unknown> : null
     const quota = rawQuota
@@ -178,7 +178,7 @@ const request = async <T>(path: string, init?: RequestInit & { auth?: boolean; o
       traceId: typeof data.trace_id === 'string' && data.trace_id.length <= 128 ? data.trace_id : undefined,
     })
   }
-  return data as T
+  return decodeEndpointSuccess<T>(rawData)
 }
 
 export const platformApi = {
@@ -188,10 +188,10 @@ export const platformApi = {
     characterFilter: CatalogFilter = '',
     worldFilter: CatalogFilter = characterFilter,
   ) => request<HomeFeedPayload>(`/home?tab=${tab}&search=${encodeURIComponent(search)}&characterFilter=${encodeURIComponent(characterFilter)}&worldFilter=${encodeURIComponent(worldFilter)}`),
-  fetchCharacters: (search = '', filter: 'new' | 'popular' | '' = '') => request<{ items: CharacterSummary[] }>(`/characters?search=${encodeURIComponent(search)}&filter=${encodeURIComponent(filter)}`),
-  fetchWorlds: (search = '', filter: 'new' | 'popular' | '' = '') => request<{ items: WorldSummary[] }>(`/worlds?search=${encodeURIComponent(search)}&filter=${encodeURIComponent(filter)}`),
-  fetchCharacter: (slug: string) => request<CharacterDetailPayload>(`/characters/${slug}`, { optionalAuth: true }),
-  fetchWorld: (slug: string) => request<WorldDetailPayload>(`/worlds/${slug}`, { optionalAuth: true }),
+  fetchCharacters: (search = '', filter: 'new' | 'popular' | '' = '', options?: { signal?: AbortSignal }) => request<{ items: CharacterSummary[] }>(`/characters?search=${encodeURIComponent(search)}&filter=${encodeURIComponent(filter)}`, { signal: options?.signal }),
+  fetchWorlds: (search = '', filter: 'new' | 'popular' | '' = '', options?: { signal?: AbortSignal }) => request<{ items: WorldSummary[] }>(`/worlds?search=${encodeURIComponent(search)}&filter=${encodeURIComponent(filter)}`, { signal: options?.signal }),
+  fetchCharacter: (slug: string, options?: { signal?: AbortSignal }) => request<CharacterDetailPayload>(`/characters/${slug}`, { optionalAuth: true, signal: options?.signal }),
+  fetchWorld: (slug: string, options?: { signal?: AbortSignal }) => request<WorldDetailPayload>(`/worlds/${slug}`, { optionalAuth: true, signal: options?.signal }),
   fetchRecentRooms: ({ limit = 20, includeMessages = true }: RecentRoomsOptions = {}) => request<{ items: RoomSummary[] }>(`/recent-rooms?limit=${limit}&includeMessages=${includeMessages}`, { auth: true }),
   fetchLibrary: ({ includeRecentRooms = true }: LibraryOptions = {}) => request<LibraryPayload>(`/library?includeRecentRooms=${includeRecentRooms}`, { auth: true }),
   fetchOpsDashboard: () => request<OwnerOpsDashboard>('/ops/dashboard', { auth: true }),
@@ -268,7 +268,7 @@ export const platformApi = {
   }) => request<{ item: WorldSummary }>(`/worlds/${slug}`, { method: 'PATCH', auth: true, body: JSON.stringify(payload) }),
   deleteWorld: (slug: string) => request<{ ok: boolean }>(`/worlds/${slug}`, { method: 'DELETE', auth: true }),
   createRoom: (payload: { characterSlug: string; worldSlug?: string | null; userAlias?: string }) => request<{ room: RoomSummary }>('/rooms', { method: 'POST', auth: true, body: JSON.stringify(payload) }),
-  fetchRoom: (roomId: string) => request<{ room: RoomSummary }>(`/rooms/${roomId}`, { auth: true }),
+  fetchRoom: (roomId: string, options?: { signal?: AbortSignal }) => request<{ room: RoomSummary }>(`/rooms/${roomId}`, { auth: true, signal: options?.signal }),
   sendRoomMessage: (roomId: string, userMessage: string, clientRequestId: string) => request<RoomChatResponse>(`/rooms/${roomId}/chat`, { method: 'POST', auth: true, body: JSON.stringify({ userMessage, clientRequestId }) }),
   fetchChatQuota: () => request<{ quota: ChatQuota }>('/me/chat-quota', { auth: true }),
   createReport: (payload: { entityType: EntityType; entityId: string; reason: string; details?: string }) => request<{ report: ContentReport }>('/reports', { method: 'POST', auth: true, body: JSON.stringify(payload) }),

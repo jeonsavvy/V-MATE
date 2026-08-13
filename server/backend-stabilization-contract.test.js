@@ -82,25 +82,26 @@ test('v2 mutation RPCs are service-only and lockdown removes direct mutation pat
   assert.match(lockdown, /drop policy if exists "Authenticated users can upload vmate assets to their own folder" on storage\.objects;/);
 });
 
-test('schema snapshot exactly carries the stabilization and prompt-read phases', async () => {
-  const [schema, expand, lockdown, promptExpand, promptLockdown] = await Promise.all([
+test('fresh schema expresses the final protected state while upgrade history stays in migrations', async () => {
+  const [schema, promptLockdown, readme] = await Promise.all([
     readUtf8('supabase/schema.sql'),
-    readUtf8('supabase/migrations/20260726190559_backend_stabilization_expand.sql'),
-    readUtf8('supabase/migrations/20260727000000_backend_stabilization_lockdown.sql'),
-    readUtf8('supabase/migrations/20260729000000_prompt_read_views_expand.sql'),
     readUtf8('supabase/migrations/20260729010000_private_prompt_reads_lockdown.sql'),
+    readUtf8('supabase/README.md'),
   ]);
 
-  const orderedPhases = [expand, lockdown, promptExpand, promptLockdown].map((source) => source.trim());
-  assert.ok(schema.endsWith(`${promptLockdown.trim()}\n`) || schema.endsWith(`${promptLockdown.trim()}\r\n`));
-  for (const phase of orderedPhases) {
-    assert.ok(schema.includes(phase));
-    assert.equal(schema.indexOf(phase), schema.lastIndexOf(phase));
-  }
-  assert.deepEqual(
-    orderedPhases.map((phase) => schema.indexOf(phase)),
-    [...orderedPhases].map((phase) => schema.indexOf(phase)).sort((left, right) => left - right),
-  );
+  assert.match(schema, /Fresh installs apply the final prompt-read boundary directly/);
+  assert.match(schema, /create view public\.public_character_catalog[\s\S]*with \(security_barrier = true\)/);
+  assert.match(schema, /create view public\.owned_room_summaries[\s\S]*where r\.user_id = auth\.uid\(\)/);
+  assert.match(schema, /revoke select \(profile_json, speech_style_json, prompt_profile_json\)[\s\S]*on public\.characters from public, anon, authenticated;/);
+  assert.match(schema, /revoke select \(bridge_profile_json, resolved_prompt_snapshot_json\)[\s\S]*on public\.rooms from public, anon, authenticated;/);
+  assert.match(schema, /grant select on table public\.public_character_catalog, public\.public_world_catalog[\s\S]*to anon, authenticated;/);
+  assert.doesNotMatch(schema, /vmate_private/);
+
+  assert.match(promptLockdown, /create schema vmate_private/);
+  assert.match(promptLockdown, /prompt_lockdown_room_state_backup_20260729/);
+  assert.match(promptLockdown, /Conditional forward restore/);
+  assert.match(readme, /`schema\.sql` \|[^\r\n]*fresh-install snapshot/);
+  assert.match(readme, /`migrations\/\*\.sql` \|[^\r\n]*append-only/);
 });
 
 test('server coverage gate uses the agreed line, branch, and function thresholds', async () => {

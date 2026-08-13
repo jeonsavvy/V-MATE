@@ -75,7 +75,12 @@ test('versioned frontend assets use immutable browser caching and bounded image 
 
 test('robots policy remains valid without restricting public routes', async () => {
   const robots = await readFile(path.join(repoRoot, 'public', 'robots.txt'), 'utf8');
-  assert.equal(robots, 'User-agent: *\nDisallow:\n');
+  const directives = robots
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  assert.deepEqual(directives, ['User-agent: *', 'Disallow:']);
 });
 
 const walkFiles = async (rootDir) => {
@@ -237,22 +242,36 @@ test('profile menu masks user email before rendering', async () => {
   assert.equal(shellSource.includes('{user.email}'), false);
 });
 
-test('app source exposes platform routes while product copy stays in the product shell', async () => {
+test('canonical route table exposes platform routes while product copy stays in the product shell', async () => {
   const appPath = path.join(srcRoot, 'App.tsx');
-  const appSource = await readFile(appPath, 'utf8');
-  assert.equal(appSource.includes('/discover'), false);
-  assert.equal(appSource.includes('/rankings'), false);
-  assert.ok(appSource.includes('/characters/'));
-  assert.ok(appSource.includes('/worlds/'));
-  assert.ok(appSource.includes('/create/character'));
-  assert.ok(appSource.includes('/create/world'));
-  assert.ok(appSource.includes('/edit/character'));
-  assert.ok(appSource.includes('/edit/world'));
-  assert.ok(appSource.includes('/recent'));
-  assert.ok(appSource.includes('/library'));
-  assert.ok(appSource.includes('/ops'));
-  assert.ok(appSource.includes('/rooms/'));
-  assert.ok(appSource.includes('/privacy'));
+  const routesPath = path.join(srcRoot, 'lib', 'platform', 'routes.tsx');
+  const [appSource, routesSource] = await Promise.all([
+    readFile(appPath, 'utf8'),
+    readFile(routesPath, 'utf8'),
+  ]);
+  const routePatterns = new Set(
+    [...routesSource.matchAll(/\bpattern:\s*'([^']+)'/g)].map((match) => match[1]),
+  );
+  const expectedPatterns = [
+    '/',
+    '/characters/:slug',
+    '/worlds/:slug',
+    '/create/character',
+    '/create/world',
+    '/edit/character/:slug',
+    '/edit/world/:slug',
+    '/recent',
+    '/library',
+    '/ops',
+    '/rooms/:roomId',
+    '/privacy',
+  ];
+
+  for (const pattern of expectedPatterns) assert.ok(routePatterns.has(pattern), `missing route pattern ${pattern}`);
+  assert.equal(routePatterns.has('/discover'), false);
+  assert.equal(routePatterns.has('/rankings'), false);
+  assert.match(appSource, /renderRoute\(route,/);
+  assert.match(appSource, /routePath\(/);
 
   const homePath = path.join(srcRoot, 'components', 'Home.tsx');
   const homeSource = await readFile(homePath, 'utf8');
@@ -278,8 +297,8 @@ test('platform source removes preset and rankings copy while exposing owner ops 
 });
 
 test('edit pages expose creator-owned delete actions through non-blocking dialogs', async () => {
-  const pagesPath = path.join(srcRoot, 'components', 'platform', 'Pages.tsx');
-  const source = await readFile(pagesPath, 'utf8');
+  const editorPagesPath = path.join(srcRoot, 'components', 'platform', 'pages', 'EditorPages.tsx');
+  const source = await readFile(editorPagesPath, 'utf8');
 
   assert.ok(source.includes('OwnedContentDeleteDialog'));
   assert.ok(source.includes('캐릭터 삭제'));
@@ -287,9 +306,9 @@ test('edit pages expose creator-owned delete actions through non-blocking dialog
 });
 
 test('room page keeps retry guidance scoped to failed sends only', async () => {
-  const pagesPath = path.join(srcRoot, 'components', 'platform', 'Pages.tsx');
+  const roomPagesPath = path.join(srcRoot, 'components', 'platform', 'pages', 'RoomPages.tsx');
   const composerPath = path.join(srcRoot, 'components', 'platform', 'ChatComposer.tsx');
-  const [source, composerSource] = await Promise.all([readFile(pagesPath, 'utf8'), readFile(composerPath, 'utf8')]);
+  const [source, composerSource] = await Promise.all([readFile(roomPagesPath, 'utf8'), readFile(composerPath, 'utf8')]);
 
   assert.ok(composerSource.includes('응답을 받지 못했습니다. 입력한 메시지는 그대로 두었습니다.'));
   assert.equal(source.includes('Gemini returned an empty response'), false);
@@ -345,24 +364,24 @@ test('home and detail views avoid fake metrics and duplicated management section
   assert.equal(homeSource.includes('대표 배너'), false);
   assert.equal(homeSource.includes('상세 보기'), false);
 
-  const pagesPath = path.join(srcRoot, 'components/platform/Pages.tsx');
-  const pagesSource = await readFile(pagesPath, 'utf8');
-  assert.equal(pagesSource.includes('월드 고르고 시작'), false);
-  assert.equal(pagesSource.includes('chatStartCount.toLocaleString'), false);
-  assert.equal(pagesSource.includes('favoriteCount.toLocaleString'), false);
-  assert.equal(pagesSource.includes('fetchCharacterWorldLinks'), false);
-  assert.equal(pagesSource.includes('linkReason'), false);
-  assert.equal(pagesSource.includes('현재 상황'), false);
-  assert.equal(pagesSource.includes('월드 메모'), false);
-  assert.equal(pagesSource.includes('소지품'), false);
-  assert.equal(pagesSource.includes('의상/자세'), false);
-  assert.equal(pagesSource.includes('미래 일정/약속'), false);
-  assert.ok(pagesSource.includes("platformApi.addRecentView('character', item.slug)"));
-  assert.ok(pagesSource.includes("platformApi.addRecentView('world', item.slug)"));
-  assert.ok(pagesSource.includes("platformApi.toggleBookmark('character', item.slug)"));
-  assert.ok(pagesSource.includes("platformApi.toggleBookmark('world', item.slug)"));
-  assert.ok(pagesSource.includes('즐겨찾기 저장'));
-  assert.ok(pagesSource.includes('즐겨찾기 해제'));
+  const detailPagesPath = path.join(srcRoot, 'components', 'platform', 'pages', 'DetailPages.tsx');
+  const detailSource = await readFile(detailPagesPath, 'utf8');
+  assert.equal(detailSource.includes('월드 고르고 시작'), false);
+  assert.equal(detailSource.includes('chatStartCount.toLocaleString'), false);
+  assert.equal(detailSource.includes('favoriteCount.toLocaleString'), false);
+  assert.equal(detailSource.includes('fetchCharacterWorldLinks'), false);
+  assert.equal(detailSource.includes('linkReason'), false);
+  assert.equal(detailSource.includes('현재 상황'), false);
+  assert.equal(detailSource.includes('월드 메모'), false);
+  assert.equal(detailSource.includes('소지품'), false);
+  assert.equal(detailSource.includes('의상/자세'), false);
+  assert.equal(detailSource.includes('미래 일정/약속'), false);
+  assert.ok(detailSource.includes("platformApi.addRecentView('character', item.slug)"));
+  assert.ok(detailSource.includes("platformApi.addRecentView('world', item.slug)"));
+  assert.ok(detailSource.includes("platformApi.toggleBookmark('character', item.slug)"));
+  assert.ok(detailSource.includes("platformApi.toggleBookmark('world', item.slug)"));
+  assert.ok(detailSource.includes('즐겨찾기 저장'));
+  assert.ok(detailSource.includes('즐겨찾기 해제'));
 });
 
 test('platform shell keeps ops outside the four primary navigation items', async () => {
@@ -376,12 +395,17 @@ test('platform shell keeps ops outside the four primary navigation items', async
 });
 
 test('image variant failures use a fixed safe message instead of raw browser errors', async () => {
-  const pagesPath = path.join(srcRoot, 'components', 'platform', 'Pages.tsx');
-  const source = await readFile(pagesPath, 'utf8');
+  const pageFramePath = path.join(srcRoot, 'components', 'platform', 'shared', 'PageFrame.tsx');
+  const editorPagesPath = path.join(srcRoot, 'components', 'platform', 'pages', 'EditorPages.tsx');
+  const [pageFrameSource, editorSource] = await Promise.all([
+    readFile(pageFramePath, 'utf8'),
+    readFile(editorPagesPath, 'utf8'),
+  ]);
 
-  assert.ok(source.includes('const imageProcessingFailureMessage ='));
-  assert.equal((source.match(/toast\.error\(imageProcessingFailureMessage\(\)\)/g) || []).length, 2);
-  assert.equal(source.includes('toast.error(error instanceof Error ? error.message'), false);
+  assert.ok(pageFrameSource.includes('const imageProcessingFailureMessage ='));
+  assert.equal((editorSource.match(/toast\.error\(imageProcessingFailureMessage\(\)\)/g) || []).length, 2);
+  assert.equal(pageFrameSource.includes('toast.error(error instanceof Error ? error.message'), false);
+  assert.equal(editorSource.includes('toast.error(error instanceof Error ? error.message'), false);
 });
 
 test('home uses functional catalog headings with latest and popular filters', async () => {
@@ -397,19 +421,24 @@ test('home uses functional catalog headings with latest and popular filters', as
 });
 
 test('recent rooms page makes direct-vs-world conversations visually explicit', async () => {
-  const pagesPath = path.join(srcRoot, 'components/platform/Pages.tsx');
-  const source = await readFile(pagesPath, 'utf8');
+  const personalPagesPath = path.join(srcRoot, 'components', 'platform', 'pages', 'PersonalPages.tsx');
+  const detailPagesPath = path.join(srcRoot, 'components', 'platform', 'pages', 'DetailPages.tsx');
+  const [personalSource, detailSource] = await Promise.all([
+    readFile(personalPagesPath, 'utf8'),
+    readFile(detailPagesPath, 'utf8'),
+  ]);
 
-  assert.ok(source.includes('캐릭터 대화'));
-  assert.ok(source.includes('월드 포함'));
-  assert.ok(source.includes('마지막 장면'));
-  assert.ok(source.includes('캐릭터 선택'));
-  assert.equal(source.includes('이 월드에서 잘 맞는 캐릭터'), false);
+  assert.ok(personalSource.includes('캐릭터 대화'));
+  assert.ok(personalSource.includes('월드 포함'));
+  assert.ok(personalSource.includes('마지막 장면'));
+  assert.ok(detailSource.includes('캐릭터 선택'));
+  assert.equal(personalSource.includes('이 월드에서 잘 맞는 캐릭터'), false);
+  assert.equal(detailSource.includes('이 월드에서 잘 맞는 캐릭터'), false);
 });
 
 test('library page exposes owned character/world shelves below recent views', async () => {
-  const pagesPath = path.join(srcRoot, 'components/platform/Pages.tsx');
-  const source = await readFile(pagesPath, 'utf8');
+  const personalPagesPath = path.join(srcRoot, 'components', 'platform', 'pages', 'PersonalPages.tsx');
+  const source = await readFile(personalPagesPath, 'utf8');
 
   assert.ok(source.includes('내가 만든 캐릭터'));
   assert.ok(source.includes('내가 만든 월드'));
@@ -424,17 +453,17 @@ test('public-facing ui displays creator attribution without exposing emails', as
   const scaffoldSource = await readFile(scaffoldPath, 'utf8');
   assert.ok(scaffoldSource.includes('item.creator.name'));
 
-  const pagesPath = path.join(srcRoot, 'components/platform/Pages.tsx');
-  const pagesSource = await readFile(pagesPath, 'utf8');
-  assert.ok(pagesSource.includes('item.creator.name'));
-  assert.equal(pagesSource.includes('item.creator.email'), false);
-  assert.equal(pagesSource.includes('item.imageSlots.slice(0, 6)'), false);
-  assert.ok(pagesSource.includes('이미지 {item.imageSlots.length}장'));
+  const detailPagesPath = path.join(srcRoot, 'components', 'platform', 'pages', 'DetailPages.tsx');
+  const detailSource = await readFile(detailPagesPath, 'utf8');
+  assert.ok(detailSource.includes('item.creator.name'));
+  assert.equal(detailSource.includes('item.creator.email'), false);
+  assert.equal(detailSource.includes('item.imageSlots.slice(0, 6)'), false);
+  assert.ok(detailSource.includes('이미지 {item.imageSlots.length}장'));
 });
 
 test('creator flows keep practical prompt editors and require public publishing attestations', async () => {
-  const pagesPath = path.join(srcRoot, 'components/platform/Pages.tsx');
-  const source = await readFile(pagesPath, 'utf8');
+  const editorPagesPath = path.join(srcRoot, 'components', 'platform', 'pages', 'EditorPages.tsx');
+  const source = await readFile(editorPagesPath, 'utf8');
 
   assert.ok(source.includes('캐릭터 설정'));
   assert.ok(source.includes('대화 시작 설정'));
@@ -452,8 +481,8 @@ test('creator flows keep practical prompt editors and require public publishing 
 });
 
 test('editing prompt content preserves existing image urls when no new upload happens', async () => {
-  const pagesPath = path.join(srcRoot, 'components/platform/Pages.tsx');
-  const source = await readFile(pagesPath, 'utf8');
+  const editorPagesPath = path.join(srcRoot, 'components', 'platform', 'pages', 'EditorPages.tsx');
+  const source = await readFile(editorPagesPath, 'utf8');
 
   assert.ok(source.includes('existingThumbUrl'));
   assert.ok(source.includes('existingCardUrl'));
@@ -464,8 +493,8 @@ test('editing prompt content preserves existing image urls when no new upload ha
 });
 
 test('edit pages clearly label editing mode separately from public detail pages', async () => {
-  const pagesPath = path.join(srcRoot, 'components/platform/Pages.tsx');
-  const source = await readFile(pagesPath, 'utf8');
+  const editorPagesPath = path.join(srcRoot, 'components', 'platform', 'pages', 'EditorPages.tsx');
+  const source = await readFile(editorPagesPath, 'utf8');
 
   assert.ok(source.includes("slug ? '캐릭터 수정' : '캐릭터 저장'"));
   assert.ok(source.includes("slug ? '월드 수정' : '월드 저장'"));
@@ -473,8 +502,8 @@ test('edit pages clearly label editing mode separately from public detail pages'
 });
 
 test('ops page exposes banner auto/manual controls and delete actions', async () => {
-  const pagesPath = path.join(srcRoot, 'components/platform/Pages.tsx');
-  const source = await readFile(pagesPath, 'utf8');
+  const opsPagePath = path.join(srcRoot, 'components', 'platform', 'pages', 'OpsPage.tsx');
+  const source = await readFile(opsPagePath, 'utf8');
 
   assert.equal(source.includes('메인 배너'), false);
   assert.equal(source.includes('배너 지정'), false);
@@ -535,26 +564,30 @@ test('home keeps the exact two-column starter catalog while library grids remain
   assert.ok(homeSource.includes('className="grid grid-cols-2 gap-x-3 gap-y-8 sm:gap-x-5"'));
   assert.ok(homeSource.includes("type === 'character' ? 'aspect-[4/5]' : 'aspect-[16/9]'"));
 
-  const pagesPath = path.join(srcRoot, 'components/platform/Pages.tsx');
-  const pagesSource = await readFile(pagesPath, 'utf8');
-  assert.match(pagesSource, /grid-cols-1[\s\S]*md:grid-cols-2[\s\S]*xl:grid-cols-3/);
-  assert.match(pagesSource, /grid-cols-1[\s\S]*sm:grid-cols-2[\s\S]*lg:grid-cols-3[\s\S]*2xl:grid-cols-4/);
+  const personalPagesPath = path.join(srcRoot, 'components', 'platform', 'pages', 'PersonalPages.tsx');
+  const personalSource = await readFile(personalPagesPath, 'utf8');
+  assert.match(personalSource, /grid-cols-1[\s\S]*md:grid-cols-2[\s\S]*xl:grid-cols-3/);
+  assert.match(personalSource, /grid-cols-1[\s\S]*sm:grid-cols-2[\s\S]*lg:grid-cols-3[\s\S]*2xl:grid-cols-4/);
 });
 
 test('detail layouts switch at laptop widths while chat keeps a compact context rail and focused composer', async () => {
-  const pagesPath = path.join(srcRoot, 'components/platform/Pages.tsx');
-  const source = await readFile(pagesPath, 'utf8');
+  const detailPagesPath = path.join(srcRoot, 'components', 'platform', 'pages', 'DetailPages.tsx');
+  const roomPagesPath = path.join(srcRoot, 'components', 'platform', 'pages', 'RoomPages.tsx');
+  const [detailSource, roomSource] = await Promise.all([
+    readFile(detailPagesPath, 'utf8'),
+    readFile(roomPagesPath, 'utf8'),
+  ]);
 
-  assert.ok(source.includes('lg:grid-cols-[minmax(0,0.84fr)_minmax(0,1.16fr)]'));
-  assert.ok(source.includes('lg:grid-cols-[minmax(0,1.02fr)_minmax(0,0.98fr)]'));
-  assert.equal(source.includes('lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]'), false);
-  assert.ok(source.includes('mx-auto max-w-[960px] space-y-5'));
-  assert.ok(source.includes('lg:grid-cols-[220px_minmax(0,1fr)]'));
-  assert.ok(source.includes('aria-label="대화 정보"'));
-  assert.ok(source.includes('sticky bottom-[calc(66px+env(safe-area-inset-bottom))]'));
-  assert.ok(source.includes('max-w-[28rem] rounded-lg'));
-  assert.equal(source.includes('mx-auto w-full max-w-[34rem]'), false);
-  assert.equal(source.includes('xl:grid-cols-[0.84fr_1.16fr]'), false);
-  assert.equal(source.includes('xl:grid-cols-[1.02fr_0.98fr]'), false);
-  assert.equal(source.includes('xl:grid-cols-[0.92fr_1.08fr]'), false);
+  assert.ok(detailSource.includes('lg:grid-cols-[minmax(0,0.84fr)_minmax(0,1.16fr)]'));
+  assert.ok(detailSource.includes('lg:grid-cols-[minmax(0,1.02fr)_minmax(0,0.98fr)]'));
+  assert.equal(detailSource.includes('lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]'), false);
+  assert.ok(roomSource.includes('mx-auto max-w-[960px] space-y-5'));
+  assert.ok(roomSource.includes('lg:grid-cols-[220px_minmax(0,1fr)]'));
+  assert.ok(roomSource.includes('aria-label="대화 정보"'));
+  assert.ok(roomSource.includes('sticky bottom-[calc(66px+env(safe-area-inset-bottom))]'));
+  assert.ok(detailSource.includes('max-w-[28rem] rounded-lg'));
+  assert.equal(detailSource.includes('mx-auto w-full max-w-[34rem]'), false);
+  assert.equal(detailSource.includes('xl:grid-cols-[0.84fr_1.16fr]'), false);
+  assert.equal(detailSource.includes('xl:grid-cols-[1.02fr_0.98fr]'), false);
+  assert.equal(detailSource.includes('xl:grid-cols-[0.92fr_1.08fr]'), false);
 });

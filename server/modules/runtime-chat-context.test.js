@@ -1,10 +1,8 @@
 import assert from 'node:assert/strict';
-import { afterEach, test } from 'node:test';
+import { test } from 'node:test';
 import {
   createKvPromptCacheAdapter,
   createKvRateLimitHook,
-  resetRuntimeChatContextCacheForTests,
-  resolveRuntimeChatHandlerContext,
 } from './runtime-chat-context.js';
 
 class MemoryKv {
@@ -28,28 +26,6 @@ class MemoryKv {
     this.deleteCalls.push(key);
   }
 }
-
-const ENV_KEYS = [
-  'RATE_LIMIT_STORE',
-  'PROMPT_CACHE_STORE',
-  'RATE_LIMIT_WINDOW_MS',
-  'RATE_LIMIT_MAX_REQUESTS',
-];
-
-const ORIGINAL_ENV = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
-
-afterEach(() => {
-  for (const key of ENV_KEYS) {
-    const value = ORIGINAL_ENV[key];
-    if (typeof value === 'undefined') {
-      delete process.env[key];
-    } else {
-      process.env[key] = value;
-    }
-  }
-
-  resetRuntimeChatContextCacheForTests();
-});
 
 test('createKvRateLimitHook enforces limit and resets after window', async () => {
   const kv = new MemoryKv();
@@ -108,50 +84,4 @@ test('createKvPromptCacheAdapter reads/writes valid cache entries and evicts nea
     expireAtMs: nowMs + 60_000,
   });
   assert.equal(kv.putCalls.length, putCountBeforeInvalid);
-});
-
-test('resolveRuntimeChatHandlerContext builds kv hooks when kv store mode is enabled', async () => {
-  process.env.RATE_LIMIT_STORE = 'kv';
-  process.env.PROMPT_CACHE_STORE = 'kv';
-  process.env.RATE_LIMIT_WINDOW_MS = '1000';
-  process.env.RATE_LIMIT_MAX_REQUESTS = '3';
-
-  const rateLimitKv = new MemoryKv();
-  const promptCacheKv = new MemoryKv();
-  const env = {
-    V_MATE_RATE_LIMIT_KV: rateLimitKv,
-    V_MATE_PROMPT_CACHE_KV: promptCacheKv,
-    RATE_LIMIT_KV_PREFIX: 'ctx:rl',
-    PROMPT_CACHE_KV_PREFIX: 'ctx:pc',
-  };
-
-  const context = resolveRuntimeChatHandlerContext({ env, traceId: 'trace-runtime-context' });
-  const cachedContext = resolveRuntimeChatHandlerContext({ env, traceId: 'trace-runtime-context' });
-
-  assert.equal(context, cachedContext);
-  assert.equal(typeof context.checkRateLimit, 'function');
-  assert.equal(typeof context.promptCache?.get, 'function');
-
-  const first = await context.checkRateLimit({ key: 'fingerprint:test', defaultLimit: 2 });
-  const second = await context.checkRateLimit({ key: 'fingerprint:test', defaultLimit: 2 });
-  const third = await context.checkRateLimit({ key: 'fingerprint:test', defaultLimit: 2 });
-
-  assert.equal(first.allowed, true);
-  assert.equal(second.allowed, true);
-  assert.equal(third.allowed, false);
-
-  await context.promptCache.set('alice:prompt', {
-    name: 'cachedContents/alice-cache',
-    expireAtMs: Date.now() + 60_000,
-  });
-  const cachedPrompt = await context.promptCache.get('alice:prompt');
-  assert.equal(cachedPrompt?.name, 'cachedContents/alice-cache');
-});
-
-test('resolveRuntimeChatHandlerContext falls back to empty context for memory mode', () => {
-  process.env.RATE_LIMIT_STORE = 'memory';
-  process.env.PROMPT_CACHE_STORE = 'memory';
-
-  const context = resolveRuntimeChatHandlerContext({ env: {} });
-  assert.deepEqual(context, {});
 });

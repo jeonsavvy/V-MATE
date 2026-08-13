@@ -15,6 +15,8 @@ const repoRoot = path.resolve(dirname, '..');
 const readUtf8 = async (relativePath) =>
   readFile(path.join(repoRoot, relativePath), 'utf8');
 
+const normalizeNewlines = (source) => source.replace(/\r\n?/g, '\n');
+
 test('release workflow credentials are absent from job and npm ci environments', async () => {
   const releaseWorkflows = [
     'release-backup-readiness.yml',
@@ -48,8 +50,8 @@ test('release workflow credentials are absent from job and npm ci environments',
 });
 
 test('github ci is read-only and Worker release requires a manual zero-traffic gate', async () => {
-  const ci = await readUtf8('.github/workflows/ci.yml');
-  const release = await readUtf8('.github/workflows/release-worker.yml');
+  const ci = normalizeNewlines(await readUtf8('.github/workflows/ci.yml'));
+  const release = normalizeNewlines(await readUtf8('.github/workflows/release-worker.yml'));
   const releaseWorkflow = parseDocument(release, { uniqueKeys: true, version: '1.2' }).toJS();
   const shadowEvidenceStep = releaseWorkflow.jobs.release.steps.find(
     (step) => step.name === 'Verify current-commit shadow upload and immutable version metadata',
@@ -93,9 +95,19 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   const recordReleaseEvidenceStep = releaseWorkflow.jobs.release.steps.find(
     (step) => step.name === 'Record machine-readable release evidence',
   );
-  const baseline = await readUtf8('.github/workflows/release-database-baseline-attestation.yml');
-  const database = await readUtf8('.github/workflows/release-database.yml');
+  const baseline = normalizeNewlines(await readUtf8('.github/workflows/release-database-baseline-attestation.yml'));
+  const database = normalizeNewlines(await readUtf8('.github/workflows/release-database.yml'));
   const smoke = await readUtf8('scripts/smoke-release.mjs');
+  const baselineWorkflow = parseDocument(baseline, { uniqueKeys: true, version: '1.2' }).toJS();
+  const releaseTargetStep = releaseWorkflow.jobs.release.steps.find(
+    (step) => step.name === 'Validate approved target',
+  );
+  const baselineScopeStep = baselineWorkflow.jobs.attest.steps.find(
+    (step) => step.name === 'Validate protected read-only baseline scope',
+  );
+  const baselineCiStep = baselineWorkflow.jobs.attest.steps.find(
+    (step) => step.name === 'Require successful CI for this default-branch commit',
+  );
   const commonJsHeredocs = [...release.matchAll(/\bnode([^\r\n]*?)\s+<<'NODE'\r?\n([\s\S]*?)\r?\n\s*NODE(?=\r?\n|$)/g)];
   assert.ok(commonJsHeredocs.length > 0);
   for (const [index, match] of commonJsHeredocs.entries()) {
@@ -106,14 +118,6 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   for (const [index, match] of baselineCommonJsHeredocs.entries()) {
     assert.doesNotThrow(() => new Script(`(async () => {\n${match[2]}\n})()`, { filename: `release-database-baseline-attestation.yml:node-heredoc-${index + 1}` }));
   }
-  const baselineAllowlist = baseline
-    .match(/allowed-baseline-files\.txt" <<'EOF'\r?\n([\s\S]*?)\r?\n\s+EOF/)?.[1]
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const releaseAllowlist = release
-    .match(/allowed_files=\$'([^']+)'/)?.[1]
-    .split('\\n');
   const expectedExpandBridgeFiles = [
     '.github/workflows/release-database.yml',
     '.github/workflows/release-worker.yml',
@@ -140,7 +144,6 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(release, /concurrency:/);
   assert.match(release, /CLOUDFLARE_API_TOKEN/);
   assert.match(release, /CLOUDFLARE_ACCOUNT_ID/);
-  assert.deepEqual(releaseAllowlist, baselineAllowlist);
   assert.match(release, /Cloudflare-Workers-Version-Overrides|smoke-release\.mjs/);
   assert.doesNotMatch(release, /seq 1 13|check-worker-observability\.mjs|Observe cutover for 60 minutes/);
   assert.equal(liveCutoverSmokeStep.if, "${{ inputs.operation == 'cutover' }}");
@@ -231,14 +234,18 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(release, /release_allowed_origins="\$APPROVED_ORIGIN,\$LEGACY_ORIGIN"/);
   assert.match(release, /baseline_evidence_run_id/);
   assert.match(release, /exactly one expand_evidence_run_id or baseline_evidence_run_id is required/);
-  assert.match(release, /baseline evidence change scope is not allowlisted/);
-  for (const releaseSurfacePath of [
-    'index.html',
-    'server/frontend-guardrails.test.js',
-    'src/components/platform/Pages.tsx',
-  ]) {
-    assert.ok(release.includes(releaseSurfacePath), `release allowlist is missing ${releaseSurfacePath}`);
-  }
+  const unchangedMigrationGuard = /git diff --quiet "\$BASELINE_SOURCE_SHA" "\$GITHUB_SHA" -- supabase\/migrations\//;
+  assert.match(baselineScopeStep.run, unchangedMigrationGuard);
+  assert.match(releaseTargetStep.run, unchangedMigrationGuard);
+  assert.match(baselineScopeStep.run, /baseline attestation requires an approved non-migration release/);
+  assert.match(baselineCiStep.run, /actions\/workflows\/ci\.yml\/runs\?head_sha=\$\{process\.env\.GITHUB_SHA\}/);
+  assert.match(baselineCiStep.run, /candidate\.event === 'push'/);
+  assert.match(baselineCiStep.run, /\['quality', 'Database contracts \(local Docker only\)'\]/);
+  assert.match(databaseEvidenceStep.run, /run\.conclusion === 'success'/);
+  assert.match(databaseEvidenceStep.run, /run\.head_sha === process\.env\.GITHUB_SHA/);
+  assert.match(databaseEvidenceStep.run, /run\.path === expectedPath/);
+  assert.doesNotMatch(baselineScopeStep.run, /allowed-baseline-files|change scope is not allowlisted|-- supabase server\/platform server\/chat-handler\.js worker\.js/);
+  assert.doesNotMatch(releaseTargetStep.run, /\n\s*allowed_files=|baseline evidence change scope is not allowlisted|-- supabase server\/platform server\/chat-handler\.js worker\.js/);
   assert.match(release, /AUTHORIZED_DOMAIN_RELEASE_SHA/);
   assert.match(release, /AUTHORIZED_BASELINE_RELEASE_SHA/);
   assert.match(release, /post-lockdown proof source change scope is not the exact verified set/);
@@ -349,8 +356,7 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(baseline, /20260727025134/);
   assert.match(baseline, /lockdownMigrationAliasHash/);
   assert.match(baseline, /run-supabase-read-only-query\.mjs/);
-  assert.match(baseline, /src\/components\/platform\/Pages\.tsx/);
-  assert.match(baseline, /server\/frontend-guardrails\.test\.js/);
+  assert.match(baseline, /baseline release cannot add, remove, rename, or modify database migrations/);
   assert.match(baseline, /queryMode: 'supabase_read_only_user'/);
   assert.match(baseline, /serviceV2MutationRpcsCallable/);
   assert.match(baseline, /clientV2MutationRpcsBlocked/);
@@ -1007,6 +1013,10 @@ test('operations documentation records manual approved release, runtime prerequi
   assert.match(operationsDoc, /VITE_SUPABASE_ANON_KEY|VITE_SUPABASE_PUBLISHABLE_KEY/);
   assert.match(operationsDoc, /VITE_CHAT_API_BASE_URL/);
   assert.match(operationsDoc, /versions deploy/);
+  assert.match(operationsDoc, /append-only migration을 추가·삭제·rename·수정하지 않는 runtime·frontend·fresh-schema snapshot 변경/);
+  assert.match(operationsDoc, /`supabase\/migrations\/\*\*`가 동일한지 fail-closed/);
+  assert.match(operationsDoc, /같은 SHA의 CI `quality`와 `Database contracts \(local Docker only\)`가 성공/);
+  assert.match(operationsDoc, /이미 적용된 migration을 다시 실행하지 않습니다/);
   assert.match(operationsDoc, /일반 경로의 `prompt-privacy:apply-lockdown`.*6시간.*physical backup evidence.*필수/);
   assert.match(operationsDoc, /Prelaunch direct 경로만 같은 6시간 제한의 attestation으로 이 gate를 대체/);
   assert.match(operationsDoc, /vmate_private\.prompt_lockdown_room_state_backup_20260729/);

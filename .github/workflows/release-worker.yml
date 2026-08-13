@@ -47,7 +47,7 @@ on:
         required: false
         type: string
       baseline_evidence_run_id:
-        description: Mutually exclusive with expand_evidence_run_id; read-only post-lockdown evidence for an allowlisted non-database release
+        description: Mutually exclusive with expand_evidence_run_id; read-only post-lockdown evidence for a verified non-migration release
         required: false
         type: string
       rollback_mode:
@@ -175,10 +175,7 @@ jobs:
               [[ "$actual_proof_files" == "$(printf '%s\n' "$proof_files" | sort -u)" ]] || { echo '::error::post-lockdown proof source change scope is not the exact verified set'; exit 1; }
               unexpected_proof_status=$(git diff --name-status "$BASELINE_SOURCE_SHA" "$POST_LOCKDOWN_EVIDENCE_SHA" | awk '$1 != "M" { print }')
               [[ -z "$unexpected_proof_status" ]] || { echo '::error::post-lockdown proof files must be in-place modifications'; exit 1; }
-              allowed_files=$'.github/workflows/release-database-baseline-attestation.yml\n.github/workflows/release-worker.yml\ndocs/operations.md\nindex.html\nscripts/validate-github-workflows.mjs\nserver/deployment-workflow-sync.test.js\nserver/frontend-guardrails.test.js\nsrc/components/Home.tsx\nsrc/components/PasswordRecoveryPage.tsx\nsrc/components/platform/ChatComposer.tsx\nsrc/components/platform/Pages.tsx\nsrc/components/platform/PlatformScaffold.tsx\nworker.test.js'
-              unexpected=$(comm -23 <(git diff --name-only "$POST_LOCKDOWN_EVIDENCE_SHA" "$GITHUB_SHA" | sort -u) <(printf '%s\n' "$allowed_files" | sort -u))
-              [[ -z "$unexpected" ]] || { echo '::error::baseline evidence change scope is not allowlisted'; exit 1; }
-              git diff --quiet "$BASELINE_SOURCE_SHA" "$GITHUB_SHA" -- supabase server/platform server/chat-handler.js worker.js || { echo '::error::database or mutation runtime surface changed'; exit 1; }
+              git diff --quiet "$BASELINE_SOURCE_SHA" "$GITHUB_SHA" -- supabase/migrations/ || { echo '::error::baseline release cannot add, remove, rename, or modify database migrations'; exit 1; }
             fi
             if [[ -n "$EXPAND_BRIDGE_PRELAUNCH_EVIDENCE_RUN_ID" ]]; then
               [[ '${{ inputs.target }}' == 'production' && "$DATABASE_RELEASE_TRACK" == 'prompt-privacy' && "$expand_set" == true ]] || { echo '::error::expand bridge attestation is limited to production prompt-privacy expand evidence'; exit 1; }

@@ -2,9 +2,8 @@ import { createHash } from 'node:crypto';
 import { buildApiErrorResult, buildJsonResult } from '../modules/http-response.js';
 import { getChatRuntimeLimits, getDailyChatLimit, getGeminiThinkingLevel } from '../modules/runtime-config.js';
 import { hasAuthorizationHeader, resolveAuthenticatedUser } from '../modules/auth-guard.js';
-import { executeGeminiChatRequest } from '../modules/gemini-orchestrator.js';
+import { executeChatTurn } from '../modules/chat-turn-service.js';
 import { GEMINI_CHAT_MODEL_NAME } from '../modules/gemini-model.js';
-import { normalizeAssistantPayload } from '../modules/response-normalizer.js';
 import { toSafeErrorMeta } from '../modules/safe-error-meta.js';
 import { logServerWarn } from '../modules/server-logger.js';
 import * as memoryStore from './content-store.js';
@@ -18,12 +17,15 @@ import {
   guardConfidentialPromptResponse,
   isConfidentialPromptExtractionRequest,
 } from './prompt-builder.js';
+import { resolvePlatformRoute } from './route-policy.js';
 
 // 플랫폼 라우터는 public read, authenticated write, owner ops를 하나의 계약으로 묶는다.
 const PLATFORM_ALLOWED_METHODS = 'GET, POST, PATCH, DELETE, OPTIONS';
 
 // Supabase가 준비되면 persistent store를, 로컬 개발에서만 memory store를 선택한다.
-const getPlatformStore = () => (persistentStore.isPersistentPlatformAvailable() ? persistentStore : memoryStore);
+const getPlatformStore = (runtimeEnvironment = process.env) => (
+  persistentStore.isPersistentPlatformAvailable(runtimeEnvironment) ? persistentStore : memoryStore
+);
 
 const PUBLIC_CONTENT_SUMMARY_KEYS = Object.freeze([
   'id',
@@ -176,7 +178,6 @@ const parseJsonBody = (bodyText) => {
   }
 };
 
-const getSegments = (path) => String(path || '').split('/').filter(Boolean);
 const CATALOG_SEARCH_LIMIT = 160;
 const parseBooleanQuery = (value, fallback = true) => {
   if (typeof value === 'undefined' || value === null || String(value).trim() === '') return fallback;
@@ -209,14 +210,28 @@ export const resolveViewerBookmarked = async ({ store, event, userId, entityType
   }
 };
 
-const resolveOptionalUser = async ({ event, traceId, requireAuth = false, allowLocalDemo = false }) => {
+const resolveOptionalUser = async ({ event, traceId, requireAuth = false, allowLocalDemo = false, runtimeEnvironment = event?.runtimeEnvironment || process.env }) => {
   if (!requireAuth && !hasAuthorizationHeader(event?.headers)) {
     const canUseLocalDemo = allowLocalDemo
-      && !persistentStore.isPersistentPlatformAvailable()
-      && !persistentStore.isPersistentPlatformRequired();
+      && !persistentStore.isPersistentPlatformAvailable(runtimeEnvironment)
+      && !persistentStore.isPersistentPlatformRequired(runtimeEnvironment);
     return { ok: true, userId: canUseLocalDemo ? 'demo-user' : '' };
   }
-  return resolveAuthenticatedUser({ event, requestTraceId: traceId, forceAuth: true });
+  return resolveAuthenticatedUser({ event, requestTraceId: traceId, forceAuth: true, runtimeEnvironment });
+};
+
+const resolveRouteUser = async ({ route, event, traceId, runtimeEnvironment }) => {
+  const authMode = route.policy.auth;
+  if (authMode === 'public') return { ok: true, userId: '' };
+  if (authMode === 'optional') return resolveOptionalUser({ event, traceId, runtimeEnvironment });
+  if (authMode === 'required') return resolveOptionalUser({ event, traceId, requireAuth: true, runtimeEnvironment });
+  return resolveOptionalUser({
+    event,
+    traceId,
+    requireAuth: persistentStore.isPersistentPlatformAvailable(runtimeEnvironment),
+    allowLocalDemo: true,
+    runtimeEnvironment,
+  });
 };
 
 const REPORT_REASONS = new Set(['sexual_content', 'minor_safety', 'hate_or_harassment', 'copyright', 'spam', 'other']);
@@ -233,15 +248,15 @@ const mutationUnavailableError = ({ headers, startedAtMs, traceId }) => jsonErro
   retryable: true,
 });
 
-const ensureRequiredPersistenceAvailable = ({ headers, startedAtMs, traceId }) => (
-  persistentStore.isPersistentPlatformRequired() && !persistentStore.isPersistentPlatformAvailable()
+const ensureRequiredPersistenceAvailable = ({ headers, startedAtMs, traceId, runtimeEnvironment }) => (
+  persistentStore.isPersistentPlatformRequired(runtimeEnvironment) && !persistentStore.isPersistentPlatformAvailable(runtimeEnvironment)
     ? mutationUnavailableError({ headers, startedAtMs, traceId })
     : null
 );
 
-const ensurePersistentMutationAvailable = ({ headers, startedAtMs, traceId }) => (
-  (persistentStore.isPersistentPlatformAvailable() || persistentStore.isPersistentPlatformRequired())
-    && !persistentStore.isPersistentMutationAvailable()
+const ensurePersistentMutationAvailable = ({ headers, startedAtMs, traceId, runtimeEnvironment }) => (
+  (persistentStore.isPersistentPlatformAvailable(runtimeEnvironment) || persistentStore.isPersistentPlatformRequired(runtimeEnvironment))
+    && !persistentStore.isPersistentMutationAvailable(runtimeEnvironment)
     ? mutationUnavailableError({ headers, startedAtMs, traceId })
     : null
 );
@@ -257,7 +272,8 @@ const toContentValidationError = ({ validation, headers, startedAtMs, traceId })
 });
 
 const validateContentRequest = async ({ event, userId, entityType, body, mode, slug }) => {
-  const store = getPlatformStore();
+  const runtimeEnvironment = event?.runtimeEnvironment || process.env;
+  const store = getPlatformStore(runtimeEnvironment);
   const existing = mode === 'patch'
     ? await (entityType === 'character'
       ? store.getCharacterDetail({ event, slug, userId })
@@ -268,7 +284,7 @@ const validateContentRequest = async ({ event, userId, entityType, body, mode, s
   }
   const normalized = validateContentPayload({ entityType, payload: body, mode, existing });
   if (!normalized.ok) return normalized;
-  const config = persistentStore.getPlatformPersistenceConfig();
+  const config = persistentStore.getPlatformPersistenceConfig(runtimeEnvironment);
   const references = validateContentAssetReferences({
     payload: normalized.value,
     existingPayload: existing,
@@ -276,7 +292,7 @@ const validateContentRequest = async ({ event, userId, entityType, body, mode, s
     entityType,
     supabaseUrl: config.supabaseUrl,
     bucket: config.storageBucket,
-    enforceCanonical: persistentStore.isPersistentPlatformAvailable(),
+    enforceCanonical: persistentStore.isPersistentPlatformAvailable(runtimeEnvironment),
   });
   if (!references.ok) return references;
   return { ok: true, value: normalized.value, existing };
@@ -343,15 +359,39 @@ export const mapStoreError = ({ error, headers, startedAtMs, traceId }) => {
 };
 
 // 외부 모델 호출은 DB 트랜잭션 밖에서 실행하되, quota lease와 room commit은 서버 전용 RPC로 묶는다.
-export const handleRoomChat = async ({ event, headers, startedAtMs, traceId, roomId, storeOverride = null }) => {
-  const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
+export const handleRoomChat = async ({
+  event,
+  headers,
+  startedAtMs,
+  traceId,
+  roomId,
+  storeOverride = null,
+  authenticatedUserId = undefined,
+  persistencePrechecked = false,
+  runtimeConfig = null,
+  runtimeEnvironment = runtimeConfig?.environment || event?.runtimeEnvironment || process.env,
+}) => {
+  if (event?.runtimeEnvironment !== runtimeEnvironment) {
+    event = { ...event, runtimeEnvironment };
+  }
+  const authResult = typeof authenticatedUserId === 'string'
+    ? { ok: true, userId: authenticatedUserId }
+    : await resolveOptionalUser({
+      event,
+      traceId,
+      requireAuth: persistentStore.isPersistentPlatformAvailable(runtimeEnvironment),
+      allowLocalDemo: true,
+      runtimeEnvironment,
+    });
   if (!authResult.ok) {
     return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || '로그인이 필요합니다.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
   }
-  const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId });
-  if (unavailable) return unavailable;
+  if (!persistencePrechecked) {
+    const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId, runtimeEnvironment });
+    if (unavailable) return unavailable;
+  }
 
-  const store = storeOverride || getPlatformStore();
+  const store = storeOverride || getPlatformStore(runtimeEnvironment);
   const room = await store.getRoom({ event, roomId, userId: authResult.userId });
   if (!room) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: '대화방을 찾을 수 없습니다.', errorCode: 'ROOM_NOT_FOUND' });
 
@@ -375,11 +415,11 @@ export const handleRoomChat = async ({ event, headers, startedAtMs, traceId, roo
       errorCode: 'PROMPT_DISCLOSURE_REQUEST_BLOCKED',
     });
   }
-  const apiKey = process.env.GOOGLE_API_KEY;
+  const apiKey = runtimeEnvironment?.GOOGLE_API_KEY;
   if (!apiKey) return mutationUnavailableError({ headers, startedAtMs, traceId });
 
-  const chatRuntimeLimits = getChatRuntimeLimits();
-  const dailyLimit = getDailyChatLimit();
+  const chatRuntimeLimits = runtimeConfig?.chatRuntimeLimits || getChatRuntimeLimits(runtimeEnvironment);
+  const dailyLimit = runtimeConfig?.dailyChatLimit || getDailyChatLimit(runtimeEnvironment);
   const quotaRequestId = `room:${roomId}:${clientRequestId || traceId}`;
   const requestFingerprint = buildRequestFingerprint({ route: 'room', roomId, character: room.character.slug, userMessage });
   const quota = await store.reserveChatQuota({
@@ -439,7 +479,7 @@ export const handleRoomChat = async ({ event, headers, startedAtMs, traceId, roo
         message: guardedReplay.message,
         trace_id: quota.response.trace_id || traceId,
         quota: { limit: quota.limit, remaining: quota.remaining, resetAt: quota.resetAt },
-        thinking_level: getGeminiThinkingLevel(),
+        thinking_level: runtimeConfig?.geminiThinkingLevel || getGeminiThinkingLevel(runtimeEnvironment),
         history_window: chatRuntimeLimits.maxHistoryMessages,
       },
     });
@@ -484,39 +524,40 @@ export const handleRoomChat = async ({ event, headers, startedAtMs, traceId, roo
       return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: '대화방을 찾을 수 없습니다.', errorCode: 'ROOM_NOT_FOUND' });
     }
 
-    const result = await executeGeminiChatRequest({
-      apiKey,
-      modelName: GEMINI_CHAT_MODEL_NAME,
-      requestStartedAt: startedAtMs,
-      requestTraceId: traceId,
-      normalizedCharacterId: room.character.slug,
-      userMessage,
-      messageHistory: roomHistory,
-      requestCachedContent: null,
-      trimmedSystemPrompt: promptContext.promptSnapshot,
-      promptCacheAdapter: null,
+    const result = await executeChatTurn({
+      modelRequest: {
+        apiKey,
+        modelName: GEMINI_CHAT_MODEL_NAME,
+        requestStartedAt: startedAtMs,
+        requestTraceId: traceId,
+        normalizedCharacterId: room.character.slug,
+        userMessage,
+        messageHistory: roomHistory,
+        requestCachedContent: null,
+        trimmedSystemPrompt: promptContext.promptSnapshot,
+        promptCacheAdapter: null,
+        runtimeConfig,
+        runtimeEnvironment,
+      },
+      promptSnapshot: promptContext.promptSnapshot,
     });
     if (!result.ok) {
       await refundBestEffort();
-      return jsonError({ statusCode: result.error?.status === 429 ? 429 : 503, headers, startedAtMs, traceId, error: '응답을 생성하지 못했습니다. 잠시 후 다시 시도해주세요.', errorCode: result.error?.status === 429 ? 'RESPONSE_RATE_LIMITED' : 'RESPONSE_SERVICE_UNAVAILABLE', retryable: true });
+      return jsonError({
+        statusCode: result.failure.statusCode,
+        headers,
+        startedAtMs,
+        traceId,
+        error: result.failure.error,
+        errorCode: result.failure.errorCode,
+        retryable: result.failure.retryable,
+      });
     }
 
-    const normalizedMessage = normalizeAssistantPayload(result.modelText, {
-      traceId,
-      roomId,
-      modelName: GEMINI_CHAT_MODEL_NAME,
-      promptSnapshotLength: String(promptContext.promptSnapshot || '').length,
-      historyMessageCount: roomHistory.length,
-      outputLimit: chatRuntimeLimits.primaryMaxOutputTokens,
-    });
-    const guardedMessage = guardConfidentialPromptResponse({
-      message: normalizedMessage,
-      promptSnapshot: promptContext.promptSnapshot,
-    });
-    if (guardedMessage.blocked) {
+    if (result.disclosureBlocked) {
       logServerWarn('[V-MATE] Confidential prompt disclosure blocked from model response', { traceId });
     }
-    const message = guardedMessage.message;
+    const message = result.value;
     let nextRoom;
     if (typeof store.commitRoomTurn === 'function') {
       nextRoom = await store.commitRoomTurn({
@@ -545,7 +586,7 @@ export const handleRoomChat = async ({ event, headers, startedAtMs, traceId, roo
         message,
         trace_id: traceId,
         quota: { limit: quota.limit, remaining: quota.remaining, resetAt: quota.resetAt },
-        thinking_level: getGeminiThinkingLevel(),
+        thinking_level: runtimeConfig?.geminiThinkingLevel || getGeminiThinkingLevel(runtimeEnvironment),
         history_window: chatRuntimeLimits.maxHistoryMessages,
       },
     });
@@ -557,32 +598,64 @@ export const handleRoomChat = async ({ event, headers, startedAtMs, traceId, roo
   }
 };
 
-export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }) => {
+export const handlePlatformApi = async ({
+  event,
+  headers,
+  startedAtMs,
+  traceId,
+  runtimeConfig = null,
+  runtimeEnvironment = runtimeConfig?.environment || event?.runtimeEnvironment || process.env,
+}) => {
+  if (event?.runtimeEnvironment !== runtimeEnvironment) {
+    event = { ...event, runtimeEnvironment };
+  }
   const path = String(event.path || '/');
-  const segments = getSegments(path);
   const method = String(event.httpMethod || 'GET').toUpperCase();
+  const store = getPlatformStore(runtimeEnvironment);
 
   if (method === 'OPTIONS') {
     return jsonOk({ statusCode: 200, headers, startedAtMs, body: '' });
   }
 
-  if (segments[0] !== 'api') {
+  const matchedRoute = resolvePlatformRoute({ method, path });
+  if (!matchedRoute) {
     return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Not found.', errorCode: 'NOT_FOUND' });
   }
+  const { definition: route, params } = matchedRoute;
+  const routeId = route.id;
 
   // Production-like runtimes must never downgrade reads or writes to demo fixtures.
-  const persistenceUnavailable = ensureRequiredPersistenceAvailable({ headers, startedAtMs, traceId });
+  const persistenceUnavailable = ensureRequiredPersistenceAvailable({ headers, startedAtMs, traceId, runtimeEnvironment });
   if (persistenceUnavailable) return persistenceUnavailable;
 
-  if (!['GET', 'OPTIONS', 'HEAD'].includes(method)) {
-    const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId });
+  if (route.policy.mutation) {
+    const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId, runtimeEnvironment });
     if (unavailable) return unavailable;
   }
 
+  const authResult = await resolveRouteUser({ route, event, traceId, runtimeEnvironment });
+  if (!authResult.ok) {
+    return jsonError({
+      statusCode: authResult.statusCode || 401,
+      headers,
+      startedAtMs,
+      traceId,
+      error: authResult.error || 'Authentication required.',
+      errorCode: authResult.errorCode || 'AUTH_REQUIRED',
+      retryable: Boolean(authResult.retryable),
+    });
+  }
+  const userId = String(authResult.userId || '');
+  if (route.policy.owner && !await store.isOwnerUser?.({ event, userId })) {
+    return jsonError({ statusCode: 403, headers, startedAtMs, traceId, error: 'Owner access required.', errorCode: 'OWNER_FORBIDDEN' });
+  }
+
   // 공개 탐색 라우트
-  if (method === 'GET' && segments[1] === 'home') {
+  if (routeId === 'home') {
     const query = parseQuery(event.queryStringParameters);
-    const payload = await getPlatformStore().getHomePayload({
+    const payload = await store.getHomePayload({
+      event,
+      runtimeEnvironment,
       tab: query.tab,
       search: query.search,
       filter: query.filter,
@@ -592,67 +665,53 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
     return jsonOk({ headers, startedAtMs, body: toPublicHomePayload(payload) });
   }
 
-  if (method === 'GET' && segments[1] === 'characters' && !segments[2]) {
+  if (routeId === 'character-list') {
     const query = parseQuery(event.queryStringParameters);
-    const items = await getPlatformStore().listCharacters({ search: query.search, filter: query.filter });
+    const items = await store.listCharacters({ event, runtimeEnvironment, search: query.search, filter: query.filter });
     return jsonOk({ headers, startedAtMs, body: { items: items.map(toPublicContentSummary) } });
   }
 
-  if (method === 'GET' && segments[1] === 'worlds' && !segments[2]) {
+  if (routeId === 'world-list') {
     const query = parseQuery(event.queryStringParameters);
-    const items = await getPlatformStore().listWorlds({ search: query.search, filter: query.filter });
+    const items = await store.listWorlds({ event, runtimeEnvironment, search: query.search, filter: query.filter });
     return jsonOk({ headers, startedAtMs, body: { items: items.map(toPublicContentSummary) } });
   }
 
-  if (method === 'GET' && segments[1] === 'characters' && segments[2]) {
-    const authResult = await resolveOptionalUser({ event, traceId });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || '로그인 정보를 확인해주세요.', errorCode: authResult.errorCode || 'AUTH_UNAUTHORIZED', retryable: Boolean(authResult.retryable) });
-    const store = getPlatformStore();
-    const item = await store.getCharacterDetail({ event, slug: segments[2], userId: authResult.userId });
+  if (routeId === 'character-detail') {
+    const item = await store.getCharacterDetail({ event, slug: params.slug, userId });
     if (!item) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Character not found.', errorCode: 'CHARACTER_NOT_FOUND' });
-    const isOwner = Boolean(authResult.userId) && String(item.creator?.id || '') === authResult.userId;
-    const bookmarked = await resolveViewerBookmarked({ store, event, userId: authResult.userId, entityType: 'character', targetId: item.id });
+    const isOwner = Boolean(userId) && String(item.creator?.id || '') === userId;
+    const bookmarked = await resolveViewerBookmarked({ store, event, userId, entityType: 'character', targetId: item.id });
     return jsonOk({ headers, startedAtMs, body: { item: isOwner ? item : toPublicContentDetail(item), viewer: { bookmarked } } });
   }
 
-  if (method === 'GET' && segments[1] === 'worlds' && segments[2]) {
-    const authResult = await resolveOptionalUser({ event, traceId });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || '로그인 정보를 확인해주세요.', errorCode: authResult.errorCode || 'AUTH_UNAUTHORIZED', retryable: Boolean(authResult.retryable) });
-    const store = getPlatformStore();
-    const item = await store.getWorldDetail({ event, slug: segments[2], userId: authResult.userId });
+  if (routeId === 'world-detail') {
+    const item = await store.getWorldDetail({ event, slug: params.slug, userId });
     if (!item) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'World not found.', errorCode: 'WORLD_NOT_FOUND' });
-    const isOwner = Boolean(authResult.userId) && String(item.creator?.id || '') === authResult.userId;
-    const bookmarked = await resolveViewerBookmarked({ store, event, userId: authResult.userId, entityType: 'world', targetId: item.id });
+    const isOwner = Boolean(userId) && String(item.creator?.id || '') === userId;
+    const bookmarked = await resolveViewerBookmarked({ store, event, userId, entityType: 'world', targetId: item.id });
     return jsonOk({ headers, startedAtMs, body: { item: isOwner ? item : toPublicContentDetail(item), viewer: { bookmarked } } });
   }
 
-  if (method === 'GET' && segments[1] === 'recent-rooms') {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
+  if (routeId === 'recent-rooms') {
     const query = parseQuery(event.queryStringParameters);
-    return jsonOk({ headers, startedAtMs, body: { items: await getPlatformStore().listRecentRooms({ event, userId: authResult.userId, limit: query.limit, includeMessages: query.includeMessages }) } });
+    return jsonOk({ headers, startedAtMs, body: { items: await store.listRecentRooms({ event, userId, limit: query.limit, includeMessages: query.includeMessages }) } });
   }
 
-  if (method === 'GET' && segments[1] === 'library') {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
+  if (routeId === 'library') {
     const query = parseQuery(event.queryStringParameters);
-    return jsonOk({ headers, startedAtMs, body: await getPlatformStore().getLibraryPayload({ event, userId: authResult.userId, includeRecentRooms: query.includeRecentRooms }) });
+    return jsonOk({ headers, startedAtMs, body: await store.getLibraryPayload({ event, userId, includeRecentRooms: query.includeRecentRooms }) });
   }
 
-  if (method === 'GET' && segments[1] === 'me' && segments[2] === 'chat-quota') {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: true });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED' });
-    return jsonOk({ headers, startedAtMs, body: { quota: await getPlatformStore().getChatQuota({ event, userId: authResult.userId, limit: getDailyChatLimit() }) } });
+  if (routeId === 'chat-quota') {
+    return jsonOk({ headers, startedAtMs, body: { quota: await store.getChatQuota({ event, userId, limit: runtimeConfig?.dailyChatLimit || getDailyChatLimit(runtimeEnvironment) }) } });
   }
 
-  if (method === 'POST' && segments[1] === 'reports') {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: true });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED' });
+  if (routeId === 'create-report') {
     const body = parseJsonBody(event.body);
     if (!body || !['character', 'world'].includes(body.entityType) || !String(body.entityId || '').trim() || !REPORT_REASONS.has(body.reason)) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: 'Invalid report payload.', errorCode: 'INVALID_REPORT' });
     try {
-      const report = await getPlatformStore().createContentReport({ event, userId: authResult.userId, payload: body });
+      const report = await store.createContentReport({ event, userId, payload: body });
       if (!report) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Content not found.', errorCode: 'CONTENT_NOT_FOUND' });
       return jsonOk({ statusCode: 201, headers, startedAtMs, body: { report } });
     } catch (error) {
@@ -662,12 +721,10 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
   }
 
   // 로그인 사용자 데이터 라우트
-  if (method === 'DELETE' && segments[1] === 'account' && !segments[2]) {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
+  if (routeId === 'delete-account') {
     let result;
     try {
-      result = await getPlatformStore().deleteAccount({ event, userId: authResult.userId });
+      result = await store.deleteAccount({ event, userId });
     } catch (error) {
       if (error?.code === 'ACCOUNT_DELETE_STORAGE_STATE_UNKNOWN') {
         return jsonError({
@@ -718,69 +775,51 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
     return jsonOk({ headers, startedAtMs, body: { ok: true, deleted: true, data: result } });
   }
 
-  if (method === 'POST' && segments[1] === 'recent-views') {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
+  if (routeId === 'recent-view') {
     const body = parseJsonBody(event.body);
     if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: 'Invalid request body.', errorCode: 'INVALID_REQUEST_BODY' });
-    await getPlatformStore().addRecentView({ event, userId: authResult.userId, entityType: String(body.entityType || '').trim(), ref: body.entityRef || body.slug || body.id });
+    await store.addRecentView({ event, userId, entityType: String(body.entityType || '').trim(), ref: body.entityRef || body.slug || body.id });
     return jsonOk({ statusCode: 201, headers, startedAtMs, body: { ok: true } });
   }
 
-  if (method === 'POST' && segments[1] === 'bookmarks') {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
+  if (routeId === 'create-bookmark') {
     const body = parseJsonBody(event.body);
     if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: 'Invalid request body.', errorCode: 'INVALID_REQUEST_BODY' });
-    const result = await getPlatformStore().toggleBookmark({ event, userId: authResult.userId, entityType: String(body.entityType || '').trim(), ref: body.entityRef || body.slug || body.id });
+    const result = await store.toggleBookmark({ event, userId, entityType: String(body.entityType || '').trim(), ref: body.entityRef || body.slug || body.id });
     if (!result) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Entity not found.', errorCode: 'ENTITY_NOT_FOUND' });
     return jsonOk({ statusCode: 201, headers, startedAtMs, body: result });
   }
 
-  if (method === 'DELETE' && segments[1] === 'bookmarks' && segments[2]) {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
-    await getPlatformStore().removeBookmark({ event, userId: authResult.userId, bookmarkId: segments[2] });
+  if (routeId === 'delete-bookmark') {
+    await store.removeBookmark({ event, userId, bookmarkId: params.bookmarkId });
     return jsonOk({ headers, startedAtMs, body: { ok: true } });
   }
 
   // 제작 및 편집 라우트
-  if (method === 'POST' && segments[1] === 'characters') {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
-    const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId });
-    if (unavailable) return unavailable;
+  if (routeId === 'create-character') {
     const body = parseJsonBody(event.body);
     if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: '요청 본문을 확인해주세요.', errorCode: 'INVALID_REQUEST_BODY' });
-    const validation = await validateContentRequest({ event, userId: authResult.userId, entityType: 'character', body, mode: 'create' });
+    const validation = await validateContentRequest({ event, userId, entityType: 'character', body, mode: 'create' });
     if (!validation.ok) return toContentValidationError({ validation, headers, startedAtMs, traceId });
-    return jsonOk({ statusCode: 201, headers, startedAtMs, body: { item: await getPlatformStore().createCharacter({ event, userId: authResult.userId, payload: validation.value }) } });
+    return jsonOk({ statusCode: 201, headers, startedAtMs, body: { item: await store.createCharacter({ event, userId, payload: validation.value }) } });
   }
 
-  if (method === 'PATCH' && segments[1] === 'characters' && segments[2]) {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: true });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
-    const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId });
-    if (unavailable) return unavailable;
+  if (routeId === 'update-character') {
     const body = parseJsonBody(event.body);
     if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: '요청 본문을 확인해주세요.', errorCode: 'INVALID_REQUEST_BODY' });
-    const validation = await validateContentRequest({ event, userId: authResult.userId, entityType: 'character', body, mode: 'patch', slug: segments[2] });
+    const validation = await validateContentRequest({ event, userId, entityType: 'character', body, mode: 'patch', slug: params.slug });
     if (validation.notFound) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Character not found.', errorCode: 'CHARACTER_NOT_FOUND' });
     if (!validation.ok) return toContentValidationError({ validation, headers, startedAtMs, traceId });
-    const item = await getPlatformStore().updateCharacter?.({ event, userId: authResult.userId, slug: segments[2], payload: validation.value });
+    const item = await store.updateCharacter?.({ event, userId, slug: params.slug, payload: validation.value });
     if (!item) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Character not found.', errorCode: 'CHARACTER_NOT_FOUND' });
     return jsonOk({ headers, startedAtMs, body: { item } });
   }
 
-  if (method === 'DELETE' && segments[1] === 'characters' && segments[2]) {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: true });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
-    const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId });
-    if (unavailable) return unavailable;
+  if (routeId === 'delete-character') {
     let ok;
     try {
-      ok = await (getPlatformStore().deleteOwnedContent?.({ event, userId: authResult.userId, entityType: 'character', id: segments[2] })
-        ?? getPlatformStore().deleteContent({ event, entityType: 'character', id: segments[2] }));
+      ok = await (store.deleteOwnedContent?.({ event, userId, entityType: 'character', id: params.id })
+        ?? store.deleteContent({ event, entityType: 'character', id: params.id }));
     } catch (error) {
       const mapped = mapStoreError({ error, headers, startedAtMs, traceId });
       if (mapped) return mapped;
@@ -790,42 +829,30 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
     return jsonOk({ headers, startedAtMs, body: { ok: true } });
   }
 
-  if (method === 'POST' && segments[1] === 'worlds') {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
-    const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId });
-    if (unavailable) return unavailable;
+  if (routeId === 'create-world') {
     const body = parseJsonBody(event.body);
     if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: '요청 본문을 확인해주세요.', errorCode: 'INVALID_REQUEST_BODY' });
-    const validation = await validateContentRequest({ event, userId: authResult.userId, entityType: 'world', body, mode: 'create' });
+    const validation = await validateContentRequest({ event, userId, entityType: 'world', body, mode: 'create' });
     if (!validation.ok) return toContentValidationError({ validation, headers, startedAtMs, traceId });
-    return jsonOk({ statusCode: 201, headers, startedAtMs, body: { item: await getPlatformStore().createWorld({ event, userId: authResult.userId, payload: validation.value }) } });
+    return jsonOk({ statusCode: 201, headers, startedAtMs, body: { item: await store.createWorld({ event, userId, payload: validation.value }) } });
   }
 
-  if (method === 'PATCH' && segments[1] === 'worlds' && segments[2]) {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: true });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
-    const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId });
-    if (unavailable) return unavailable;
+  if (routeId === 'update-world') {
     const body = parseJsonBody(event.body);
     if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: '요청 본문을 확인해주세요.', errorCode: 'INVALID_REQUEST_BODY' });
-    const validation = await validateContentRequest({ event, userId: authResult.userId, entityType: 'world', body, mode: 'patch', slug: segments[2] });
+    const validation = await validateContentRequest({ event, userId, entityType: 'world', body, mode: 'patch', slug: params.slug });
     if (validation.notFound) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'World not found.', errorCode: 'WORLD_NOT_FOUND' });
     if (!validation.ok) return toContentValidationError({ validation, headers, startedAtMs, traceId });
-    const item = await getPlatformStore().updateWorld?.({ event, userId: authResult.userId, slug: segments[2], payload: validation.value });
+    const item = await store.updateWorld?.({ event, userId, slug: params.slug, payload: validation.value });
     if (!item) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'World not found.', errorCode: 'WORLD_NOT_FOUND' });
     return jsonOk({ headers, startedAtMs, body: { item } });
   }
 
-  if (method === 'DELETE' && segments[1] === 'worlds' && segments[2]) {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: true });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
-    const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId });
-    if (unavailable) return unavailable;
+  if (routeId === 'delete-world') {
     let ok;
     try {
-      ok = await (getPlatformStore().deleteOwnedContent?.({ event, userId: authResult.userId, entityType: 'world', id: segments[2] })
-        ?? getPlatformStore().deleteContent({ event, entityType: 'world', id: segments[2] }));
+      ok = await (store.deleteOwnedContent?.({ event, userId, entityType: 'world', id: params.id })
+        ?? store.deleteContent({ event, entityType: 'world', id: params.id }));
     } catch (error) {
       const mapped = mapStoreError({ error, headers, startedAtMs, traceId });
       if (mapped) return mapped;
@@ -835,11 +862,7 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
     return jsonOk({ headers, startedAtMs, body: { ok: true } });
   }
 
-  if (method === 'POST' && segments[1] === 'uploads' && segments[2] === 'prepare') {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
-    const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId });
-    if (unavailable) return unavailable;
+  if (routeId === 'prepare-upload') {
     const body = parseJsonBody(event.body);
     if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: '요청 본문을 확인해주세요.', errorCode: 'INVALID_REQUEST_BODY' });
     const entityType = String(body.entityType || '');
@@ -847,7 +870,7 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
     if (!variantsValidation.ok) return toContentValidationError({ validation: variantsValidation, headers, startedAtMs, traceId });
     let prepared;
     try {
-      prepared = await getPlatformStore().prepareAssetUploads({ event, userId: authResult.userId, entityType, variants: variantsValidation.value });
+      prepared = await store.prepareAssetUploads({ event, userId, entityType, variants: variantsValidation.value });
     } catch (error) {
       const mapped = mapStoreError({ error, headers, startedAtMs, traceId });
       if (mapped) return mapped;
@@ -856,11 +879,7 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
     return jsonOk({ headers, startedAtMs, body: prepared });
   }
 
-  if (method === 'POST' && segments[1] === 'rooms' && segments.length === 2) {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
-    const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId });
-    if (unavailable) return unavailable;
+  if (routeId === 'create-room') {
     const body = parseJsonBody(event.body);
     if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: 'Invalid request body.', errorCode: 'INVALID_REQUEST_BODY' });
     const characterSlug = String(body.characterSlug || body.characterId || '').trim();
@@ -871,7 +890,7 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
     }
     let room;
     try {
-      room = await getPlatformStore().createRoom({ event, userId: authResult.userId, characterSlug, worldSlug, userAlias });
+      room = await store.createRoom({ event, userId, characterSlug, worldSlug, userAlias });
     } catch (error) {
       const mapped = mapStoreError({ error, headers, startedAtMs, traceId });
       if (mapped) return mapped;
@@ -881,49 +900,44 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
     return jsonOk({ statusCode: 201, headers, startedAtMs, body: { room } });
   }
 
-  if (method === 'GET' && segments[1] === 'rooms' && segments[2]) {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: persistentStore.isPersistentPlatformAvailable(), allowLocalDemo: true });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
-    const room = await getPlatformStore().getRoom({ event, roomId: segments[2], userId: authResult.userId });
+  if (routeId === 'get-room') {
+    const room = await store.getRoom({ event, roomId: params.roomId, userId });
     if (!room) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Room not found.', errorCode: 'ROOM_NOT_FOUND' });
     return jsonOk({ headers, startedAtMs, body: { room } });
   }
 
-  if (method === 'POST' && segments[1] === 'rooms' && segments[2] && segments[3] === 'chat') {
-    return handleRoomChat({ event, headers, startedAtMs, traceId, roomId: segments[2] });
+  if (routeId === 'room-chat') {
+    return handleRoomChat({
+      event,
+      headers,
+      startedAtMs,
+      traceId,
+      roomId: params.roomId,
+      storeOverride: store,
+      authenticatedUserId: userId,
+      persistencePrechecked: true,
+      runtimeConfig,
+      runtimeEnvironment,
+    });
   }
 
   // owner 전용 운영 라우트
-  if (method === 'GET' && segments[1] === 'ops' && segments[2] === 'reports') {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: true });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED' });
-    const isOwner = await getPlatformStore().isOwnerUser?.({ event, userId: authResult.userId });
-    if (!isOwner) return jsonError({ statusCode: 403, headers, startedAtMs, traceId, error: 'Owner access required.', errorCode: 'OWNER_FORBIDDEN' });
+  if (routeId === 'ops-reports') {
     const status = String(event.queryStringParameters?.status || 'open');
-    return jsonOk({ headers, startedAtMs, body: { reports: await getPlatformStore().listContentReports({ event, status }) } });
+    return jsonOk({ headers, startedAtMs, body: { reports: await store.listContentReports({ event, status }) } });
   }
 
-  if (method === 'PATCH' && segments[1] === 'ops' && segments[2] === 'reports' && segments[3]) {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: true });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED' });
-    const isOwner = await getPlatformStore().isOwnerUser?.({ event, userId: authResult.userId });
-    if (!isOwner) return jsonError({ statusCode: 403, headers, startedAtMs, traceId, error: 'Owner access required.', errorCode: 'OWNER_FORBIDDEN' });
+  if (routeId === 'ops-update-report') {
     const body = parseJsonBody(event.body);
     if (!body || !['dismiss', 'restore', 'quarantine', 'remove'].includes(body.action)) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: 'Invalid moderation action.', errorCode: 'INVALID_MODERATION_ACTION' });
-    const result = await getPlatformStore().applyReportAction({ event, userId: authResult.userId, reportId: segments[3], action: body.action, note: String(body.note || '') });
+    const result = await store.applyReportAction({ event, userId, reportId: params.reportId, action: body.action, note: String(body.note || '') });
     if (!result) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Report not found.', errorCode: 'REPORT_NOT_FOUND' });
     return jsonOk({ headers, startedAtMs, body: result });
   }
 
-  if (method === 'GET' && segments[1] === 'ops' && segments[2] === 'dashboard') {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: true });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
-    const isOwner = await getPlatformStore().isOwnerUser?.({ event, userId: authResult.userId });
-    if (!isOwner) {
-      return jsonError({ statusCode: 403, headers, startedAtMs, traceId, error: 'Owner access required.', errorCode: 'OWNER_FORBIDDEN' });
-    }
+  if (routeId === 'ops-dashboard') {
     try {
-      const dashboard = await getPlatformStore().getOpsDashboard({ event, userId: authResult.userId });
+      const dashboard = await store.getOpsDashboard({ event, userId, ownerPrechecked: true });
       if (!dashboard) {
         const error = new Error('OPS_DASHBOARD_UNAVAILABLE');
         error.code = 'OPS_DASHBOARD_UNAVAILABLE';
@@ -937,34 +951,18 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
     }
   }
 
-  if (method === 'POST' && segments[1] === 'ops' && segments[2] === 'content' && segments[3] && segments[4] && segments[5]) {
-    const status = segments[5] === 'hide' ? 'hidden' : segments[5] === 'show' ? 'visible' : null;
+  if (routeId === 'ops-content-visibility') {
+    const status = params.action === 'hide' ? 'hidden' : params.action === 'show' ? 'visible' : null;
     if (!status) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Not found.', errorCode: 'NOT_FOUND' });
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: true });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
-    const isOwner = await getPlatformStore().isOwnerUser?.({ event, userId: authResult.userId });
-    if (!isOwner) {
-      return jsonError({ statusCode: 403, headers, startedAtMs, traceId, error: 'Owner access required.', errorCode: 'OWNER_FORBIDDEN' });
-    }
-    const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId });
-    if (unavailable) return unavailable;
-    const ok = await getPlatformStore().setContentVisibility({ event, userId: authResult.userId, entityType: segments[3], id: segments[4], status });
+    const ok = await store.setContentVisibility({ event, userId, entityType: params.entityType, id: params.id, status, ownerPrechecked: true });
     if (!ok) return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Content not found.', errorCode: 'CONTENT_NOT_FOUND' });
     return jsonOk({ headers, startedAtMs, body: { ok: true } });
   }
 
-  if (method === 'DELETE' && segments[1] === 'ops' && segments[2] === 'content' && segments[3] && segments[4]) {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: true });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
-    const isOwner = await getPlatformStore().isOwnerUser?.({ event, userId: authResult.userId });
-    if (!isOwner) {
-      return jsonError({ statusCode: 403, headers, startedAtMs, traceId, error: 'Owner access required.', errorCode: 'OWNER_FORBIDDEN' });
-    }
-    const unavailable = ensurePersistentMutationAvailable({ headers, startedAtMs, traceId });
-    if (unavailable) return unavailable;
+  if (routeId === 'ops-delete-content') {
     let ok;
     try {
-      ok = await getPlatformStore().deleteContent({ event, userId: authResult.userId, entityType: segments[3], id: segments[4] });
+      ok = await store.deleteContent({ event, userId, entityType: params.entityType, id: params.id, ownerPrechecked: true });
     } catch (error) {
       const mapped = mapStoreError({ error, headers, startedAtMs, traceId });
       if (mapped) return mapped;
@@ -974,40 +972,16 @@ export const handlePlatformApi = async ({ event, headers, startedAtMs, traceId }
     return jsonOk({ headers, startedAtMs, body: { ok: true } });
   }
 
-  if (method === 'POST' && segments[1] === 'ops' && segments[2] === 'home' && segments[3] === 'banner') {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: true });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
-    const isOwner = await getPlatformStore().isOwnerUser?.({ event, userId: authResult.userId });
-    if (!isOwner) {
-      return jsonError({ statusCode: 403, headers, startedAtMs, traceId, error: 'Owner access required.', errorCode: 'OWNER_FORBIDDEN' });
-    }
+  if (routeId === 'ops-home-banner' || routeId === 'ops-home-banner-target') {
     const body = parseJsonBody(event.body);
     if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: 'Invalid request body.', errorCode: 'INVALID_REQUEST_BODY' });
-    return jsonOk({ headers, startedAtMs, body: { home: await getPlatformStore().setHomeHeroTarget({ event, targetPath: String(body.targetPath || '') }) } });
+    return jsonOk({ headers, startedAtMs, body: { home: await store.setHomeHeroTarget({ event, targetPath: String(body.targetPath || '') }) } });
   }
 
-  if (method === 'POST' && segments[1] === 'ops' && segments[2] === 'home' && segments[3] === 'banner-mode') {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: true });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
-    const isOwner = await getPlatformStore().isOwnerUser?.({ event, userId: authResult.userId });
-    if (!isOwner) {
-      return jsonError({ statusCode: 403, headers, startedAtMs, traceId, error: 'Owner access required.', errorCode: 'OWNER_FORBIDDEN' });
-    }
+  if (routeId === 'ops-home-banner-mode') {
     const body = parseJsonBody(event.body);
     if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: 'Invalid request body.', errorCode: 'INVALID_REQUEST_BODY' });
-    return jsonOk({ headers, startedAtMs, body: { home: await getPlatformStore().setHomeHeroMode({ event, mode: String(body.mode || 'auto') }) } });
-  }
-
-  if (method === 'POST' && segments[1] === 'ops' && segments[2] === 'home' && segments[3] === 'banner-target') {
-    const authResult = await resolveOptionalUser({ event, traceId, requireAuth: true });
-    if (!authResult.ok) return jsonError({ statusCode: authResult.statusCode || 401, headers, startedAtMs, traceId, error: authResult.error || 'Authentication required.', errorCode: authResult.errorCode || 'AUTH_REQUIRED', retryable: Boolean(authResult.retryable) });
-    const isOwner = await getPlatformStore().isOwnerUser?.({ event, userId: authResult.userId });
-    if (!isOwner) {
-      return jsonError({ statusCode: 403, headers, startedAtMs, traceId, error: 'Owner access required.', errorCode: 'OWNER_FORBIDDEN' });
-    }
-    const body = parseJsonBody(event.body);
-    if (!body) return jsonError({ statusCode: 400, headers, startedAtMs, traceId, error: 'Invalid request body.', errorCode: 'INVALID_REQUEST_BODY' });
-    return jsonOk({ headers, startedAtMs, body: { home: await getPlatformStore().setHomeHeroTarget({ event, targetPath: String(body.targetPath || '') }) } });
+    return jsonOk({ headers, startedAtMs, body: { home: await store.setHomeHeroMode({ event, mode: String(body.mode || 'auto') }) } });
   }
 
   return jsonError({ statusCode: 404, headers, startedAtMs, traceId, error: 'Not found.', errorCode: 'NOT_FOUND' });

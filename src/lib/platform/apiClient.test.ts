@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { PlatformApiError, toUserFacingError } from '@/lib/platform/apiClient'
+import { decodeEndpointSuccess, PlatformApiError, toUserFacingError } from '@/lib/platform/apiClient'
 
 describe('safe API error mapping', () => {
   it('maps authentication and unavailable target codes without retaining provider text', () => {
@@ -13,5 +13,10 @@ describe('safe API error mapping', () => {
     expect(toUserFacingError(new PlatformApiError({ status: 503, code: 'ACCOUNT_DELETE_STORAGE_STATE_UNKNOWN' })).message).toContain('일부의 정리 상태')
     expect(toUserFacingError(new PlatformApiError({ status: 503, code: 'ACCOUNT_DELETE_PARTIAL_STORAGE_REMOVED' })).message).toContain('업로드 이미지는 정리되었습니다')
     expect(toUserFacingError(new PlatformApiError({ status: 503, code: 'ACCOUNT_DELETE_STATE_UNKNOWN' }))).toMatchObject({ recovery: 'login' })
+  })
+
+  it('decodes direct legacy successes and versioned dispatcher envelopes at one boundary', () => {
+    expect(decodeEndpointSuccess<{ item: { id: string } }>({ item: { id: 'legacy' } }).item.id).toBe('legacy')
+    expect(decodeEndpointSuccess<{ item: { id: string } }>({ api_version: '2', trace_id: 'trace', data: { item: { id: 'current' } } }).item.id).toBe('current')
   })
 })

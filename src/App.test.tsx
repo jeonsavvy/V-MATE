@@ -46,7 +46,7 @@ vi.mock('@/components/Home', () => ({
 
 vi.mock('@/components/AuthDialog', () => ({ AuthDialog: () => null }))
 
-vi.mock('@/components/platform/Pages', () => {
+function createPlatformPageMocks() {
   const Placeholder = () => <main>대체 화면</main>
   const CreateCharacterPage = ({ chrome, slug }: { chrome: PlatformPageChromeProps; slug?: string }) => {
     const [localValue, setLocalValue] = useState('')
@@ -73,7 +73,14 @@ vi.mock('@/components/platform/Pages', () => {
     LibraryPage: Placeholder,
     OpsPage: Placeholder,
   }
-})
+}
+
+vi.mock('@/components/platform/Pages', createPlatformPageMocks)
+vi.mock('@/components/platform/pages/DetailPages', createPlatformPageMocks)
+vi.mock('@/components/platform/pages/RoomPages', createPlatformPageMocks)
+vi.mock('@/components/platform/pages/EditorPages', createPlatformPageMocks)
+vi.mock('@/components/platform/pages/PersonalPages', createPlatformPageMocks)
+vi.mock('@/components/platform/pages/OpsPage', createPlatformPageMocks)
 
 beforeEach(() => {
   getStoredKeys().forEach((key) => removeStoredItem(key))
@@ -204,6 +211,30 @@ describe('App authentication recovery', () => {
     expect(screen.getByText('가짜 캐릭터 편집기')).toBeTruthy()
   })
 
+  it('uses the same blocker for dirty internal navigation and honors cancel then one approval', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: '캐릭터 편집기 열기' }))
+    await user.click(await screen.findByRole('button', { name: '편집 내용 변경' }))
+    await user.click(screen.getByRole('button', { name: '개인정보로 이동' }))
+
+    expect(await screen.findByText('다른 화면으로 이동하면 현재 입력 내용은 임시저장본으로만 남습니다.')).toBeTruthy()
+    expect(window.location.pathname).toBe('/create/character')
+    await user.click(screen.getByRole('button', { name: '계속 편집' }))
+    expect(screen.getByText('가짜 캐릭터 편집기')).toBeTruthy()
+
+    await user.click(screen.getByRole('button', { name: '개인정보로 이동' }))
+    const leaveButton = await screen.findByRole('button', { name: '저장하지 않고 이동' })
+    act(() => {
+      fireEvent.click(leaveButton)
+      fireEvent.click(leaveButton)
+    })
+
+    await waitFor(() => expect(window.location.pathname).toBe('/privacy'))
+    await waitFor(() => expect(screen.queryByText('가짜 캐릭터 편집기')).toBeNull())
+  })
+
   it('moves to an approved browser-back target exactly once despite duplicate confirmation clicks', async () => {
     const user = userEvent.setup()
     const historyGo = vi.spyOn(window.history, 'go')
@@ -214,11 +245,7 @@ describe('App authentication recovery', () => {
     act(() => window.history.back())
 
     const leaveButton = await screen.findByRole('button', { name: '저장하지 않고 이동' })
-    await waitFor(() => expect((leaveButton as HTMLButtonElement).disabled).toBe(false))
-    act(() => window.history.back())
-    await waitFor(() => expect((leaveButton as HTMLButtonElement).disabled).toBe(true))
     await waitFor(() => expect(window.location.pathname).toBe('/create/character'))
-    await waitFor(() => expect((leaveButton as HTMLButtonElement).disabled).toBe(false))
     act(() => {
       fireEvent.click(leaveButton)
       fireEvent.click(leaveButton)
@@ -226,7 +253,7 @@ describe('App authentication recovery', () => {
 
     await waitFor(() => expect(window.location.pathname).toBe('/'))
     expect(await screen.findByText('인증 상태: anonymous')).toBeTruthy()
-    expect(historyGo).toHaveBeenCalledTimes(3)
+    expect(historyGo).not.toHaveBeenCalled()
   })
 
   it('restores and then follows an approved dirty browser-forward target', async () => {

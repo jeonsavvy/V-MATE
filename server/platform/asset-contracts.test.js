@@ -5,6 +5,7 @@ import {
   hasCompleteVariantSets,
   parseVariantKind,
   resolveCanonicalAssetPath,
+  resolveCanonicalAssetPathsFromRows,
   validateUploadVariants,
 } from './asset-contracts.js'
 
@@ -107,4 +108,25 @@ test('canonical asset resolver rejects each ownership and URL ambiguity axis', (
     { url: canonicalUrl.replace('/main/detail.webp', '//detail.webp') },
     { url: canonicalUrl.replace('/main/detail.webp', '/main/detail.png') },
   ]) assert.equal(resolve(overrides), null)
+})
+
+test('canonical asset rows resolve to deduplicated owned storage paths', () => {
+  const path = `${USER_ID}/character/1721971200000-a1b2c3d4/main/detail.webp`
+  assert.deepEqual(resolveCanonicalAssetPathsFromRows({
+    assets: [
+      { url: canonicalUrl },
+      { url: canonicalUrl },
+      { url: canonicalUrl.replace(ORIGIN, 'https://foreign.example') },
+      { path: `${USER_ID}/character/1721971200000-a1b2c3d4/main/card.webp` },
+    ],
+    userId: USER_ID,
+    entityType: 'character',
+    supabaseUrl: ORIGIN,
+  }), [path])
+  assert.deepEqual(resolveCanonicalAssetPathsFromRows({
+    assets: null,
+    userId: USER_ID,
+    entityType: 'character',
+    supabaseUrl: ORIGIN,
+  }), [])
 })

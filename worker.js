@@ -1,10 +1,10 @@
 import { handler as chatHandler } from "./server/chat-handler.js";
-import { buildHeaders, CORS_ALLOWED_METHODS, isOriginAllowed } from "./server/modules/http-policy.js";
-import { buildApiErrorResult } from "./server/modules/http-response.js";
+import { executeApiIngress } from "./server/modules/api-ingress.js";
+import { CORS_ALLOWED_METHODS } from "./server/modules/http-policy.js";
 import { mergeChatHandlerContexts, resolveChatHandlerContext } from "./server/modules/chat-handler-context.js";
-import { getRequestBodyLimitBytes } from "./server/modules/runtime-config.js";
-import { resolveRuntimeChatHandlerContext } from "./server/modules/runtime-chat-context.js";
-import { createTraceId } from "./server/modules/trace-id.js";
+import { createRuntimeConfig } from "./server/modules/runtime-config.js";
+import { resolveRuntimeEnvironmentChatContext } from "./server/modules/runtime-environment-chat-context.js";
+import { readRuntimeEnvironmentString } from "./server/modules/runtime-environment.js";
 import { handlePlatformApi } from "./server/platform/api.js";
 import {
   reconcileAccountStorageCleanupFences,
@@ -52,22 +52,6 @@ const firstNonEmpty = (candidates) => {
 };
 
 const normalizeUrl = (value) => String(value || "").trim().replace(/\/+$/, "");
-
-const readWorkerEnvString = (env, key) => {
-  const directValue = env?.[key];
-  if (typeof directValue === "string") {
-    return directValue;
-  }
-
-  const normalizedKey = String(key || "").trim();
-  for (const [envKey, envValue] of Object.entries(env || {})) {
-    if (String(envKey || "").trim() === normalizedKey && typeof envValue === "string") {
-      return envValue;
-    }
-  }
-
-  return "";
-};
 
 const applySecurityHeaders = (headers = new Headers()) => {
   const nextHeaders = new Headers(headers);
@@ -121,36 +105,20 @@ const createRequestBodyTooLargeError = (maxBodyBytes) => {
   return error;
 };
 
-// Wrangler vars를 Node 기반 모듈도 같은 방식으로 읽을 수 있게 process.env에 동기화한다.
-const syncWorkerEnvToProcessEnv = (env) => {
-  if (typeof process === "undefined" || typeof process.env === "undefined") {
-    return;
-  }
-
-  for (const [key, value] of Object.entries(env)) {
-    if (typeof value === "string") {
-      const normalizedKey = key.trim();
-      if (normalizedKey) {
-        process.env[normalizedKey] = value;
-      }
-    }
-  }
-};
-
 const resolveSupabaseKeepaliveConfig = ({ env = {}, scheduledTime } = {}) => {
   const supabaseUrl = normalizeUrl(firstNonEmpty([
-    readWorkerEnvString(env, "SUPABASE_URL"),
-    readWorkerEnvString(env, "VITE_SUPABASE_URL"),
-    readWorkerEnvString(env, "VITE_PUBLIC_SUPABASE_URL"),
+    readRuntimeEnvironmentString(env, "SUPABASE_URL"),
+    readRuntimeEnvironmentString(env, "VITE_SUPABASE_URL"),
+    readRuntimeEnvironmentString(env, "VITE_PUBLIC_SUPABASE_URL"),
   ]));
 
   const supabasePublicKey = firstNonEmpty([
-    readWorkerEnvString(env, "SUPABASE_PUBLISHABLE_KEY"),
-    readWorkerEnvString(env, "SUPABASE_ANON_KEY"),
-    readWorkerEnvString(env, "VITE_SUPABASE_PUBLISHABLE_KEY"),
-    readWorkerEnvString(env, "VITE_SUPABASE_ANON_KEY"),
-    readWorkerEnvString(env, "VITE_PUBLIC_SUPABASE_PUBLISHABLE_KEY"),
-    readWorkerEnvString(env, "VITE_PUBLIC_SUPABASE_ANON_KEY"),
+    readRuntimeEnvironmentString(env, "SUPABASE_PUBLISHABLE_KEY"),
+    readRuntimeEnvironmentString(env, "SUPABASE_ANON_KEY"),
+    readRuntimeEnvironmentString(env, "VITE_SUPABASE_PUBLISHABLE_KEY"),
+    readRuntimeEnvironmentString(env, "VITE_SUPABASE_ANON_KEY"),
+    readRuntimeEnvironmentString(env, "VITE_PUBLIC_SUPABASE_PUBLISHABLE_KEY"),
+    readRuntimeEnvironmentString(env, "VITE_PUBLIC_SUPABASE_ANON_KEY"),
   ]);
 
   return {
@@ -252,9 +220,9 @@ const runScheduledMaintenance = async ({
       scheduledTime,
       fetchImpl: keepaliveFetchImpl,
     }),
-    reconcileExpiredChatReservationsImpl({ limit: 100 }),
-    reconcileStorageDeletionOutboxImpl({ limit: 20 }),
-    reconcileAccountStorageCleanupFencesImpl({ limit: 20 }),
+    reconcileExpiredChatReservationsImpl({ limit: 100, runtimeEnvironment: env }),
+    reconcileStorageDeletionOutboxImpl({ limit: 20, runtimeEnvironment: env }),
+    reconcileAccountStorageCleanupFencesImpl({ limit: 20, runtimeEnvironment: env }),
   ]);
 
   const failedTaskCount = results.filter((result) => result.status === "rejected").length;
@@ -328,7 +296,7 @@ const readRequestBodyWithLimit = async (request, maxBodyBytes) => {
   return body;
 };
 
-const toEvent = async (request, maxBodyBytes) => {
+const toEvent = async (request, maxBodyBytes, requestContext) => {
   let body = "";
   const url = new URL(request.url);
 
@@ -336,7 +304,10 @@ const toEvent = async (request, maxBodyBytes) => {
 
   return {
     httpMethod: request.method,
-    requestContext: { trustedProxy: true },
+    requestContext: {
+      trustedProxy: true,
+      traceId: requestContext.traceId,
+    },
     headers: {
       ...Object.fromEntries(request.headers.entries()),
       'x-v-mate-request-origin': url.origin,
@@ -359,137 +330,81 @@ const toWorkerResponse = (result, fallbackHeaders) =>
   });
 
 // /api/chat은 공통 CORS/trace 처리 뒤에 chat handler context를 합성해서 전달한다.
-const handleChatApi = async (request, env, chatHandlerImpl, chatHandlerContext) => {
-  syncWorkerEnvToProcessEnv(env);
-  const requestStartedAt = Date.now();
-  const requestTraceId = createTraceId();
+const handleChatApi = async (
+  request,
+  runtimeConfig,
+  executionContext,
+  chatHandlerImpl,
+  chatHandlerContext,
+) => {
   const origin = request.headers.get("origin");
-  const originAllowed = isOriginAllowed(origin, new URL(request.url).origin, request.headers);
-  const headers = {
-    ...buildHeaders(originAllowed, origin, { allowedMethods: CORS_ALLOWED_METHODS.chat }),
-    "X-V-MATE-Trace-Id": requestTraceId,
-  };
+  const result = await executeApiIngress({
+    origin,
+    requestOrigin: new URL(request.url).origin,
+    requestHeaders: request.headers,
+    allowedMethods: CORS_ALLOWED_METHODS.chat,
+    runtimeConfig,
+    executionContext,
+    createEvent: (requestContext) => toEvent(
+      request,
+      runtimeConfig.requestBodyLimitBytes,
+      requestContext,
+    ),
+    handle: async ({ event, requestContext }) => {
+      const configuredContext = await resolveChatHandlerContext({
+        chatHandlerContext,
+        resolverInput: {
+          request,
+          env: runtimeConfig.environment,
+          requestContext,
+          runtimeConfig,
+        },
+      });
+      const runtimeContext = resolveRuntimeEnvironmentChatContext({
+        runtimeConfig,
+        traceId: requestContext.traceId,
+      });
+      const handlerContext = Object.freeze({
+        ...mergeChatHandlerContexts(runtimeContext, configuredContext),
+        traceId: requestContext.traceId,
+        requestContext,
+        runtimeConfig,
+        runtimeEnvironment: runtimeConfig.environment,
+      });
+      return chatHandlerImpl(event, handlerContext);
+    },
+  });
 
-  if (!originAllowed) {
-    return toWorkerResponse(
-      buildApiErrorResult({
-        statusCode: 403,
-        headers,
-        startedAtMs: requestStartedAt,
-        traceId: requestTraceId,
-        error: "Origin is not allowed.",
-        errorCode: "ORIGIN_NOT_ALLOWED",
-      }),
-      headers
-    );
-  }
-
-  try {
-    const event = await toEvent(request, getRequestBodyLimitBytes());
-    const configuredContext = await resolveChatHandlerContext({
-      chatHandlerContext,
-      resolverInput: { request, env },
-    });
-    const runtimeContext = resolveRuntimeChatHandlerContext({
-      env,
-      traceId: requestTraceId,
-    });
-    const handlerContext = mergeChatHandlerContexts(runtimeContext, configuredContext);
-    const result = await chatHandlerImpl(event, handlerContext);
-    return toWorkerResponse(result, headers);
-  } catch (error) {
-    if (error?.code === "REQUEST_BODY_TOO_LARGE") {
-      return toWorkerResponse(
-        buildApiErrorResult({
-          statusCode: 413,
-          headers,
-          startedAtMs: requestStartedAt,
-          traceId: requestTraceId,
-          error: "Request body is too large.",
-          errorCode: "REQUEST_BODY_TOO_LARGE",
-        }),
-        headers
-      );
-    }
-
-    return toWorkerResponse(
-      buildApiErrorResult({
-        statusCode: 500,
-        headers,
-        startedAtMs: requestStartedAt,
-        traceId: requestTraceId,
-        error: "Internal server error.",
-        errorCode: "INTERNAL_SERVER_ERROR",
-        details: undefined,
-      }),
-      headers
-    );
-  }
+  return toWorkerResponse(result, result?.headers);
 };
 
 // /api/* 플랫폼 라우트는 별도 핸들러로 넘겨 CRUD와 플레이 흐름을 분리한다.
-const handlePlatformApiRequest = async (request, env) => {
-  syncWorkerEnvToProcessEnv(env);
-  const requestStartedAt = Date.now();
-  const requestTraceId = createTraceId();
+const handlePlatformApiRequest = async (request, runtimeConfig, executionContext) => {
   const origin = request.headers.get("origin");
-  const originAllowed = isOriginAllowed(origin, new URL(request.url).origin, request.headers);
-  const headers = {
-    ...buildHeaders(originAllowed, origin, { allowedMethods: CORS_ALLOWED_METHODS.platform }),
-    "X-V-MATE-Trace-Id": requestTraceId,
-  };
-
-  if (!originAllowed) {
-    return toWorkerResponse(
-      buildApiErrorResult({
-        statusCode: 403,
-        headers,
-        startedAtMs: requestStartedAt,
-        traceId: requestTraceId,
-        error: "Origin is not allowed.",
-        errorCode: "ORIGIN_NOT_ALLOWED",
-      }),
-      headers
-    );
-  }
-
-  try {
-    const event = await toEvent(request, getRequestBodyLimitBytes());
-    const result = await handlePlatformApi({
+  const result = await executeApiIngress({
+    origin,
+    requestOrigin: new URL(request.url).origin,
+    requestHeaders: request.headers,
+    allowedMethods: CORS_ALLOWED_METHODS.platform,
+    runtimeConfig,
+    executionContext,
+    createEvent: (requestContext) => toEvent(
+      request,
+      runtimeConfig.requestBodyLimitBytes,
+      requestContext,
+    ),
+    handle: ({ event, requestContext }) => handlePlatformApi({
       event,
-      headers,
-      startedAtMs: requestStartedAt,
-      traceId: requestTraceId,
-    });
-    return toWorkerResponse(result, headers);
-  } catch (error) {
-    if (error?.code === "REQUEST_BODY_TOO_LARGE") {
-      return toWorkerResponse(
-        buildApiErrorResult({
-          statusCode: 413,
-          headers,
-          startedAtMs: requestStartedAt,
-          traceId: requestTraceId,
-          error: "Request body is too large.",
-          errorCode: "REQUEST_BODY_TOO_LARGE",
-        }),
-        headers
-      );
-    }
+      headers: requestContext.responseHeaders,
+      startedAtMs: requestContext.startedAtMs,
+      traceId: requestContext.traceId,
+      requestContext,
+      runtimeConfig,
+      runtimeEnvironment: runtimeConfig.environment,
+    }),
+  });
 
-    return toWorkerResponse(
-      buildApiErrorResult({
-        statusCode: 500,
-        headers,
-        startedAtMs: requestStartedAt,
-        traceId: requestTraceId,
-        error: "Internal server error.",
-        errorCode: "INTERNAL_SERVER_ERROR",
-        details: undefined,
-      }),
-      headers
-    );
-  }
+  return toWorkerResponse(result, result?.headers);
 };
 
 const isHtmlRequest = (request) => {
@@ -503,7 +418,7 @@ const buildClientRuntimeEnv = (env) => {
   const runtimeEnv = {};
 
   for (const [field, keys] of Object.entries(CLIENT_RUNTIME_ENV_FIELDS)) {
-    const value = firstNonEmpty(keys.map((key) => readWorkerEnvString(env, key)));
+    const value = firstNonEmpty(keys.map((key) => readRuntimeEnvironmentString(env, key)));
     if (value) {
       runtimeEnv[field] = value;
     }
@@ -565,22 +480,29 @@ export const createWorker = ({
   reconcileExpiredChatReservationsImpl = reconcileExpiredChatReservations,
   reconcileStorageDeletionOutboxImpl = reconcileStorageDeletionOutbox,
 } = {}) => ({
-  async fetch(request, env) {
+  async fetch(request, env, executionContext) {
     const url = new URL(request.url);
 
     if (isChatApiRequest(url.pathname)) {
-      return handleChatApi(request, env, chatHandlerImpl, chatHandlerContext);
+      const runtimeConfig = createRuntimeConfig(env);
+      return handleChatApi(
+        request,
+        runtimeConfig,
+        executionContext,
+        chatHandlerImpl,
+        chatHandlerContext,
+      );
     }
 
     if (isPlatformApiRequest(url.pathname)) {
-      return handlePlatformApiRequest(request, env);
+      const runtimeConfig = createRuntimeConfig(env);
+      return handlePlatformApiRequest(request, runtimeConfig, executionContext);
     }
 
     return serveStaticAsset(request, env);
   },
 
   async scheduled(_controller, env, ctx) {
-    syncWorkerEnvToProcessEnv(env);
     const task = runScheduledMaintenance({
       env,
       scheduledTime: _controller?.scheduledTime,

@@ -63,7 +63,7 @@ const applyBaseEnv = (overrides = {}) => {
   }
 };
 
-test('executeGeminiChatRequest returns normalized success payload metadata', async () => {
+test('executeGeminiChatRequest returns typed normalized success payload metadata', async () => {
   applyBaseEnv();
 
   globalThis.fetch = async () =>
@@ -100,7 +100,14 @@ test('executeGeminiChatRequest returns normalized success payload metadata', asy
   });
 
   assert.equal(result.ok, true);
-  assert.equal(result.modelText, '{"emotion":"happy","inner_heart":"ok","response":"hello"}');
+  assert.equal(result.parseMode, 'strict');
+  assert.deepEqual(result.value, {
+    emotion: 'happy',
+    inner_heart: 'ok',
+    response: 'hello',
+    narration: '',
+  });
+  assert.equal(Object.hasOwn(result, 'modelText'), false);
   assert.equal(result.cachedContentName, null);
   assert.equal(result.canUseContextCache, false);
 });
@@ -200,8 +207,10 @@ test('executeGeminiChatRequest retries without cache when cached content lookup 
   assert.equal(requestPayloads.length, 2);
   assert.equal(requestPayloads[0].cachedContent, 'cachedContents/stale-entry');
   assert.equal(Object.hasOwn(requestPayloads[1], 'cachedContent'), false);
+  assert.deepEqual(requestPayloads[1].contents, requestPayloads[0].contents);
+  assert.deepEqual(requestPayloads[1].generationConfig, requestPayloads[0].generationConfig);
   assert.equal(typeof requestPayloads[1].systemInstruction?.parts?.[0]?.text, 'string');
-  assert.match(requestPayloads[1].systemInstruction.parts[0].text, /system prompt/i);
+  assert.equal(requestPayloads[1].systemInstruction.parts[0].text, systemPrompt);
 });
 
 test('executeGeminiChatRequest ignores untrusted client cached content name', async () => {
@@ -256,6 +265,7 @@ test('executeGeminiChatRequest runs network recovery attempt on connection error
     GEMINI_NETWORK_RECOVERY_RETRY_ENABLED: 'true',
   });
 
+  const systemPrompt = `network recovery prompt ${'system-context '.repeat(80)}`;
   const requestPayloads = [];
   globalThis.fetch = async (_url, options = {}) => {
     requestPayloads.push(JSON.parse(String(options.body || '{}')));
@@ -297,13 +307,12 @@ test('executeGeminiChatRequest runs network recovery attempt on connection error
       { role: 'assistant', content: 'history 2' },
     ],
     requestCachedContent: null,
-    trimmedSystemPrompt: 'network recovery prompt',
+    trimmedSystemPrompt: systemPrompt,
   });
 
   assert.equal(result.ok, true);
   assert.equal(requestPayloads.length, 2);
-  assert.equal(requestPayloads[1].contents.length, 1);
-  assert.equal(requestPayloads[1].generationConfig.maxOutputTokens, 220);
+  assert.deepEqual(requestPayloads[1], requestPayloads[0]);
 });
 
 test('executeGeminiChatRequest retries once when response text is empty', async () => {
@@ -311,6 +320,7 @@ test('executeGeminiChatRequest retries once when response text is empty', async 
     GEMINI_EMPTY_RESPONSE_RETRY_ENABLED: 'true',
   });
 
+  const systemPrompt = `empty-response retry prompt ${'system-context '.repeat(80)}`;
   const requestPayloads = [];
   globalThis.fetch = async (_url, options = {}) => {
     requestPayloads.push(JSON.parse(String(options.body || '{}')));
@@ -362,14 +372,76 @@ test('executeGeminiChatRequest retries once when response text is empty', async 
     requestTraceId: 'trace-empty-retry',
     normalizedCharacterId: 'alice',
     userMessage: 'empty retry test',
-    messageHistory: [],
+    messageHistory: [
+      { role: 'user', content: 'empty retry history 1' },
+      { role: 'assistant', content: 'empty retry history 2' },
+    ],
     requestCachedContent: null,
-    trimmedSystemPrompt: 'empty-response retry prompt',
+    trimmedSystemPrompt: systemPrompt,
   });
 
   assert.equal(result.ok, true);
   assert.equal(requestPayloads.length, 2);
-  assert.equal(requestPayloads[1].generationConfig.maxOutputTokens, 180);
+  assert.deepEqual(requestPayloads[1], requestPayloads[0]);
+});
+
+test('executeGeminiChatRequest returns typed invalid output instead of a successful fallback message', async () => {
+  applyBaseEnv();
+
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        candidates: [{ content: { parts: [{ text: '{"emotion":"happy"' }] } }],
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } }
+    );
+
+  const result = await executeGeminiChatRequest({
+    apiKey: 'test-key',
+    modelName: 'gemini-test',
+    requestStartedAt: Date.now(),
+    requestTraceId: 'trace-invalid-output',
+    normalizedCharacterId: 'mika',
+    userMessage: 'invalid output test',
+    messageHistory: [],
+    requestCachedContent: null,
+    trimmedSystemPrompt: 'structured output prompt',
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error?.code, 'INVALID_MODEL_OUTPUT');
+  assert.equal(Object.hasOwn(result, 'value'), false);
+  assert.equal(JSON.stringify(result).includes('잠시 응답 형식이 불안정했어요'), false);
+});
+
+test('executeGeminiChatRequest does not expose provider rate-limit details', async () => {
+  applyBaseEnv();
+
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        error: { message: 'quota exhausted for private-project-123' },
+      }),
+      { status: 429, headers: { 'content-type': 'application/json' } }
+    );
+
+  const result = await executeGeminiChatRequest({
+    apiKey: 'test-key',
+    modelName: 'gemini-test',
+    requestStartedAt: Date.now(),
+    requestTraceId: 'trace-rate-limit',
+    normalizedCharacterId: 'mika',
+    userMessage: 'rate limit test',
+    messageHistory: [],
+    requestCachedContent: null,
+    trimmedSystemPrompt: '',
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error?.status, 429);
+  assert.equal(result.error?.code, 'UPSTREAM_RATE_LIMITED');
+  assert.equal(result.error?.message, 'The response service is temporarily rate limited. Please try again later.');
+  assert.equal(result.error?.message.includes('private-project-123'), false);
 });
 
 test('executeGeminiChatRequest returns max-token empty response error code', async () => {

@@ -60,6 +60,58 @@ test('routes /api/chat OPTIONS preflight request to chat handler', async () => {
   assert.equal(response.headers.get('access-control-allow-methods'), 'POST, OPTIONS');
 });
 
+test('applies Worker CORS bindings without mutating process.env', async () => {
+  process.env.ALLOWED_ORIGINS = 'https://process.example';
+
+  const response = await worker.fetch(
+    new Request('https://example.com/api/chat', {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://worker.example',
+      },
+    }),
+    {
+      ALLOWED_ORIGINS: 'https://worker.example',
+      ALLOW_ALL_ORIGINS: 'false',
+      ALLOW_NON_BROWSER_ORIGIN: 'false',
+    },
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('access-control-allow-origin'), 'https://worker.example');
+  assert.equal(process.env.ALLOWED_ORIGINS, 'https://process.example');
+});
+
+test('passes scheduled bindings explicitly without mutating process.env', async () => {
+  process.env.SUPABASE_URL = 'https://process.example';
+  const scheduledEnvironment = {
+    SUPABASE_URL: 'https://scheduled.example',
+    SUPABASE_ANON_KEY: 'scheduled-public-key',
+    SUPABASE_SERVICE_ROLE_KEY: 'scheduled-service-key',
+  };
+  const receivedEnvironments = [];
+  const isolatedWorker = createWorker({
+    keepaliveFetchImpl: async () => ({ ok: true, status: 200 }),
+    reconcileExpiredChatReservationsImpl: async ({ runtimeEnvironment }) => {
+      receivedEnvironments.push(runtimeEnvironment);
+      return { skipped: false, reconciled: 0 };
+    },
+    reconcileStorageDeletionOutboxImpl: async ({ runtimeEnvironment }) => {
+      receivedEnvironments.push(runtimeEnvironment);
+      return { skipped: false, inspected: 0, completed: 0 };
+    },
+    reconcileAccountStorageCleanupFencesImpl: async ({ runtimeEnvironment }) => {
+      receivedEnvironments.push(runtimeEnvironment);
+      return { skipped: false, inspected: 0, completed: 0 };
+    },
+  });
+
+  await isolatedWorker.scheduled?.({ scheduledTime: Date.now() }, scheduledEnvironment, null);
+
+  assert.deepEqual(receivedEnvironments, [scheduledEnvironment, scheduledEnvironment, scheduledEnvironment]);
+  assert.equal(process.env.SUPABASE_URL, 'https://process.example');
+});
+
 test('advertises authenticated CRUD methods on platform API preflight', async () => {
   const request = new Request('https://example.com/api/characters/character-a', {
     method: 'OPTIONS',
@@ -147,8 +199,11 @@ test('platform artwork frames fill their media slots without thumbnail padding',
 test('declares the canonical production hostname while preserving Workers.dev and isolating staging routes', () => {
   const config = JSON.parse(readFileSync('wrangler.jsonc', 'utf8'));
   const index = readFileSync('index.html', 'utf8');
-  const workflow = readFileSync('.github/workflows/release-worker.yml', 'utf8');
-  const baselineWorkflow = readFileSync('.github/workflows/release-database-baseline-attestation.yml', 'utf8');
+  const workflow = readFileSync('.github/workflows/release-worker.yml', 'utf8').replace(/\r\n/g, '\n');
+  const baselineWorkflow = readFileSync(
+    '.github/workflows/release-database-baseline-attestation.yml',
+    'utf8',
+  ).replace(/\r\n/g, '\n');
 
   assert.equal(config.workers_dev, true);
   assert.deepEqual(config.routes, [{ pattern: 'v-mate.satinode.com', custom_domain: true }]);
@@ -336,6 +391,7 @@ test('allows originless POST when non-browser mode is enabled', async () => {
     ALLOWED_ORIGINS: 'http://localhost:5173',
     ALLOW_ALL_ORIGINS: 'false',
     ALLOW_NON_BROWSER_ORIGIN: 'true',
+    REQUIRE_AUTH_FOR_CHAT: 'false',
   });
 
   assert.equal(response.status, 503);
@@ -385,6 +441,7 @@ test('allows any origin when ALLOW_ALL_ORIGINS is enabled', async () => {
     ALLOWED_ORIGINS: 'http://localhost:5173',
     ALLOW_ALL_ORIGINS: 'true',
     ALLOW_NON_BROWSER_ORIGIN: 'false',
+    REQUIRE_AUTH_FOR_CHAT: 'false',
   });
 
   assert.equal(response.status, 503);
@@ -410,6 +467,7 @@ test('returns wildcard allow-origin when ALLOW_ALL_ORIGINS is enabled for origin
     ALLOWED_ORIGINS: 'http://localhost:5173',
     ALLOW_ALL_ORIGINS: 'true',
     ALLOW_NON_BROWSER_ORIGIN: 'false',
+    REQUIRE_AUTH_FOR_CHAT: 'false',
   });
 
   assert.equal(response.status, 503);
@@ -719,7 +777,7 @@ test('forwards custom chatHandlerContext into worker chat handler', async () => 
   assert.equal(typeof observed.context?.promptCache?.get, 'function');
 });
 
-test('falls back to empty chatHandlerContext when worker context resolver throws', async () => {
+test('preserves required ingress context without leaking optional hooks when resolver throws', async () => {
   const observed = { context: null };
   const isolatedWorker = createWorker({
     chatHandlerContext: async () => {
@@ -761,7 +819,12 @@ test('falls back to empty chatHandlerContext when worker context resolver throws
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.deepEqual(payload, { ok: true });
-  assert.deepEqual(observed.context, {});
+  assert.equal(typeof observed.context?.traceId, 'string');
+  assert.equal(observed.context?.traceId, observed.context?.requestContext?.traceId);
+  assert.equal(observed.context?.runtimeConfig?.environment, observed.context?.runtimeEnvironment);
+  assert.equal(observed.context?.requestContext?.runtimeConfig, observed.context?.runtimeConfig);
+  assert.equal('checkRateLimit' in observed.context, false);
+  assert.equal('promptCache' in observed.context, false);
 });
 
 test('builds runtime kv chatHandlerContext when kv store modes are enabled', async () => {
@@ -912,7 +975,7 @@ test('injects runtime env script into html responses even without html accept he
   assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
 });
 
-test('normalizes whitespace around Cloudflare runtime env binding names', async () => {
+test('preserves the explicitly enumerated legacy public-key binding typo', async () => {
   const request = new Request('https://example.com/', {
     method: 'GET',
     headers: {

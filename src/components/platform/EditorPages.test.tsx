@@ -53,6 +53,7 @@ const chrome: PlatformPageChromeProps = {
   onSearchChange: vi.fn(),
   onSearchSubmit: vi.fn(),
   onNavigate: vi.fn(),
+  onEditorDirtyChange: vi.fn(),
   onAuthRequest: vi.fn(),
   onSignOut: vi.fn(),
   onDeleteAccount: vi.fn(async () => undefined),
@@ -115,42 +116,28 @@ afterEach(() => {
 })
 
 describe('editor draft integrity', () => {
-  it('guards internal character navigation, registers unload protection, and restores the session draft', async () => {
+  it('reports character draft dirtiness to the navigation owner and restores the session draft', async () => {
     const first = render(<CreateCharacterPage chrome={chrome} />)
     const nameInput = await screen.findByLabelText('이름 · 필수')
     fireEvent.change(nameInput, { target: { value: '임시 캐릭터' } })
 
     await waitFor(() => expect(Object.keys(window.sessionStorage).some((key) => key.startsWith('v-mate:editor-draft:v1:character:new:'))).toBe(true))
     fireEvent.click(screen.getByRole('link', { name: '캐릭터' }))
-    expect(screen.queryByRole('dialog', { name: '저장하지 않은 변경사항이 있습니다' })).toBeNull()
     fireEvent.click(screen.getByRole('link', { name: '월드' }))
-    expect(await screen.findByRole('dialog', { name: '저장하지 않은 변경사항이 있습니다' })).toBeTruthy()
-    expect(chrome.onNavigate).not.toHaveBeenCalled()
-    expect((nameInput as HTMLInputElement).value).toBe('임시 캐릭터')
-
-    fireEvent.click(screen.getByRole('button', { name: '계속 편집' }))
-    expect(screen.queryByRole('dialog', { name: '저장하지 않은 변경사항이 있습니다' })).toBeNull()
+    expect(chrome.onEditorDirtyChange).toHaveBeenCalledWith(true)
+    expect(chrome.onNavigate).toHaveBeenCalledWith('/create/world')
     expect((nameInput as HTMLInputElement).value).toBe('임시 캐릭터')
 
     const beforeUnload = new Event('beforeunload', { cancelable: true })
     window.dispatchEvent(beforeUnload)
-    expect(beforeUnload.defaultPrevented).toBe(true)
-
-    fireEvent.click(screen.getByRole('link', { name: '월드' }))
-    const leaveButton = await screen.findByRole('button', { name: '저장하지 않고 이동' })
-    act(() => {
-      fireEvent.click(leaveButton)
-      fireEvent.click(leaveButton)
-    })
-    expect(chrome.onNavigate).toHaveBeenCalledTimes(1)
-    expect(chrome.onNavigate).toHaveBeenCalledWith('/create/world')
+    expect(beforeUnload.defaultPrevented).toBe(false)
 
     first.unmount()
     render(<CreateCharacterPage chrome={chrome} />)
     await waitFor(() => expect((screen.getByLabelText('이름 · 필수') as HTMLInputElement).value).toBe('임시 캐릭터'))
   })
 
-  it('keeps search input and editor content on cancel, then submits the first target once', async () => {
+  it('delegates dirty search navigation to the shared navigation owner without changing editor content', async () => {
     const searchChrome = { ...chrome, searchQuery: '별빛', onSearchSubmit: vi.fn() }
     render(<CreateCharacterPage chrome={searchChrome} />)
     const nameInput = await screen.findByLabelText('이름 · 필수')
@@ -158,23 +145,10 @@ describe('editor draft integrity', () => {
 
     const searchForm = screen.getByRole('search')
     fireEvent.submit(searchForm)
-    fireEvent.submit(searchForm)
-    expect(await screen.findByText('검색 결과로 이동하면 현재 입력 내용은 임시저장본으로만 남습니다.')).toBeTruthy()
-    expect(searchChrome.onSearchSubmit).not.toHaveBeenCalled()
-
-    fireEvent.click(screen.getByRole('button', { name: '계속 편집' }))
-    expect((screen.getByRole('searchbox', { name: '캐릭터와 월드 검색' }) as HTMLInputElement).value).toBe('별빛')
-    expect((nameInput as HTMLInputElement).value).toBe('검색 전 임시 캐릭터')
-
-    fireEvent.submit(searchForm)
-    fireEvent.submit(searchForm)
-    const leaveButton = await screen.findByRole('button', { name: '저장하지 않고 이동' })
-    act(() => {
-      fireEvent.click(leaveButton)
-      fireEvent.click(leaveButton)
-    })
     expect(searchChrome.onSearchSubmit).toHaveBeenCalledTimes(1)
     expect(searchChrome.onSearchSubmit).toHaveBeenCalledWith('별빛')
+    expect((screen.getByRole('searchbox', { name: '캐릭터와 월드 검색' }) as HTMLInputElement).value).toBe('별빛')
+    expect((nameInput as HTMLInputElement).value).toBe('검색 전 임시 캐릭터')
   })
 
   it('restores a world draft independently from the character editor', async () => {
@@ -311,7 +285,7 @@ describe('editor draft integrity', () => {
   it.each([
     { kind: 'character', path: '/create/character', renderEditor: () => render(<CreateCharacterPage chrome={chrome} />), leaveFor: '월드' },
     { kind: 'world', path: '/create/world', renderEditor: () => render(<CreateWorldPage chrome={chrome} />), leaveFor: '캐릭터' },
-  ])('guards $kind navigation as soon as image processing begins', async ({ kind, path, renderEditor, leaveFor }) => {
+  ])('reports $kind dirtiness as soon as image processing begins', async ({ kind, path, renderEditor, leaveFor }) => {
     window.history.replaceState({}, '', path)
     imagePipeline.createImageVariants.mockReturnValueOnce(new Promise(() => undefined))
     const { container } = renderEditor()
@@ -325,8 +299,8 @@ describe('editor draft integrity', () => {
     })
     fireEvent.click(screen.getByRole('link', { name: leaveFor }))
 
-    expect(await screen.findByRole('dialog', { name: '저장하지 않은 변경사항이 있습니다' })).toBeTruthy()
-    expect(chrome.onNavigate).not.toHaveBeenCalled()
+    expect(chrome.onEditorDirtyChange).toHaveBeenCalledWith(true)
+    expect(chrome.onNavigate).toHaveBeenCalled()
     await waitFor(() => {
       const draftKey = Object.keys(window.sessionStorage).find((key) => key.startsWith(`v-mate:editor-draft:v1:${kind}:new:`))
       expect(draftKey).toBeTruthy()
@@ -338,7 +312,7 @@ describe('editor draft integrity', () => {
     let resolveUpdate: ((value: { item: typeof existingCharacter }) => void) | undefined
     api.fetchCharacter.mockResolvedValueOnce({ item: existingCharacter })
     api.updateCharacter.mockReturnValueOnce(new Promise((resolve) => { resolveUpdate = resolve }))
-    render(<CreateCharacterPage chrome={chrome} slug="character-1" />)
+    const view = render(<CreateCharacterPage chrome={chrome} slug="character-1" />)
     expect(await screen.findByDisplayValue('기존 캐릭터')).toBeTruthy()
     fireEvent.change(screen.getByLabelText('이름 · 필수'), { target: { value: '저장 중인 캐릭터' } })
     fireEvent.click(screen.getByRole('button', { name: '캐릭터 수정' }))
@@ -348,11 +322,13 @@ describe('editor draft integrity', () => {
     await waitFor(() => expect(window.sessionStorage.getItem(draftKey)).toContain('저장 중인 캐릭터'))
 
     fireEvent.click(screen.getByRole('link', { name: '월드' }))
-    fireEvent.click(await screen.findByRole('button', { name: '저장하지 않고 이동' }))
+    view.unmount()
     expect(chrome.onNavigate).toHaveBeenCalledTimes(1)
 
-    resolveUpdate?.({ item: existingCharacter })
-    await waitFor(() => expect((screen.getByRole('button', { name: '캐릭터 수정' }) as HTMLButtonElement).disabled).toBe(false))
+    await act(async () => {
+      resolveUpdate?.({ item: existingCharacter })
+      await Promise.resolve()
+    })
     expect(chrome.onNavigate).toHaveBeenCalledTimes(1)
     expect(window.sessionStorage.getItem(draftKey)).toBeNull()
   })
@@ -372,7 +348,6 @@ describe('editor draft integrity', () => {
     await waitFor(() => expect(api.updateCharacter).toHaveBeenCalledTimes(1))
 
     fireEvent.click(screen.getByRole('link', { name: '월드' }))
-    fireEvent.click(await screen.findByRole('button', { name: '저장하지 않고 이동' }))
     first.unmount()
 
     render(<CreateCharacterPage chrome={chrome} slug="character-1" />)
@@ -418,7 +393,6 @@ describe('editor draft integrity', () => {
     fireEvent.click(screen.getByRole('button', { name: '캐릭터 수정' }))
     await waitFor(() => expect(api.updateCharacter).toHaveBeenCalledTimes(1))
     fireEvent.click(screen.getByRole('link', { name: '월드' }))
-    fireEvent.click(await screen.findByRole('button', { name: '저장하지 않고 이동' }))
     first.unmount()
 
     const second = render(<CreateCharacterPage chrome={chrome} slug="character-1" />)
@@ -442,23 +416,25 @@ describe('editor draft integrity', () => {
     expect(window.sessionStorage.getItem(draftKey)).not.toBeNull()
   })
 
-  it('does not redirect after a delete resolves in a newer app navigation generation', async () => {
+  it('does not redirect after a delete resolves in a newer editor scope', async () => {
     let resolveDelete: (() => void) | undefined
-    let appGeneration = 0
-    const generationChrome = { ...chrome, getNavigationGeneration: () => appGeneration }
-    api.fetchCharacter.mockResolvedValueOnce({ item: existingCharacter })
+    const scopedChrome = { ...chrome, onNavigate: vi.fn() }
+    api.fetchCharacter
+      .mockResolvedValueOnce({ item: existingCharacter })
+      .mockResolvedValueOnce({ item: { ...existingCharacter, id: 'character-2', slug: 'character-2', name: '둘째 캐릭터' } })
     api.deleteCharacter.mockReturnValueOnce(new Promise<void>((resolve) => { resolveDelete = resolve }))
-    render(<CreateCharacterPage chrome={generationChrome} slug="character-1" />)
+    const view = render(<CreateCharacterPage chrome={scopedChrome} slug="character-1" />)
     expect(await screen.findByDisplayValue('기존 캐릭터')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: '캐릭터 삭제' }))
     fireEvent.click(await screen.findByRole('button', { name: '삭제' }))
     await waitFor(() => expect(api.deleteCharacter).toHaveBeenCalledTimes(1))
 
-    appGeneration = 1
+    view.rerender(<CreateCharacterPage chrome={scopedChrome} slug="character-2" />)
+    expect(await screen.findByDisplayValue('둘째 캐릭터')).toBeTruthy()
     resolveDelete?.()
     await waitFor(() => expect(screen.queryByRole('button', { name: '삭제' })).toBeNull())
-    expect(generationChrome.onNavigate).not.toHaveBeenCalled()
+    expect(scopedChrome.onNavigate).not.toHaveBeenCalled()
   })
 
   it('sends edited existing image-slot metadata without pretending there was a new upload', async () => {

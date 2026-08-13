@@ -30,19 +30,47 @@ test('buildRequestDedupeFingerprint stays stable for same payload', () => {
   assert.notEqual(first, third);
 });
 
-test('buildRequestDedupeKey requires all fields', () => {
+test('buildRequestDedupeKey keeps request identity independent from its fingerprint', () => {
   assert.equal(
     buildRequestDedupeKey({
       rateKey: 'ip:127.0.0.1',
       clientRequestId: 'web-123',
       requestFingerprint: 'abc',
     }),
-    'ip:127.0.0.1:web-123:abc'
+    'ip:127.0.0.1:web-123'
   );
 
   assert.equal(buildRequestDedupeKey({ rateKey: '', clientRequestId: 'x', requestFingerprint: 'y' }), null);
   assert.equal(buildRequestDedupeKey({ rateKey: 'k', clientRequestId: '', requestFingerprint: 'y' }), null);
   assert.equal(buildRequestDedupeKey({ rateKey: 'k', clientRequestId: 'x', requestFingerprint: '' }), null);
+});
+
+test('withRequestDedupe rejects a reused request id with a different fingerprint', async () => {
+  let callCount = 0;
+  const run = async () => {
+    callCount += 1;
+    return { ok: true, value: callCount };
+  };
+
+  const first = await withRequestDedupe({
+    dedupeKey: 'user:one:request-1',
+    requestFingerprint: 'fingerprint-a',
+    windowMs: 5000,
+    run,
+  });
+  const conflict = await withRequestDedupe({
+    dedupeKey: 'user:one:request-1',
+    requestFingerprint: 'fingerprint-b',
+    windowMs: 5000,
+    run,
+  });
+
+  assert.equal(first.status, 'fresh');
+  assert.equal(first.disposition, 'reserved');
+  assert.equal(conflict.status, 'conflict');
+  assert.equal(conflict.disposition, 'conflict');
+  assert.equal(conflict.value, null);
+  assert.equal(callCount, 1);
 });
 
 test('withRequestDedupe bypasses when key is missing', async () => {
@@ -57,6 +85,7 @@ test('withRequestDedupe bypasses when key is missing', async () => {
   });
 
   assert.equal(result.status, 'bypass');
+  assert.equal(result.disposition, 'reserved');
   assert.equal(callCount, 1);
   assert.deepEqual(result.value, { ok: true });
 });
@@ -89,6 +118,7 @@ test('withRequestDedupe replays successful result within dedupe window', async (
     shouldReplayResult: (value) => Boolean(value?.ok),
   });
   assert.equal(second.status, 'replay');
+  assert.equal(second.disposition, 'replay');
   assert.equal(second.value.value, 1);
   assert.equal(callCount, 1);
 
@@ -105,7 +135,7 @@ test('withRequestDedupe replays successful result within dedupe window', async (
   assert.equal(callCount, 2);
 });
 
-test('withRequestDedupe merges concurrent in-flight requests', async () => {
+test('withRequestDedupe reports a concurrent request as in progress', async () => {
   let callCount = 0;
 
   const run = async () => {
@@ -128,10 +158,12 @@ test('withRequestDedupe merges concurrent in-flight requests', async () => {
   ]);
 
   assert.equal(callCount, 1);
-  assert.deepEqual(first.value, { ok: true, value: 1 });
-  assert.deepEqual(second.value, { ok: true, value: 1 });
-  assert.ok(first.status === 'fresh' || first.status === 'inflight');
-  assert.ok(second.status === 'fresh' || second.status === 'inflight');
+  const reserved = first.disposition === 'reserved' ? first : second;
+  const inProgress = first.disposition === 'in_progress' ? first : second;
+  assert.deepEqual(reserved.value, { ok: true, value: 1 });
+  assert.equal(reserved.status, 'fresh');
+  assert.equal(inProgress.status, 'inflight');
+  assert.equal(inProgress.value, null);
 });
 
 test('withRequestDedupe skips replay cache when shouldReplayResult returns false', async () => {

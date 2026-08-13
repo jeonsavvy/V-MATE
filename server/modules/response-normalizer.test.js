@@ -15,35 +15,63 @@ afterEach(() => {
 test('normalizeAssistantPayload parses strict json contract', () => {
   const normalized = normalizeAssistantPayload('{"emotion":"happy","inner_heart":"ok","response":"hello","character_image_slot":"battle","world_image_slot":"night"}');
   assert.deepEqual(normalized, {
-    emotion: 'happy',
-    inner_heart: 'ok',
-    response: 'hello',
-    narration: '',
-    character_image_slot: 'battle',
-    world_image_slot: 'night',
+    ok: true,
+    value: {
+      emotion: 'happy',
+      inner_heart: 'ok',
+      response: 'hello',
+      narration: '',
+      character_image_slot: 'battle',
+      world_image_slot: 'night',
+    },
+    parseMode: 'strict',
   });
 });
 
-test('normalizeAssistantPayload falls back to passthrough for plain text', () => {
+test('normalizeAssistantPayload rejects plain text outside the structured contract', () => {
   const normalized = normalizeAssistantPayload('just plain response text');
-  assert.equal(normalized.emotion, 'normal');
-  assert.equal(normalized.inner_heart, '');
-  assert.equal(normalized.response, 'just plain response text');
+  assert.deepEqual(normalized, {
+    ok: false,
+    error: {
+      status: 502,
+      code: 'INVALID_MODEL_OUTPUT',
+      message: 'The response service returned an invalid response.',
+    },
+  });
 });
 
-test('normalizeAssistantPayload uses safe fallback on broken contract-like json', () => {
+test('normalizeAssistantPayload returns a typed failure for broken contract-like json', () => {
   const normalized = normalizeAssistantPayload('{"emotion":"happy"');
-  assert.equal(normalized.response, '잠시 응답 형식이 불안정했어요. 한 번만 다시 말해줘.');
-  assert.equal(normalized.inner_heart, '');
+  assert.equal(normalized.ok, false);
+  assert.equal(normalized.error?.code, 'INVALID_MODEL_OUTPUT');
+  assert.equal(JSON.stringify(normalized).includes('잠시 응답 형식이 불안정했어요'), false);
 });
 
-test('normalizeAssistantPayload recovers truncated contract json when core fields are still extractable', () => {
+test('normalizeAssistantPayload rejects truncated contract json even when core fields are visible', () => {
   const normalized = normalizeAssistantPayload(`{"emotion":"normal","inner_heart":"긴장하고 있다.","response":"지금은 안으로 들어가면 돼.\n서두르자.","narration":"비가 그친 골목이다."`);
 
-  assert.equal(normalized.emotion, 'normal');
-  assert.equal(normalized.inner_heart, '긴장하고 있다.');
-  assert.equal(normalized.response, '지금은 안으로 들어가면 돼.\n서두르자.');
-  assert.equal(normalized.narration, '비가 그친 골목이다.');
+  assert.equal(normalized.ok, false);
+  assert.equal(normalized.error?.code, 'INVALID_MODEL_OUTPUT');
+});
+
+test('normalizeAssistantPayload marks loose contract recovery explicitly', () => {
+  const normalized = normalizeAssistantPayload("{emotion:'confused',inner_heart:'hmm',response:'where?',}");
+
+  assert.equal(normalized.ok, true);
+  assert.equal(normalized.parseMode, 'recovered');
+  assert.deepEqual(normalized.value, {
+    emotion: 'confused',
+    inner_heart: 'hmm',
+    response: 'where?',
+    narration: '',
+  });
+});
+
+test('normalizeAssistantPayload rejects structured json without the required response', () => {
+  const normalized = normalizeAssistantPayload('{"emotion":"happy","inner_heart":"ok"}');
+
+  assert.equal(normalized.ok, false);
+  assert.equal(normalized.error?.code, 'INVALID_MODEL_OUTPUT');
 });
 
 test('normalizeAssistantPayload warning metadata omits raw response preview text', () => {

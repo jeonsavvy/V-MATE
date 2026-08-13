@@ -78,6 +78,7 @@
 | `CHAT_STATE_CONFLICT` | 409 | 최신 room 상태를 다시 읽고 재시도 |
 | `CHAT_DAILY_LIMIT_EXCEEDED` | 429 | 응답의 reset 시각 이후 재시도 |
 | `RESPONSE_RATE_LIMITED` | 429 | 잠시 후 재시도 |
+| `RESPONSE_INVALID_FORMAT` | 502 | 잘못된 모델 출력은 저장되지 않고 quota가 환불되므로 재시도 |
 | `RESPONSE_SERVICE_UNAVAILABLE` | 503 | 현재 메시지는 저장되지 않았으므로 재시도 |
 
 실제 prompt와 history 구성은 [채팅 런타임 구조](chat-runtime.md)를 확인하세요.

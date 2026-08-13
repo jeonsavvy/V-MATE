@@ -1,7 +1,10 @@
 import { logServerWarn } from './server-logger.js';
+import {
+    invalidModelOutputResult,
+    successfulModelResult,
+} from './chat-model-result.js';
 
 const ALLOWED_EMOTIONS = new Set(['normal', 'happy', 'confused', 'angry']);
-const CONTRACT_KEYS = ['emotion', 'inner_heart', 'response', 'narration', 'character_image_slot', 'world_image_slot'];
 const SAFE_NORMALIZATION_NUMBER_KEYS = [
     'promptSnapshotLength',
     'historyMessageCount',
@@ -62,32 +65,10 @@ const tryParseJsonObject = (text) => {
 
     try {
         const parsed = JSON.parse(text);
-        return parsed && typeof parsed === 'object' ? parsed : null;
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
     } catch {
         return null;
     }
-};
-
-const looksLikeBrokenContractJson = (text) => {
-    const normalized = String(text || '').trim();
-    if (!normalized) {
-        return false;
-    }
-
-    const mentionsContractKey = /["']?(emotion|inner_heart|response|narration|character_image_slot|world_image_slot)["']?\s*:?/i.test(normalized);
-    const startsJsonLike = normalized.startsWith('{') || normalized.startsWith('[');
-
-    if (!mentionsContractKey || !startsJsonLike) {
-        return false;
-    }
-
-    const openCurly = (normalized.match(/{/g) || []).length;
-    const closeCurly = (normalized.match(/}/g) || []).length;
-    const openSquare = (normalized.match(/\[/g) || []).length;
-    const closeSquare = (normalized.match(/]/g) || []).length;
-    const hasUnbalancedBrackets = openCurly !== closeCurly || openSquare !== closeSquare;
-
-    return hasUnbalancedBrackets || normalized.length < 40;
 };
 
 const tryParseLooseJsonObject = (text) => {
@@ -124,42 +105,6 @@ const tryParseLooseJsonObject = (text) => {
     }
 
     return null;
-};
-
-const tryExtractContractFields = (text) => {
-    if (!text || typeof text !== 'string') {
-        return null;
-    }
-
-    const normalizedText = text
-        .replace(/[“”]/g, '"')
-        .replace(/[‘’]/g, "'")
-        .trim();
-    const extracted = {};
-    const joinedKeys = CONTRACT_KEYS.join('|');
-
-    for (const key of CONTRACT_KEYS) {
-        const terminatedPattern = new RegExp(
-            `["']?${key}["']?\\s*:\\s*"([\\s\\S]*?)(?="\\s*,\\s*["']?(?:${joinedKeys})["']?\\s*:|"\\s*}|"$)`,
-            'i'
-        );
-        const unterminatedTailPattern = new RegExp(
-            `["']?${key}["']?\\s*:\\s*"([\\s\\S]*)$`,
-            'i'
-        );
-
-        const match = normalizedText.match(terminatedPattern) || normalizedText.match(unterminatedTailPattern);
-        if (!match) {
-            continue;
-        }
-
-        extracted[key] = String(match[1] || '')
-            .replace(/\\"/g, '"')
-            .replace(/\\n/g, '\n')
-            .trim();
-    }
-
-    return Object.keys(extracted).length > 0 ? extracted : null;
 };
 
 const extractJsonObjectCandidates = (text) => {
@@ -216,22 +161,19 @@ const extractJsonObjectCandidates = (text) => {
 };
 
 export const normalizeAssistantPayload = (rawText, logContext = null) => {
-    const safeFallback = {
-        emotion: 'normal',
-        inner_heart: '',
-        response: '잠시 응답 형식이 불안정했어요. 한 번만 다시 말해줘.',
-        narration: '',
-    };
     const safeLogContext = buildSafeNormalizationLogContext(logContext);
 
     if (!rawText || typeof rawText !== 'string') {
-        return safeFallback;
+        logServerWarn('[V-MATE] Invalid empty structured model output', safeLogContext);
+        return invalidModelOutputResult();
     }
 
-    const normalizedText = rawText.replace(/```json/gi, '').replace(/```/g, '').trim();
+    const trimmedRawText = rawText.trim();
+    const normalizedText = trimmedRawText.replace(/```json/gi, '').replace(/```/g, '').trim();
+    const usedFenceRecovery = normalizedText !== trimmedRawText;
 
     let parsed = tryParseJsonObject(normalizedText);
-    let parseMode = parsed ? 'strict-full' : null;
+    let parseMode = parsed ? (usedFenceRecovery ? 'fenced-full' : 'strict-full') : null;
 
     if (!parsed) {
         parsed = tryParseLooseJsonObject(normalizedText);
@@ -260,46 +202,11 @@ export const normalizeAssistantPayload = (rawText, logContext = null) => {
     }
 
     if (!parsed) {
-        if (looksLikeBrokenContractJson(normalizedText)) {
-            parsed = tryExtractContractFields(normalizedText);
-            if (parsed) {
-                parseMode = 'contract-recovery';
-            } else {
-                logServerWarn('[V-MATE] JSON normalization fallback (broken contract JSON)', {
-                    ...safeLogContext,
-                    rawTextLength: normalizedText.length,
-                });
-                return safeFallback;
-            }
-        }
-    }
-
-    if (!parsed) {
-        const plainResponse = normalizedText
-            .replace(/^here is (the )?json requested:?/i, '')
-            .replace(/^json:?/i, '')
-            .replace(/\s+/g, ' ')
-            .trim();
-
-        if (!plainResponse) {
-            logServerWarn('[V-MATE] JSON normalization fallback (empty text)', {
-                ...safeLogContext,
-                rawTextLength: normalizedText.length,
-            });
-            return safeFallback;
-        }
-
-        logServerWarn('[V-MATE] JSON normalization fallback (plain text passthrough)', {
+        logServerWarn('[V-MATE] Invalid non-structured model output', {
             ...safeLogContext,
             rawTextLength: normalizedText.length,
         });
-
-        return {
-            emotion: 'normal',
-            inner_heart: '',
-            response: plainResponse.slice(0, 520),
-            narration: '',
-        };
+        return invalidModelOutputResult();
     }
 
     if (parseMode && parseMode !== 'strict-full') {
@@ -310,17 +217,27 @@ export const normalizeAssistantPayload = (rawText, logContext = null) => {
         });
     }
 
-    const emotion = typeof parsed?.emotion === 'string' && parsed.emotion.trim()
-        ? parsed.emotion.trim().toLowerCase()
-        : 'normal';
+    const hasRequiredContractFields =
+        typeof parsed?.emotion === 'string' && Boolean(parsed.emotion.trim()) &&
+        typeof parsed?.inner_heart === 'string' &&
+        typeof parsed?.response === 'string' && Boolean(parsed.response.trim());
+
+    if (!hasRequiredContractFields) {
+        logServerWarn('[V-MATE] Parsed model output did not satisfy required contract fields', {
+            ...safeLogContext,
+            parseMode,
+            rawTextLength: normalizedText.length,
+        });
+        return invalidModelOutputResult();
+    }
+
+    const emotion = parsed.emotion.trim().toLowerCase();
 
     const innerHeart = typeof parsed?.inner_heart === 'string'
         ? parsed.inner_heart.trim()
         : '';
 
-    const response = typeof parsed?.response === 'string' && parsed.response.trim()
-        ? parsed.response.trim()
-        : safeFallback.response;
+    const response = parsed.response.trim();
 
     const narration = typeof parsed?.narration === 'string'
         ? parsed.narration.trim()
@@ -337,17 +254,10 @@ export const normalizeAssistantPayload = (rawText, logContext = null) => {
             ...safeLogContext,
             hadInvalidEmotion: true,
         });
+        parseMode = 'invalid-emotion-recovery';
     }
 
-    if (response === safeFallback.response && typeof parsed?.response !== 'string') {
-        logServerWarn('[V-MATE] Parsed JSON missing string response field', {
-            ...safeLogContext,
-            parseMode,
-            rawTextLength: normalizedText.length,
-        });
-    }
-
-    return {
+    const value = {
         emotion: ALLOWED_EMOTIONS.has(emotion) ? emotion : 'normal',
         inner_heart: innerHeart,
         response,
@@ -355,6 +265,11 @@ export const normalizeAssistantPayload = (rawText, logContext = null) => {
         ...(characterImageSlot ? { character_image_slot: characterImageSlot } : {}),
         ...(worldImageSlot ? { world_image_slot: worldImageSlot } : {}),
     };
+
+    return successfulModelResult({
+        value,
+        parseMode: parseMode === 'strict-full' ? 'strict' : 'recovered',
+    });
 };
 
 export const extractGeminiResponseText = (geminiData) => {

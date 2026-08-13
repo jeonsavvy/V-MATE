@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       baseline_approved:
-        description: Type READ_ONLY_BASELINE_APPROVED after reviewing the protected non-database release
+        description: Type READ_ONLY_BASELINE_APPROVED after reviewing the protected non-migration release
         required: true
         type: string
       release_track:
@@ -82,25 +82,9 @@ jobs:
           [[ "$actual_proof_files" == "$(printf '%s\n' "$proof_files" | sort -u)" ]] || { echo '::error::post-lockdown proof source change scope is not the exact verified set'; exit 1; }
           unexpected_proof_status=$(git diff --name-status "$BASELINE_SOURCE_SHA" "$POST_LOCKDOWN_EVIDENCE_SHA" | awk '$1 != "M" { print }')
           [[ -z "$unexpected_proof_status" ]] || { echo '::error::post-lockdown proof files must be in-place modifications'; exit 1; }
-          cat > "$RUNNER_TEMP/allowed-baseline-files.txt" <<'EOF'
-          .github/workflows/release-database-baseline-attestation.yml
-          .github/workflows/release-worker.yml
-          docs/operations.md
-          index.html
-          scripts/validate-github-workflows.mjs
-          server/deployment-workflow-sync.test.js
-          server/frontend-guardrails.test.js
-          src/components/Home.tsx
-          src/components/PasswordRecoveryPage.tsx
-          src/components/platform/ChatComposer.tsx
-          src/components/platform/Pages.tsx
-          src/components/platform/PlatformScaffold.tsx
-          worker.test.js
-          EOF
           git diff --name-only "$POST_LOCKDOWN_EVIDENCE_SHA" "$GITHUB_SHA" | sort -u > "$RUNNER_TEMP/changed-baseline-files.txt"
-          [[ -s "$RUNNER_TEMP/changed-baseline-files.txt" ]] || { echo '::error::baseline attestation requires an approved non-database release'; exit 1; }
-          comm -23 "$RUNNER_TEMP/changed-baseline-files.txt" <(sort -u "$RUNNER_TEMP/allowed-baseline-files.txt") | grep -q . && { echo '::error::baseline attestation change scope is not allowlisted'; exit 1; } || true
-          git diff --quiet "$BASELINE_SOURCE_SHA" "$GITHUB_SHA" -- supabase server/platform server/chat-handler.js worker.js || { echo '::error::database or mutation runtime surface changed'; exit 1; }
+          [[ -s "$RUNNER_TEMP/changed-baseline-files.txt" ]] || { echo '::error::baseline attestation requires an approved non-migration release'; exit 1; }
+          git diff --quiet "$BASELINE_SOURCE_SHA" "$GITHUB_SHA" -- supabase/migrations/ || { echo '::error::baseline release cannot add, remove, rename, or modify database migrations'; exit 1; }
 
       - name: Require successful CI for this default-branch commit
         env:

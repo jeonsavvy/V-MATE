@@ -282,6 +282,7 @@ export const resolveAuthenticatedUser = async ({
     requestTraceId,
     fetchImpl = globalThis.fetch,
     forceAuth = false,
+    runtimeEnvironment = process.env,
 }) => {
     const {
         requireAuth,
@@ -289,7 +290,7 @@ export const resolveAuthenticatedUser = async ({
         authProviderRetryCount,
         supabaseUrl: configuredSupabaseUrl,
         supabaseAnonKey,
-    } = getChatAuthConfig();
+    } = getChatAuthConfig(runtimeEnvironment);
 
     if (!forceAuth && !requireAuth) {
         return {

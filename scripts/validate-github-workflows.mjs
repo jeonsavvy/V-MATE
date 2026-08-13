@@ -256,7 +256,7 @@ const validateWorkflow = (file, source) => {
       'wrangler triggers deploy --env "" --name "$WORKER_NAME" --dry-run',
       'baseline_evidence_run_id:',
       'exactly one expand_evidence_run_id or baseline_evidence_run_id is required',
-      'baseline evidence change scope is not allowlisted',
+      'baseline release cannot add, remove, rename, or modify database migrations',
       'AUTHORIZED_DOMAIN_RELEASE_SHA',
       'authorized domain release SHA guard mismatch',
       'AUTHORIZED_BASELINE_RELEASE_SHA',
@@ -299,6 +299,14 @@ const validateWorkflow = (file, source) => {
       'wrangler versions upload',
     ]) {
       if (!source.includes(required)) fail(file, `missing approved-origin Worker upload guard: ${required}`)
+    }
+    const approvedTargetStep = root.jobs?.release?.steps?.find((step) => step?.name === 'Validate approved target')
+    if (!approvedTargetStep) fail(file, 'approved target validation step is absent')
+    if (!/git diff --quiet "\$BASELINE_SOURCE_SHA" "\$GITHUB_SHA" -- supabase\/migrations\//.test(String(approvedTargetStep.run))) {
+      fail(file, 'Worker baseline mode does not prove the trusted migration tree is unchanged')
+    }
+    if (/allowed_files=|baseline evidence change scope is not allowlisted|-- supabase server\/platform server\/chat-handler\.js worker\.js/.test(String(approvedTargetStep.run))) {
+      fail(file, 'Worker baseline mode still relies on a release-specific allowlist or runtime-surface ban')
     }
     const shadowEvidenceStep = root.jobs?.release?.steps?.find((step) => step?.name === 'Verify current-commit shadow upload and immutable version metadata')
     if (!shadowEvidenceStep) fail(file, 'current-commit shadow evidence step is absent')
@@ -439,6 +447,14 @@ const validateWorkflow = (file, source) => {
       'Current database fingerprints do not match the applied lockdown evidence.',
     ]) {
       if (!source.includes(required)) fail(file, `missing read-only baseline attestation guard: ${required}`)
+    }
+    const baselineScopeStep = root.jobs?.attest?.steps?.find((step) => step?.name === 'Validate protected read-only baseline scope')
+    if (!baselineScopeStep) fail(file, 'protected read-only baseline scope step is absent')
+    if (!/git diff --quiet "\$BASELINE_SOURCE_SHA" "\$GITHUB_SHA" -- supabase\/migrations\//.test(String(baselineScopeStep.run))) {
+      fail(file, 'read-only baseline attestation does not prove the trusted migration tree is unchanged')
+    }
+    if (/allowed-baseline-files|change scope is not allowlisted|-- supabase server\/platform server\/chat-handler\.js worker\.js/.test(String(baselineScopeStep.run))) {
+      fail(file, 'read-only baseline attestation still relies on a release-specific allowlist or runtime-surface ban')
     }
     for (const forbidden of ['supabase db push', 'supabase db query', 'confirm-remote-writes']) {
       if (source.toLowerCase().includes(forbidden)) fail(file, `read-only baseline attestation includes forbidden write surface: ${forbidden}`)

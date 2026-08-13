@@ -853,6 +853,56 @@ test('returns ChatResponseV2 when auth requirement is enabled and token is valid
   assert.equal(quotaCalls, 2);
 });
 
+test('uses request-scoped Worker bindings for persistent legacy quota without process env sync', async () => {
+  for (const key of TRACKED_ENV_KEYS) delete process.env[key];
+  const runtimeEnvironment = {
+    GOOGLE_API_KEY: 'runtime-model-key',
+    ALLOWED_ORIGINS: 'http://localhost:5173',
+    REQUIRE_AUTH_FOR_CHAT: 'true',
+    REQUIRE_CONFIGURED_SUPABASE_URL: 'true',
+    APP_ENV: 'production',
+    SUPABASE_URL: 'https://runtime-project.supabase.co',
+    SUPABASE_ANON_KEY: 'runtime-public-key',
+    SUPABASE_SERVICE_ROLE_KEY: 'runtime-service-key',
+    GEMINI_CONTEXT_CACHE_ENABLED: 'false',
+    GEMINI_NETWORK_RECOVERY_RETRY_ENABLED: 'false',
+    GEMINI_EMPTY_RESPONSE_RETRY_ENABLED: 'false',
+  };
+  const requestedUrls = [];
+  globalThis.fetch = async (url) => {
+    const requestUrl = String(url);
+    requestedUrls.push(requestUrl);
+    if (requestUrl.includes('/auth/v1/user')) {
+      return new Response(JSON.stringify({ id: 'runtime-user' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (requestUrl.includes('/rest/v1/rpc/reserve_chat_message_v2')) {
+      return new Response(JSON.stringify([{
+        disposition: 'reserved', allowed: true, duplicate: false, message_limit: 30, remaining: 29,
+        reset_at: '2026-07-27T15:00:00.000Z', response_json: null, room_version: 0,
+        lease_expires_at: '2026-07-26T12:02:00.000Z',
+      }]), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (requestUrl.includes('/rest/v1/rpc/complete_legacy_chat_message_v2')) {
+      return new Response('true', { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: '{"emotion":"normal","inner_heart":"","response":"runtime env 응답"}' }] } }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+
+  const result = await handler(makeEvent({
+    body: { characterId: 'mika', userMessage: 'binding test', messageHistory: [], clientRequestId: 'runtime-env-legacy-1' },
+    extraHeaders: { authorization: 'Bearer runtime-token' },
+    ip: '198.51.100.207',
+  }), { runtimeEnvironment });
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(parseBody(result).message.response, 'runtime env 응답');
+  const supabaseRequests = requestedUrls.filter((url) => url.includes('.supabase.co'));
+  assert.equal(supabaseRequests.length, 3);
+  assert.ok(supabaseRequests.every((url) => url.startsWith('https://runtime-project.supabase.co/')));
+});
+
 test('reuses deduped successful response for same clientRequestId and payload', async () => {
   applyBaseEnv({
     CLIENT_REQUEST_DEDUPE_WINDOW_MS: '15000',
@@ -907,7 +957,7 @@ test('reuses deduped successful response for same clientRequestId and payload', 
   assert.equal(fetchCalls, 1);
 });
 
-test('does not dedupe when payload differs even with same clientRequestId', async () => {
+test('rejects a reused clientRequestId when the payload fingerprint differs', async () => {
   applyBaseEnv({
     CLIENT_REQUEST_DEDUPE_WINDOW_MS: '15000',
     CLIENT_REQUEST_DEDUPE_MAX_ENTRIES: '2000',
@@ -966,12 +1016,11 @@ test('does not dedupe when payload differs even with same clientRequestId', asyn
   const secondPayload = parseBody(second);
 
   assert.equal(first.statusCode, 200);
-  assert.equal(second.statusCode, 200);
+  assert.equal(second.statusCode, 409);
   assert.equal(first.headers['X-V-MATE-Dedupe-Status'], 'fresh');
-  assert.equal(second.headers['X-V-MATE-Dedupe-Status'], 'fresh');
   assert.equal(firstPayload.message.response, '요청-1');
-  assert.equal(secondPayload.message.response, '요청-2');
-  assert.equal(fetchCalls, 2);
+  assert.equal(secondPayload.error_code, 'CLIENT_REQUEST_ID_CONFLICT');
+  assert.equal(fetchCalls, 1);
 });
 
 test('marks second concurrent request as inflight dedupe hit', async () => {
@@ -1033,11 +1082,11 @@ test('marks second concurrent request as inflight dedupe hit', async () => {
   const secondPayload = parseBody(second);
 
   assert.equal(first.statusCode, 200);
-  assert.equal(second.statusCode, 200);
+  assert.equal(second.statusCode, 409);
   assert.equal(first.headers['X-V-MATE-Dedupe-Status'], 'fresh');
-  assert.equal(second.headers['X-V-MATE-Dedupe-Status'], 'inflight');
   assert.equal(firstPayload.message.response, '동시 요청 응답');
-  assert.equal(secondPayload.message.response, '동시 요청 응답');
+  assert.equal(secondPayload.error_code, 'CHAT_REQUEST_IN_PROGRESS');
+  assert.equal(secondPayload.retryable, true);
   assert.equal(fetchCalls, 1);
 });
 

@@ -1,7 +1,9 @@
 import {
     JSON_RESPONSE_SCHEMA,
     extractGeminiResponseText,
+    normalizeAssistantPayload,
 } from './response-normalizer.js';
+import { toPublicChatModelError } from './chat-model-result.js';
 import {
     buildGeminiRequestPayload,
     callGeminiWithTimeout,
@@ -168,6 +170,8 @@ export const executeGeminiChatRequest = async ({
     requestCachedContent,
     trimmedSystemPrompt,
     promptCacheAdapter = null,
+    runtimeConfig = null,
+    runtimeEnvironment = runtimeConfig?.environment || process.env,
 }) => {
     const {
         maxHistoryMessages: MAX_HISTORY_MESSAGES,
@@ -177,22 +181,22 @@ export const executeGeminiChatRequest = async ({
         modelTimeoutMs: MODEL_TIMEOUT_MS,
         functionTotalTimeoutMs: FUNCTION_TOTAL_TIMEOUT_MS,
         functionTimeoutGuardMs: FUNCTION_TIMEOUT_GUARD_MS,
-    } = getChatRuntimeLimits();
+    } = runtimeConfig?.chatRuntimeLimits || getChatRuntimeLimits(runtimeEnvironment);
     const clampText = (value) => String(value ?? '').slice(0, MAX_PART_CHARS);
     const clampSystemPrompt = (value) => String(value ?? '').slice(0, MAX_SYSTEM_PROMPT_CHARS);
-    const GEMINI_THINKING_LEVEL = getGeminiThinkingLevel();
+    const GEMINI_THINKING_LEVEL = runtimeConfig?.geminiThinkingLevel || getGeminiThinkingLevel(runtimeEnvironment);
     const {
         cacheLookupRetryEnabled,
         networkRecoveryRetryEnabled,
         emptyResponseRetryEnabled,
-    } = getGeminiRetryConfig();
+    } = runtimeConfig?.geminiRetry || getGeminiRetryConfig(runtimeEnvironment);
     const logMeta = {
         traceId: requestTraceId,
     };
     const clampedSystemPrompt = trimmedSystemPrompt ? clampSystemPrompt(trimmedSystemPrompt) : '';
 
     const canUseContextCache =
-        shouldUseGeminiContextCache() &&
+        (runtimeConfig ? runtimeConfig.geminiContextCache?.enabled : shouldUseGeminiContextCache(runtimeEnvironment)) &&
         Boolean(trimmedSystemPrompt);
 
     let promptCacheKey = null;
@@ -244,7 +248,7 @@ export const executeGeminiChatRequest = async ({
             autoCreateEnabled,
             ttlSeconds,
             createTimeoutMs,
-        } = getGeminiContextCacheConfig();
+        } = runtimeConfig?.geminiContextCache || getGeminiContextCacheConfig(runtimeEnvironment);
         const hasEnoughBudgetForCacheCreate = getRemainingBudget() > FUNCTION_TIMEOUT_GUARD_MS + 3000;
         const isFirstTurn = !Array.isArray(messageHistory) || messageHistory.length === 0;
         const shouldCreateInline =
@@ -279,6 +283,14 @@ export const executeGeminiChatRequest = async ({
     let geminiResponse;
     let geminiData;
     let lastModelError = null;
+    let activePayload = buildGeminiRequestPayload({
+        requestContents: contents,
+        outputTokens: PRIMARY_MAX_OUTPUT_TOKENS,
+        thinkingLevel: GEMINI_THINKING_LEVEL,
+        responseSchema: JSON_RESPONSE_SCHEMA,
+        cachedContentName,
+        systemPromptText: cachedContentName ? '' : clampedSystemPrompt,
+    });
 
     const primaryTimeoutMs = Math.min(
         MODEL_TIMEOUT_MS,
@@ -295,14 +307,7 @@ export const executeGeminiChatRequest = async ({
         let primaryResult = await callGeminiWithTimeout({
             apiKey,
             modelName,
-            payload: buildGeminiRequestPayload({
-                requestContents: contents,
-                outputTokens: PRIMARY_MAX_OUTPUT_TOKENS,
-                thinkingLevel: GEMINI_THINKING_LEVEL,
-                responseSchema: JSON_RESPONSE_SCHEMA,
-                cachedContentName,
-                systemPromptText: cachedContentName ? '' : clampedSystemPrompt,
-            }),
+            payload: activePayload,
             timeoutMs: primaryTimeoutMs,
         });
 
@@ -331,18 +336,19 @@ export const executeGeminiChatRequest = async ({
             );
 
             if (cacheResetRetryTimeoutMs > 0) {
+                activePayload = buildGeminiRequestPayload({
+                    requestContents: contents,
+                    outputTokens: PRIMARY_MAX_OUTPUT_TOKENS,
+                    thinkingLevel: GEMINI_THINKING_LEVEL,
+                    responseSchema: JSON_RESPONSE_SCHEMA,
+                    cachedContentName,
+                    useCachedContent: false,
+                    systemPromptText: clampedSystemPrompt,
+                });
                 primaryResult = await callGeminiWithTimeout({
                     apiKey,
                     modelName,
-                    payload: buildGeminiRequestPayload({
-                        requestContents: contents,
-                        outputTokens: PRIMARY_MAX_OUTPUT_TOKENS,
-                        thinkingLevel: GEMINI_THINKING_LEVEL,
-                        responseSchema: JSON_RESPONSE_SCHEMA,
-                        cachedContentName,
-                        useCachedContent: false,
-                        systemPromptText: clampedSystemPrompt,
-                    }),
+                    payload: activePayload,
                     timeoutMs: cacheResetRetryTimeoutMs,
                 });
             }
@@ -375,29 +381,10 @@ export const executeGeminiChatRequest = async ({
                 );
 
                 if (recoveryTimeoutMs > 0) {
-                    const minimalSystemPrompt = clampedSystemPrompt.slice(
-                        0,
-                        Math.min(MAX_SYSTEM_PROMPT_CHARS, 900)
-                    );
-                    const minimalContents = [
-                        {
-                            role: 'user',
-                            parts: [{ text: clampText(userMessage) }],
-                        },
-                    ];
-
                     const recoveryResult = await callGeminiWithTimeout({
                         apiKey,
                         modelName,
-                        payload: buildGeminiRequestPayload({
-                            requestContents: minimalContents,
-                            outputTokens: 220,
-                            thinkingLevel: GEMINI_THINKING_LEVEL,
-                            responseSchema: JSON_RESPONSE_SCHEMA,
-                            cachedContentName,
-                            useCachedContent: false,
-                            systemPromptText: minimalSystemPrompt,
-                        }),
+                        payload: activePayload,
                         timeoutMs: recoveryTimeoutMs,
                     });
 
@@ -432,19 +419,16 @@ export const executeGeminiChatRequest = async ({
     }
 
     if (!geminiResponse || !geminiData) {
+        const publicError = toPublicChatModelError(lastModelError);
         return {
             ok: false,
-            error: lastModelError || {
-                status: 503,
-                code: 'UPSTREAM_UNKNOWN_ERROR',
-                message: 'Model call failed. Please try again later.',
-            },
-            retryable: NETWORK_RETRYABLE_ERROR_CODES.has(lastModelError?.code || ''),
+            error: publicError,
+            retryable:
+                publicError.status === 429 ||
+                NETWORK_RETRYABLE_ERROR_CODES.has(publicError.code),
             promptCacheKey,
             cachedContentName,
             canUseContextCache,
-            geminiResponse: null,
-            geminiData: null,
         };
     }
 
@@ -457,43 +441,16 @@ export const executeGeminiChatRequest = async ({
             emptyResponseRetryEnabled,
         });
 
-        if (cachedContentName) {
-            await removePromptCacheWithAdapter({
-                promptCacheAdapter,
-                cacheKey: promptCacheKey,
-                logMeta,
-            });
-            cachedContentName = null;
-        }
-
         const emptyRecoveryTimeoutMs = Math.min(
             5000,
             Math.max(0, getRemainingBudget() - FUNCTION_TIMEOUT_GUARD_MS)
         );
 
         if (emptyResponseRetryEnabled && emptyRecoveryTimeoutMs > 0) {
-            const minimalSystemPrompt = clampedSystemPrompt.slice(
-                0,
-                Math.min(MAX_SYSTEM_PROMPT_CHARS, 700)
-            );
-            const emptyRecoveryContents = [{
-                role: 'user',
-                parts: [{ text: clampText(userMessage) }],
-            }];
-
             const emptyRecoveryResult = await callGeminiWithTimeout({
                 apiKey,
                 modelName,
-                payload: buildGeminiRequestPayload({
-                    requestContents: emptyRecoveryContents,
-                    outputTokens: 180,
-                    thinkingLevel: GEMINI_THINKING_LEVEL,
-                    responseSchema: JSON_RESPONSE_SCHEMA,
-                    cachedContentName,
-                    useCachedContent: false,
-                    useJsonMimeType: true,
-                    systemPromptText: minimalSystemPrompt,
-                }),
+                payload: activePayload,
                 timeoutMs: emptyRecoveryTimeoutMs,
             });
 
@@ -514,6 +471,8 @@ export const executeGeminiChatRequest = async ({
                         hasPromptBlockReason: Boolean(emptyRecoveryResult.data?.promptFeedback?.blockReason),
                     });
                 }
+            } else {
+                lastModelError = emptyRecoveryResult.error;
             }
         } else if (!emptyResponseRetryEnabled) {
             logServerWarn('[V-MATE] Empty-response recovery retry skipped by config', {
@@ -523,6 +482,27 @@ export const executeGeminiChatRequest = async ({
     }
 
     if (!modelText) {
+        if (cachedContentName) {
+            await removePromptCacheWithAdapter({
+                promptCacheAdapter,
+                cacheKey: promptCacheKey,
+                logMeta,
+            });
+            cachedContentName = null;
+        }
+        if (lastModelError) {
+            const publicError = toPublicChatModelError(lastModelError);
+            return {
+                ok: false,
+                error: publicError,
+                retryable:
+                    publicError.status === 429 ||
+                    NETWORK_RETRYABLE_ERROR_CODES.has(publicError.code),
+                promptCacheKey,
+                cachedContentName,
+                canUseContextCache,
+            };
+        }
         const finishReason = geminiData?.candidates?.[0]?.finishReason || null;
         return {
             ok: false,
@@ -538,18 +518,40 @@ export const executeGeminiChatRequest = async ({
             promptCacheKey,
             cachedContentName,
             canUseContextCache,
-            geminiResponse,
-            geminiData,
+        };
+    }
+
+    const normalized = normalizeAssistantPayload(modelText, {
+        ...logMeta,
+        promptSnapshotLength: clampedSystemPrompt.length,
+        historyMessageCount: Array.isArray(messageHistory) ? messageHistory.length : 0,
+        outputLimit: PRIMARY_MAX_OUTPUT_TOKENS,
+        hasFinishReason: Boolean(geminiData?.candidates?.[0]?.finishReason),
+        hasPromptBlockReason: Boolean(geminiData?.promptFeedback?.blockReason),
+    });
+
+    if (!normalized.ok) {
+        if (cachedContentName) {
+            await removePromptCacheWithAdapter({
+                promptCacheAdapter,
+                cacheKey: promptCacheKey,
+                logMeta,
+            });
+            cachedContentName = null;
+        }
+        return {
+            ...normalized,
+            retryable: true,
+            promptCacheKey,
+            cachedContentName,
+            canUseContextCache,
         };
     }
 
     return {
-        ok: true,
-        modelText,
+        ...normalized,
         promptCacheKey,
         cachedContentName,
         canUseContextCache,
-        geminiResponse,
-        geminiData,
     };
 };

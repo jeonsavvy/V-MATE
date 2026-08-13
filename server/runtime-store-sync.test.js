@@ -9,6 +9,17 @@ const repoRoot = path.resolve(dirname, '..');
 
 const readUtf8 = (relativePath) => readFile(path.join(repoRoot, relativePath), 'utf8');
 
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const assertEnvironmentContextMerge = (source, importPath) => {
+  assert.match(
+    source,
+    new RegExp(`import \\{ resolveRuntimeEnvironmentChatContext \\} from ['\"]${escapeRegExp(importPath)}['\"]`),
+  );
+  assert.match(source, /resolveRuntimeEnvironmentChatContext\(\{[\s\S]*?runtimeConfig(?:\s*:\s*[^,\r\n]+)?,[\s\S]*?traceId: requestContext\.traceId,[\s\S]*?\}\)/);
+  assert.match(source, /mergeChatHandlerContexts\(runtimeContext, configuredContext\)/);
+};
+
 test('operations documentation records runtime store mode flags and KV binding names', async () => {
   const operationsDoc = await readUtf8('docs/operations.md');
 
@@ -30,17 +41,15 @@ test('wrangler vars define default runtime store mode as memory', async () => {
   assert.ok(wranglerConfig.includes('"CLIENT_REQUEST_DEDUPE_MAX_ENTRIES": "2000"'));
 });
 
-test('worker wires runtime chat context resolver', async () => {
+test('worker merges environment-backed chat context into the configured request context', async () => {
   const workerSource = await readUtf8('worker.js');
 
-  assert.ok(workerSource.includes('resolveRuntimeChatHandlerContext'));
-  assert.ok(workerSource.includes('mergeChatHandlerContexts'));
+  assertEnvironmentContextMerge(workerSource, './server/modules/runtime-environment-chat-context.js');
 });
 
-test('cloud run server wires runtime chat context resolver', async () => {
+test('cloud run server merges environment-backed chat context into the configured request context', async () => {
   const cloudRunSource = await readUtf8('server/cloud-run-server.js');
 
-  assert.ok(cloudRunSource.includes('resolveRuntimeChatHandlerContext'));
-  assert.ok(cloudRunSource.includes('mergeChatHandlerContexts'));
+  assertEnvironmentContextMerge(cloudRunSource, './modules/runtime-environment-chat-context.js');
   assert.ok(cloudRunSource.includes('runtimeEnv = process.env'));
 });

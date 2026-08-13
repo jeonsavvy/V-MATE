@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import {
+  createRuntimeConfig,
   getChatRuntimeLimits,
   getDailyChatLimit,
   getChatAuthConfig,
@@ -15,6 +16,10 @@ import {
   shouldRequireJsonContentType,
   shouldTrustProxyHeaders,
 } from './runtime-config.js';
+import {
+  createRuntimeEnvironment,
+  readRuntimeEnvironmentString,
+} from './runtime-environment.js';
 
 const KEYS = [
   'GEMINI_HISTORY_MESSAGES',
@@ -271,4 +276,43 @@ test('gemini retry config retries empty responses by default and honors explicit
     networkRecoveryRetryEnabled: true,
     emptyResponseRetryEnabled: false,
   });
+});
+
+test('creates an immutable runtime config from explicit environment without global mutation', () => {
+  const previousBodyLimit = process.env.REQUEST_BODY_MAX_BYTES;
+  process.env.REQUEST_BODY_MAX_BYTES = '65536';
+  const source = {
+    REQUEST_BODY_MAX_BYTES: '2048',
+    ALLOWED_ORIGINS: 'https://app.example.com/',
+    ALLOW_ALL_ORIGINS: 'false',
+    ALLOW_NON_BROWSER_ORIGIN: 'false',
+    RATE_LIMIT_STORE: 'kv',
+  };
+
+  const config = createRuntimeConfig(source);
+
+  assert.equal(config.requestBodyLimitBytes, 2048);
+  assert.deepEqual(config.cors.allowedOrigins, ['https://app.example.com']);
+  assert.equal(config.rateLimitStoreMode, 'kv');
+  assert.equal(Object.isFrozen(config), true);
+  assert.equal(Object.isFrozen(config.environment), true);
+  assert.equal(Object.isFrozen(config.cors), true);
+  assert.equal(process.env.REQUEST_BODY_MAX_BYTES, '65536');
+
+  if (typeof previousBodyLimit === 'undefined') {
+    delete process.env.REQUEST_BODY_MAX_BYTES;
+  } else {
+    process.env.REQUEST_BODY_MAX_BYTES = previousBodyLimit;
+  }
+});
+
+test('isolates the historical whitespace binding alias and rejects generic key normalization', () => {
+  const environment = createRuntimeEnvironment({
+    ' VITE_SUPABASE_ANON_KEY': 'legacy-public-key',
+    ' SUPABASE_URL': 'https://must-not-be-normalized.example',
+  });
+
+  assert.equal(readRuntimeEnvironmentString(environment, 'VITE_SUPABASE_ANON_KEY'), 'legacy-public-key');
+  assert.equal(readRuntimeEnvironmentString(environment, 'SUPABASE_URL'), '');
+  assert.equal(environment[' SUPABASE_URL'], undefined);
 });

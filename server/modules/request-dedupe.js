@@ -108,11 +108,15 @@ export const buildRequestDedupeKey = ({ rateKey, clientRequestId, requestFingerp
         return null;
     }
 
-    return `${normalizedRateKey}:${normalizedRequestId}:${normalizedFingerprint}`;
+    // The request id is the identity. The fingerprint is stored with the
+    // reservation so reusing an id for a different payload is a conflict,
+    // rather than a second independent request.
+    return `${normalizedRateKey}:${normalizedRequestId}`;
 };
 
 export const withRequestDedupe = async ({
     dedupeKey,
+    requestFingerprint = '',
     windowMs,
     maxEntries = 2000,
     shouldReplayResult = () => true,
@@ -124,12 +128,14 @@ export const withRequestDedupe = async ({
     }
 
     const normalizedKey = String(dedupeKey || '').trim();
+    const normalizedFingerprint = String(requestFingerprint || '').trim();
     const normalizedWindowMs = normalizeWindowMs(windowMs);
     const normalizedMaxEntries = Math.max(100, Math.floor(Number(maxEntries) || 2000));
 
     if (!normalizedKey || normalizedWindowMs <= 0) {
         return {
             status: 'bypass',
+            disposition: 'reserved',
             value: await run(),
         };
     }
@@ -139,10 +145,14 @@ export const withRequestDedupe = async ({
 
     const replayEntry = replayResponseStore.get(normalizedKey);
     if (replayEntry && nowMs <= replayEntry.expireAtMs) {
+        if (replayEntry.requestFingerprint !== normalizedFingerprint) {
+            return { status: 'conflict', disposition: 'conflict', value: null };
+        }
         replayResponseStore.delete(normalizedKey);
         replayResponseStore.set(normalizedKey, replayEntry);
         return {
             status: 'replay',
+            disposition: 'replay',
             value: cloneSerializable(replayEntry.value),
         };
     }
@@ -153,10 +163,13 @@ export const withRequestDedupe = async ({
 
     const inflightEntry = inflightRequestStore.get(normalizedKey);
     if (inflightEntry && nowMs <= inflightEntry.expireAtMs) {
-        const value = await inflightEntry.promise;
+        if (inflightEntry.requestFingerprint !== normalizedFingerprint) {
+            return { status: 'conflict', disposition: 'conflict', value: null };
+        }
         return {
             status: 'inflight',
-            value: cloneSerializable(value),
+            disposition: 'in_progress',
+            value: null,
         };
     }
 
@@ -168,6 +181,7 @@ export const withRequestDedupe = async ({
     trimInFlightStoreByCapacity(normalizedMaxEntries, nowMs);
     inflightRequestStore.set(normalizedKey, {
         promise: executionPromise,
+        requestFingerprint: normalizedFingerprint,
         expireAtMs: nowMs + Math.max(1000, normalizedWindowMs),
     });
 
@@ -176,6 +190,7 @@ export const withRequestDedupe = async ({
         if (shouldReplayResult(value)) {
             replayResponseStore.set(normalizedKey, {
                 value: cloneSerializable(value),
+                requestFingerprint: normalizedFingerprint,
                 expireAtMs: nowMs + normalizedWindowMs,
             });
             trimReplayStoreByCapacity(normalizedMaxEntries, nowMs);
@@ -183,6 +198,7 @@ export const withRequestDedupe = async ({
 
         return {
             status: 'fresh',
+            disposition: 'reserved',
             value,
         };
     } finally {

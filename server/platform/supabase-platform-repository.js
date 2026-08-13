@@ -4,6 +4,11 @@ import { toSafeErrorMeta } from '../modules/safe-error-meta.js';
 import { logServerWarn } from '../modules/server-logger.js';
 import { normalizeQuotaResult } from './quota-contract.js';
 import {
+  ASSET_LIMITS,
+  resolveCanonicalAssetPath,
+  resolveCanonicalAssetPathsFromRows,
+} from './asset-contracts.js';
+import {
   claimStorageDeletionJob,
   confirmAuthUserAbsent,
   drainStorageDeletionOutbox,
@@ -26,7 +31,6 @@ import {
 } from './prompt-builder.js';
 
 // Supabase persistence adapter는 platform API가 기대하는 동일한 메서드 집합을 DB/Storage 기반으로 구현한다.
-const STORAGE_BUCKET = process.env.PUBLIC_ASSETS_BUCKET || 'vmate-assets';
 const STORAGE_SCAN_LIMITS = Object.freeze({ maxEntries: 10_000, maxFolders: 1_000, maxDepth: 8, maxPages: 2_000 });
 const CONTENT_REFERENCE_SCAN_LIMITS = Object.freeze({ maxRows: 10_000, maxAssets: 10_000, pageSize: 100, idBatchSize: 100 });
 const ACCOUNT_STORAGE_CLEANUP_TABLE = 'account_storage_cleanup_fences';
@@ -86,27 +90,38 @@ const WORLD_ROOM_CONTEXT_COLUMNS = [
 const SIGNED_UPLOAD_URL_TTL_MS = 2 * 60 * 60 * 1000;
 const ACCOUNT_STORAGE_CLEANUP_BUFFER_MS = 10 * 60 * 1000;
 
-const resolveSupabaseConfig = () => {
+const runtimeEnvironmentFromEvent = (event) => (
+  event?.runtimeEnvironment || event?.context?.runtimeEnvironment || null
+);
+const resolveRuntimeEnvironment = (environment) => (
+  environment && typeof environment === 'object' ? environment : process.env
+);
+const resolveStorageBucket = (environment) => String(
+  resolveRuntimeEnvironment(environment).PUBLIC_ASSETS_BUCKET || 'vmate-assets'
+).trim() || 'vmate-assets';
+
+const resolveSupabaseConfig = (environment) => {
+  const runtimeEnvironment = resolveRuntimeEnvironment(environment);
   const supabaseUrl = String(
-    process.env.SUPABASE_URL
-    || process.env.VITE_SUPABASE_URL
-    || process.env.VITE_PUBLIC_SUPABASE_URL
+    runtimeEnvironment.SUPABASE_URL
+    || runtimeEnvironment.VITE_SUPABASE_URL
+    || runtimeEnvironment.VITE_PUBLIC_SUPABASE_URL
     || ''
   ).trim().replace(/\/+$/, '');
 
   const supabaseAnonKey = String(
-    process.env.SUPABASE_ANON_KEY
-    || process.env.SUPABASE_PUBLISHABLE_KEY
-    || process.env.VITE_SUPABASE_ANON_KEY
-    || process.env.VITE_SUPABASE_PUBLISHABLE_KEY
-    || process.env.VITE_PUBLIC_SUPABASE_ANON_KEY
-    || process.env.VITE_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+    runtimeEnvironment.SUPABASE_ANON_KEY
+    || runtimeEnvironment.SUPABASE_PUBLISHABLE_KEY
+    || runtimeEnvironment.VITE_SUPABASE_ANON_KEY
+    || runtimeEnvironment.VITE_SUPABASE_PUBLISHABLE_KEY
+    || runtimeEnvironment.VITE_PUBLIC_SUPABASE_ANON_KEY
+    || runtimeEnvironment.VITE_PUBLIC_SUPABASE_PUBLISHABLE_KEY
     || ''
   ).trim();
 
   const supabaseServiceRoleKey = String(
-    process.env.SUPABASE_SERVICE_ROLE_KEY
-    || process.env.SUPABASE_SERVICE_KEY
+    runtimeEnvironment.SUPABASE_SERVICE_ROLE_KEY
+    || runtimeEnvironment.SUPABASE_SERVICE_KEY
     || ''
   ).trim();
 
@@ -118,22 +133,23 @@ const resolveSupabaseConfig = () => {
   };
 };
 
-export const isPersistentPlatformAvailable = () => resolveSupabaseConfig().configured;
-export const isPersistentPlatformRequired = () => {
-  const explicit = String(process.env.REQUIRE_CONFIGURED_SUPABASE_URL || '').trim().toLowerCase();
+export const isPersistentPlatformAvailable = (environment) => resolveSupabaseConfig(environment).configured;
+export const isPersistentPlatformRequired = (environment) => {
+  const runtimeEnvironment = resolveRuntimeEnvironment(environment);
+  const explicit = String(runtimeEnvironment.REQUIRE_CONFIGURED_SUPABASE_URL || '').trim().toLowerCase();
   if (explicit) return explicit !== 'false';
-  const runtimeEnv = String(process.env.APP_ENV || process.env.NODE_ENV || '').trim().toLowerCase();
+  const runtimeEnv = String(runtimeEnvironment.APP_ENV || runtimeEnvironment.NODE_ENV || '').trim().toLowerCase();
   return runtimeEnv === 'production' || runtimeEnv === 'prod';
 };
-export const isPersistentMutationAvailable = () => {
-  const config = resolveSupabaseConfig();
+export const isPersistentMutationAvailable = (environment) => {
+  const config = resolveSupabaseConfig(environment);
   return Boolean(config.configured && config.supabaseServiceRoleKey);
 };
-export const getPlatformPersistenceConfig = () => {
-  const config = resolveSupabaseConfig();
+export const getPlatformPersistenceConfig = (environment) => {
+  const config = resolveSupabaseConfig(environment);
   return {
     supabaseUrl: config.supabaseUrl,
-    storageBucket: STORAGE_BUCKET,
+    storageBucket: resolveStorageBucket(environment),
     configured: config.configured,
     mutationConfigured: Boolean(config.configured && config.supabaseServiceRoleKey),
   };
@@ -148,8 +164,8 @@ const getCreateClient = async () => {
 };
 
 // 공개 조회와 사용자 권한 조회를 분리해 RLS 경계를 명확히 유지한다.
-const createSupabaseClient = async ({ accessToken = '', asUser = false } = {}) => {
-  const { supabaseUrl, supabaseAnonKey, configured } = resolveSupabaseConfig();
+const createSupabaseClient = async ({ accessToken = '', asUser = false, runtimeEnvironment = null } = {}) => {
+  const { supabaseUrl, supabaseAnonKey, configured } = resolveSupabaseConfig(runtimeEnvironment);
   if (!configured) return null;
   const createClient = await getCreateClient();
   const normalizedToken = String(accessToken || '').trim();
@@ -167,11 +183,15 @@ const createSupabaseClient = async ({ accessToken = '', asUser = false } = {}) =
   });
 };
 
-const publicClient = () => createSupabaseClient();
-const userClient = (event) => createSupabaseClient({ accessToken: extractBearerToken(event?.headers), asUser: true });
+const publicClient = (runtimeEnvironment) => createSupabaseClient({ runtimeEnvironment });
+const userClient = (event) => createSupabaseClient({
+  accessToken: extractBearerToken(event?.headers),
+  asUser: true,
+  runtimeEnvironment: runtimeEnvironmentFromEvent(event),
+});
 
-const createSupabaseAdminClient = async () => {
-  const { supabaseUrl, supabaseServiceRoleKey } = resolveSupabaseConfig();
+const createSupabaseAdminClient = async (runtimeEnvironment) => {
+  const { supabaseUrl, supabaseServiceRoleKey } = resolveSupabaseConfig(runtimeEnvironment);
   if (!supabaseUrl || !supabaseServiceRoleKey) return null;
   const createClient = await getCreateClient();
   return createClient(supabaseUrl, supabaseServiceRoleKey, {
@@ -358,16 +378,16 @@ const buildCatalogQuery = (client, entityType, { search = '', filter = '' } = {}
   return query.limit(CATALOG_LIMIT);
 };
 
-export const listCharacters = async ({ search = '', filter = '' } = {}) => {
-  const client = await publicClient();
+export const listCharacters = async ({ event = null, search = '', filter = '', runtimeEnvironment = runtimeEnvironmentFromEvent(event) } = {}) => {
+  const client = await publicClient(runtimeEnvironment);
   if (!client) return [];
   const { data, error } = await buildCatalogQuery(client, 'character', { search, filter });
   if (error) throw error;
   return (data || []).map(summarizeCharacter);
 };
 
-export const listWorlds = async ({ search = '', filter = '' } = {}) => {
-  const client = await publicClient();
+export const listWorlds = async ({ event = null, search = '', filter = '', runtimeEnvironment = runtimeEnvironmentFromEvent(event) } = {}) => {
+  const client = await publicClient(runtimeEnvironment);
   if (!client) return [];
   const { data, error } = await buildCatalogQuery(client, 'world', { search, filter });
   if (error) throw error;
@@ -380,26 +400,15 @@ const getSetting = async (client, key) => {
 };
 
 // 삭제 대상은 configured origin/bucket/owner/entity prefix를 모두 만족한 경로로 제한한다.
-export const resolveStoragePathFromPublicUrl = (url, { ownerUserId, entityType } = {}) => {
-  try {
-    const parsed = new URL(String(url || ''));
-    const { supabaseUrl } = resolveSupabaseConfig();
-    if (!supabaseUrl || parsed.origin !== new URL(supabaseUrl).origin || parsed.search || parsed.hash) return null;
-    const marker = `/storage/v1/object/public/${STORAGE_BUCKET}/`;
-    if (!parsed.pathname.startsWith(marker)) return null;
-    const rawPath = parsed.pathname.slice(marker.length);
-    // Storage keys accepted by this contract are ASCII-only. Refuse escapes
-    // before decoding so encoded separators cannot broaden deletion targets.
-    if (rawPath.includes('%')) return null;
-    const path = decodeURIComponent(rawPath);
-    if (path.includes('\\') || path.split('/').some((part) => !part || part === '.' || part === '..')) return null;
-    if (!ownerUserId || !['character', 'world'].includes(entityType)) return null;
-    const escapedUserId = String(ownerUserId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const pattern = new RegExp(`^${escapedUserId}/${entityType}/[0-9]{10,}-[A-Za-z0-9]{8}/[A-Za-z0-9_-]{1,32}/[A-Za-z0-9_-]{1,32}\\.webp$`);
-    return pattern.test(path) ? path : null;
-  } catch {
-    return null;
-  }
+export const resolveStoragePathFromPublicUrl = (url, { ownerUserId, entityType, runtimeEnvironment = null } = {}) => {
+  const { supabaseUrl } = resolveSupabaseConfig(runtimeEnvironment);
+  return resolveCanonicalAssetPath({
+    url,
+    userId: ownerUserId,
+    entityType,
+    supabaseUrl,
+    bucket: resolveStorageBucket(runtimeEnvironment),
+  });
 };
 
 export const buildAssetStoragePath = ({ userId, entityType, uploadId, slot, variant }) => {
@@ -415,20 +424,30 @@ export const buildAssetStoragePath = ({ userId, entityType, uploadId, slot, vari
   return `${normalizedUserId}/${entityType}/${normalizedUploadId}/${normalizedSlot}/${normalizedVariant}.webp`;
 };
 
-const resolveStoragePathsByUrls = ({ urls, ownerUserId, entityType }) => Array.from(new Set(
-  urls.map((url) => resolveStoragePathFromPublicUrl(url, { ownerUserId, entityType })).filter(Boolean),
+const resolveStoragePathsByUrls = ({ urls, ownerUserId, entityType, runtimeEnvironment = null }) => Array.from(new Set(
+  urls.map((url) => resolveStoragePathFromPublicUrl(url, {
+    ownerUserId,
+    entityType,
+    runtimeEnvironment,
+  })).filter(Boolean),
 ));
 
-const removeStorageObjectsByPaths = async ({ client, paths }) => {
+const removeStorageObjectsByPaths = async ({ client, paths, bucket }) => {
   if (!paths.length) return 0;
   for (let index = 0; index < paths.length; index += 100) {
-    const { error } = await client.storage.from(STORAGE_BUCKET).remove(paths.slice(index, index + 100));
+    const { error } = await client.storage.from(bucket).remove(paths.slice(index, index + 100));
     if (error) throw error;
   }
   return paths.length;
 };
 
-export const listOwnedStoragePaths = async ({ client, userId, entityType, pageSize = 100 }) => {
+export const listOwnedStoragePaths = async ({
+  client,
+  userId,
+  entityType,
+  pageSize = 100,
+  runtimeEnvironment = null,
+}) => {
   if (!client || !userId || !['character', 'world'].includes(entityType)) return [];
   const rootPrefix = `${userId}/${entityType}`;
   const safePageSize = Math.max(1, Math.min(100, Math.floor(Number(pageSize) || 100)));
@@ -454,7 +473,7 @@ export const listOwnedStoragePaths = async ({ client, userId, entityType, pageSi
         error.code = 'STORAGE_PREFIX_SCAN_LIMIT_EXCEEDED';
         throw error;
       }
-      const { data, error } = await client.storage.from(STORAGE_BUCKET).list(prefix, {
+      const { data, error } = await client.storage.from(resolveStorageBucket(runtimeEnvironment)).list(prefix, {
         limit: safePageSize,
         offset,
         sortBy: { column: 'name', order: 'asc' },
@@ -482,13 +501,17 @@ export const listOwnedStoragePaths = async ({ client, userId, entityType, pageSi
   return Array.from(new Set(files));
 };
 
-const removeAccountStorageObjectsByPrefix = async ({ client, userId }) => {
+const removeAccountStorageObjectsByPrefix = async ({ client, userId, runtimeEnvironment = null }) => {
   const paths = [
-    ...(await listOwnedStoragePaths({ client, userId, entityType: 'character' })),
-    ...(await listOwnedStoragePaths({ client, userId, entityType: 'world' })),
+    ...(await listOwnedStoragePaths({ client, userId, entityType: 'character', runtimeEnvironment })),
+    ...(await listOwnedStoragePaths({ client, userId, entityType: 'world', runtimeEnvironment })),
   ];
   try {
-    return await removeStorageObjectsByPaths({ client, paths });
+    return await removeStorageObjectsByPaths({
+      client,
+      paths,
+      bucket: resolveStorageBucket(runtimeEnvironment),
+    });
   } catch (cause) {
     const error = new Error('Account storage cleanup state is unknown.');
     error.code = 'ACCOUNT_DELETE_STORAGE_STATE_UNKNOWN';
@@ -545,7 +568,7 @@ const throwIfSupabaseError = (label, result) => {
   return result;
 };
 
-export const collectContentAssetUrls = ({ entityType, row, assets = [] }) => {
+export const collectLegacyContentAssetUrls = ({ entityType, row }) => {
   const urls = new Set();
   const pushUrl = (value) => {
     const normalized = String(value || '').trim();
@@ -560,7 +583,7 @@ export const collectContentAssetUrls = ({ entityType, row, assets = [] }) => {
   }
 
   const imageSlots = Array.isArray(row?.prompt_profile_json?.imageSlots)
-    ? row.prompt_profile_json.imageSlots
+    ? row.prompt_profile_json.imageSlots.slice(0, ASSET_LIMITS.slots)
     : [];
   for (const slot of imageSlots) {
     pushUrl(slot?.thumbUrl);
@@ -569,11 +592,35 @@ export const collectContentAssetUrls = ({ entityType, row, assets = [] }) => {
     pushUrl(slot?.heroUrl);
   }
 
-  for (const asset of assets) {
-    pushUrl(asset?.url);
-  }
-
   return Array.from(urls);
+};
+
+export const resolveContentAssetStoragePaths = ({
+  entityType,
+  row,
+  assets = [],
+  runtimeEnvironment = null,
+}) => {
+  const ownerUserId = String(row?.owner_user_id || '').trim();
+  const { supabaseUrl } = resolveSupabaseConfig(runtimeEnvironment);
+  const relationRows = Array.isArray(assets) ? assets : [];
+  const canonicalPaths = resolveCanonicalAssetPathsFromRows({
+    assets: relationRows,
+    userId: ownerUserId,
+    entityType,
+    supabaseUrl,
+    bucket: resolveStorageBucket(runtimeEnvironment),
+  });
+  if (relationRows.length > 0) return canonicalPaths;
+
+  // Rows created before asset relations were required may only retain URL
+  // projections. Keep that compatibility source bounded by the slot contract.
+  return resolveStoragePathsByUrls({
+    urls: collectLegacyContentAssetUrls({ entityType, row }),
+    ownerUserId,
+    entityType,
+    runtimeEnvironment,
+  });
 };
 
 export const isOwnerUser = async ({ event, userId }) => {
@@ -629,17 +676,19 @@ export const incrementChatStartCountsBestEffort = async ({ client, character, wo
 };
 
 export const getHomePayload = async ({
+  event = null,
   tab = 'characters',
   search = '',
   filter = '',
   characterFilter = filter,
   worldFilter = filter,
+  runtimeEnvironment = runtimeEnvironmentFromEvent(event),
 } = {}) => {
-  const client = await publicClient();
+  const client = await publicClient(runtimeEnvironment);
   if (!client) return null;
   const [characters, worlds, heroSetting] = await Promise.all([
-    listCharacters({ search, filter: characterFilter }),
-    listWorlds({ search, filter: worldFilter }),
+    listCharacters({ search, filter: characterFilter, runtimeEnvironment }),
+    listWorlds({ search, filter: worldFilter, runtimeEnvironment }),
     getSetting(client, 'home.hero'),
   ]);
   const heroMode = heroSetting?.mode === 'manual' ? 'manual' : 'auto';
@@ -762,7 +811,8 @@ export const getCharacterDetail = async (input) => {
   const slug = typeof input === 'string' ? input : input?.slug;
   const event = typeof input === 'string' ? null : input?.event;
   const userId = typeof input === 'string' ? '' : String(input?.userId || '');
-  const client = await publicClient();
+  const runtimeEnvironment = input?.runtimeEnvironment || runtimeEnvironmentFromEvent(event);
+  const client = await publicClient(runtimeEnvironment);
   const authenticatedClient = userId ? await userClient(event) : null;
   if (!client) return null;
   const character = await getOwnedCharacterRowBySlug(authenticatedClient, slug, userId, { includeAuthoring: true })
@@ -798,7 +848,8 @@ export const getWorldDetail = async (input) => {
   const slug = typeof input === 'string' ? input : input?.slug;
   const event = typeof input === 'string' ? null : input?.event;
   const userId = typeof input === 'string' ? '' : String(input?.userId || '');
-  const client = await publicClient();
+  const runtimeEnvironment = input?.runtimeEnvironment || runtimeEnvironmentFromEvent(event);
+  const client = await publicClient(runtimeEnvironment);
   const authenticatedClient = userId ? await userClient(event) : null;
   if (!client) return null;
   const world = await getOwnedWorldRowBySlug(authenticatedClient, slug, userId, { includeAuthoring: true })
@@ -887,7 +938,7 @@ export const persistRecentView = async ({ client, userId, entityType, targetId, 
 
 export const addRecentView = async ({ event, userId, entityType, ref }) => {
   const client = await userClient(event);
-  const publicReadClient = await publicClient();
+  const publicReadClient = await publicClient(runtimeEnvironmentFromEvent(event));
   if (!client || !publicReadClient) return null;
   const entity = await resolveEntityByRef({ publicClientInstance: publicReadClient, userClientInstance: client, userId, entityType, ref });
   if (!entity) return null;
@@ -917,7 +968,7 @@ export const getBookmarkStatus = async ({ event, userId, entityType, targetId })
 
 export const toggleBookmark = async ({ event, userId, entityType, ref }) => {
   const client = await userClient(event);
-  const publicReadClient = await publicClient();
+  const publicReadClient = await publicClient(runtimeEnvironmentFromEvent(event));
   if (!client || !publicReadClient) return null;
   const entity = await resolveEntityByRef({ publicClientInstance: publicReadClient, userClientInstance: client, userId, entityType, ref });
   if (!entity) return null;
@@ -1037,7 +1088,7 @@ const hydrateRoomsBatch = async ({ client, publicClientInstance, rows, userId, i
 
 export const listRecentRooms = async ({ event, userId, limit = RECENT_ROOM_LIMIT, includeMessages = true }) => {
   const client = await userClient(event);
-  const publicReadClient = await publicClient();
+  const publicReadClient = await publicClient(runtimeEnvironmentFromEvent(event));
   if (!client || !publicReadClient) return [];
   const boundedLimit = normalizeRecentRoomLimit(limit);
   const { data, error } = await client.from(OWNED_ROOM_SUMMARY_VIEW).select(ROOM_SAFE_VIEW_COLUMNS).eq('user_id', userId).order('updated_at', { ascending: false }).limit(boundedLimit);
@@ -1060,7 +1111,7 @@ export const listRecentRooms = async ({ event, userId, limit = RECENT_ROOM_LIMIT
 
 export const getLibraryPayload = async ({ event, userId, includeRecentRooms = true }) => {
   const client = await userClient(event);
-  const publicReadClient = await publicClient();
+  const publicReadClient = await publicClient(runtimeEnvironmentFromEvent(event));
   if (!client || !publicReadClient) return null;
 
   try {
@@ -1245,8 +1296,8 @@ export const buildWorldWritePayload = ({ payload, existing = null, create = fals
   return output;
 };
 
-export const createCharacter = async ({ userId, payload }) => {
-  const client = await createSupabaseAdminClient();
+export const createCharacter = async ({ event = null, userId, payload, runtimeEnvironment = runtimeEnvironmentFromEvent(event) }) => {
+  const client = await createSupabaseAdminClient(runtimeEnvironment);
   if (!client) return null;
   const insertPayload = buildCharacterWritePayload({ payload, create: true, userId });
   const { data, error } = await client.from('characters').insert(insertPayload).select(CHARACTER_BASE_SUMMARY_COLUMNS).single();
@@ -1259,8 +1310,8 @@ export const createCharacter = async ({ userId, payload }) => {
   return summarizeCharacter({ ...insertPayload, ...data });
 };
 
-export const updateCharacter = async ({ userId, slug, payload }) => {
-  const client = await createSupabaseAdminClient();
+export const updateCharacter = async ({ event = null, userId, slug, payload, runtimeEnvironment = runtimeEnvironmentFromEvent(event) }) => {
+  const client = await createSupabaseAdminClient(runtimeEnvironment);
   if (!client) return null;
   const { data: existing, error: existingError } = await client
     .from('characters')
@@ -1288,8 +1339,8 @@ export const updateCharacter = async ({ userId, slug, payload }) => {
   return summarizeCharacter({ ...existing, ...updatePayload, ...data });
 };
 
-export const createWorld = async ({ userId, payload }) => {
-  const client = await createSupabaseAdminClient();
+export const createWorld = async ({ event = null, userId, payload, runtimeEnvironment = runtimeEnvironmentFromEvent(event) }) => {
+  const client = await createSupabaseAdminClient(runtimeEnvironment);
   if (!client) return null;
   const insertPayload = buildWorldWritePayload({ payload, create: true, userId });
   const { data, error } = await client.from('worlds').insert(insertPayload).select(WORLD_BASE_SUMMARY_COLUMNS).single();
@@ -1302,8 +1353,8 @@ export const createWorld = async ({ userId, payload }) => {
   return summarizeWorld({ ...insertPayload, ...data });
 };
 
-export const updateWorld = async ({ userId, slug, payload }) => {
-  const client = await createSupabaseAdminClient();
+export const updateWorld = async ({ event = null, userId, slug, payload, runtimeEnvironment = runtimeEnvironmentFromEvent(event) }) => {
+  const client = await createSupabaseAdminClient(runtimeEnvironment);
   if (!client) return null;
   const { data: existing, error: existingError } = await client
     .from('worlds')
@@ -1344,7 +1395,7 @@ const buildGreetingMessage = ({ userAlias, characterName, bridgeProfile }) => ({
 });
 
 export const createRoom = async ({ event, userId, characterSlug, worldSlug = null, userAlias = '나' }) => {
-  const client = await createSupabaseAdminClient();
+  const client = await createSupabaseAdminClient(runtimeEnvironmentFromEvent(event));
   if (!client) return null;
   const { data: character, error: characterError } = await client
     .from('characters')
@@ -1426,7 +1477,7 @@ export const createRoom = async ({ event, userId, characterSlug, worldSlug = nul
 
 export const getRoom = async ({ event, roomId, userId }) => {
   const client = await userClient(event);
-  const publicReadClient = await publicClient();
+  const publicReadClient = await publicClient(runtimeEnvironmentFromEvent(event));
   if (!client || !publicReadClient) return null;
   let query = client.from(OWNED_ROOM_SUMMARY_VIEW).select(ROOM_SAFE_VIEW_COLUMNS).eq('id', roomId);
   if (userId) query = query.eq('user_id', userId);
@@ -1461,7 +1512,7 @@ export const getRoomHistoryForModel = async ({ event, roomId, userId }) => {
 
 export const getRoomPromptContext = async ({ event, roomId, userId }) => {
   if (!userId) return null;
-  const client = await createSupabaseAdminClient();
+  const client = await createSupabaseAdminClient(runtimeEnvironmentFromEvent(event));
   if (!client) return null;
   // The prompt snapshot never crosses the authenticated client grant. The
   // service-role read still proves room ownership in the same DB query.
@@ -1490,7 +1541,7 @@ export const getRoomPromptContext = async ({ event, roomId, userId }) => {
 export const appendRoomMessages = async ({ event, userId, roomId, userMessage, assistantMessage }) => {
   if (!userId) return null;
   const client = await userClient(event);
-  const admin = await createSupabaseAdminClient();
+  const admin = await createSupabaseAdminClient(runtimeEnvironmentFromEvent(event));
   if (!client || !admin) return null;
   const room = await getRoom({ event, roomId, userId });
   if (!room) return null;
@@ -1574,7 +1625,7 @@ export const commitRoomTurn = async ({
     ? providedRoom
     : await getRoom({ event, roomId, userId });
   if (!room) return null;
-  const admin = await createSupabaseAdminClient();
+  const admin = await createSupabaseAdminClient(runtimeEnvironmentFromEvent(event));
   if (!admin) return null;
   const promptContext = canReuseSnapshot && providedPromptContext
     ? providedPromptContext
@@ -1641,7 +1692,7 @@ export const commitRoomTurn = async ({
   };
 };
 
-export const getOpsDashboard = async ({ event, userId }) => {
+export const getOpsDashboard = async ({ event, userId, ownerPrechecked = false }) => {
   const client = await userClient(event);
   const unavailable = (cause) => {
     logServerWarn('[V-MATE] Operations dashboard read failed', {
@@ -1655,10 +1706,15 @@ export const getOpsDashboard = async ({ event, userId }) => {
   if (!client) throw unavailable(new Error('Authenticated database client is unavailable'));
 
   try {
-    const ownerResult = await client.rpc('is_owner_user');
-    if (ownerResult?.error) throw ownerResult.error;
-    const ownerMode = ownerResult?.data === true;
-    const admin = ownerMode ? await createSupabaseAdminClient() : null;
+    let ownerMode = ownerPrechecked;
+    if (!ownerPrechecked) {
+      const ownerResult = await client.rpc('is_owner_user');
+      if (ownerResult?.error) throw ownerResult.error;
+      ownerMode = ownerResult?.data === true;
+    }
+    const admin = ownerMode
+      ? await createSupabaseAdminClient(runtimeEnvironmentFromEvent(event))
+      : null;
     if (ownerMode && !admin) throw new Error('Owner read capability is unavailable');
     // Platform owners may inspect global moderation rows through service_role,
     // but even that projection is limited to the public summary columns. Regular
@@ -1711,9 +1767,9 @@ export const getOpsDashboard = async ({ event, userId }) => {
   }
 };
 
-export const setContentVisibility = async ({ event, userId, entityType, id, status }) => {
-  if (!await isOwnerUser({ event, userId })) return false;
-  const client = await createSupabaseAdminClient();
+export const setContentVisibility = async ({ event, userId, entityType, id, status, ownerPrechecked = false }) => {
+  if (!ownerPrechecked && !await isOwnerUser({ event, userId })) return false;
+  const client = await createSupabaseAdminClient(runtimeEnvironmentFromEvent(event));
   if (!client) return false;
   const table = entityType === 'character' ? 'characters' : 'worlds';
   const { error } = await matchContentIdOrSlug(
@@ -1728,7 +1784,7 @@ export const setContentVisibility = async ({ event, userId, entityType, id, stat
 // user. Resolve live references at cleanup time so deleting one row never
 // turns a remaining row into a broken image. This runs for retries too; a
 // reference lookup failure therefore defers cleanup rather than risking data.
-const resolveUnsharedContentStoragePaths = async ({ client, job, paths }) => {
+const resolveUnsharedContentStoragePaths = async ({ client, job, paths, runtimeEnvironment = null }) => {
   if (job?.operation_kind !== 'content' || !['character', 'world'].includes(job.entity_type)) {
     return paths;
   }
@@ -1761,22 +1817,22 @@ const resolveUnsharedContentStoragePaths = async ({ client, job, paths }) => {
   const remainingRows = allOwnedRows.filter((row) => row?.id && row.id !== job.entity_id);
   if (!remainingRows.length) return paths;
 
-  const referencedAssetUrls = [];
+  const referencedAssets = [];
   const remainingIds = remainingRows.map((row) => row.id);
   for (let start = 0; start < remainingIds.length; start += CONTENT_REFERENCE_SCAN_LIMITS.idBatchSize) {
     const ids = remainingIds.slice(start, start + CONTENT_REFERENCE_SCAN_LIMITS.idBatchSize);
     for (let offset = 0; ; offset += CONTENT_REFERENCE_SCAN_LIMITS.pageSize) {
       const assetsResult = await client
         .from(assetTable)
-        .select('url')
+        .select(`${fkColumn}, url`)
         .in(fkColumn, ids)
         .range(offset, offset + CONTENT_REFERENCE_SCAN_LIMITS.pageSize - 1);
       if (assetsResult?.error) throw assetsResult.error;
       const page = Array.isArray(assetsResult?.data)
         ? assetsResult.data
         : assetsResult?.data ? [assetsResult.data] : [];
-      referencedAssetUrls.push(...page.map((asset) => asset?.url));
-      if (referencedAssetUrls.length > CONTENT_REFERENCE_SCAN_LIMITS.maxAssets) {
+      referencedAssets.push(...page);
+      if (referencedAssets.length > CONTENT_REFERENCE_SCAN_LIMITS.maxAssets) {
         const error = new Error('Content asset reference scan exceeds the safe row limit.');
         error.code = 'CONTENT_REFERENCE_SCAN_LIMIT_EXCEEDED';
         throw error;
@@ -1784,20 +1840,38 @@ const resolveUnsharedContentStoragePaths = async ({ client, job, paths }) => {
       if (page.length < CONTENT_REFERENCE_SCAN_LIMITS.pageSize) break;
     }
   }
-  const referencedUrls = [
-    ...remainingRows.flatMap((row) => collectContentAssetUrls({ entityType, row, assets: [] })),
-    ...referencedAssetUrls,
-  ];
-  const referencedPaths = new Set(resolveStoragePathsByUrls({
-    urls: referencedUrls,
-    ownerUserId: job.subject_user_id,
-    entityType,
-  }));
+  const assetsByEntityId = new Map();
+  for (const asset of referencedAssets) {
+    const entityId = asset?.[fkColumn];
+    if (!entityId) continue;
+    if (!assetsByEntityId.has(entityId)) assetsByEntityId.set(entityId, []);
+    assetsByEntityId.get(entityId).push(asset);
+  }
+  const referencedPaths = new Set(remainingRows.flatMap((row) => (
+    resolveContentAssetStoragePaths({
+      entityType,
+      row,
+      assets: assetsByEntityId.get(row.id) || [],
+      runtimeEnvironment,
+    })
+  )));
   return paths.filter((path) => !referencedPaths.has(path));
 };
 
-const deleteContentWithStorageSaga = async ({ client, userId, entityType, id, ownerOnly }) => {
+const deleteContentWithStorageSaga = async ({
+  client,
+  userId,
+  entityType,
+  id,
+  ownerOnly,
+  runtimeEnvironment = null,
+}) => {
   if (!['character', 'world'].includes(entityType)) return false;
+  const bucket = resolveStorageBucket(runtimeEnvironment);
+  const resolveRemovablePaths = (input) => resolveUnsharedContentStoragePaths({
+    ...input,
+    runtimeEnvironment,
+  });
   const table = entityType === 'character' ? 'characters' : 'worlds';
   const assetTable = entityType === 'character' ? 'character_assets' : 'world_assets';
   const fkColumn = entityType === 'character' ? 'character_id' : 'world_id';
@@ -1806,9 +1880,9 @@ const deleteContentWithStorageSaga = async ({ client, userId, entityType, id, ow
     : 'id, owner_user_id, cover_image_url, prompt_profile_json';
   await drainStorageDeletionOutbox({
     client,
-    bucket: STORAGE_BUCKET,
+    bucket,
     limit: 3,
-    resolveRemovablePaths: resolveUnsharedContentStoragePaths,
+    resolveRemovablePaths,
   });
   const rowQuery = ownerOnly
     ? client.from(table).select(selectFields).eq('owner_user_id', userId)
@@ -1821,10 +1895,11 @@ const deleteContentWithStorageSaga = async ({ client, userId, entityType, id, ow
   if (!row?.id) return false;
   const { data: assets, error: assetError } = await client.from(assetTable).select('url').eq(fkColumn, row.id);
   if (assetError) throw assetError;
-  const paths = resolveStoragePathsByUrls({
-    urls: collectContentAssetUrls({ entityType, row, assets: assets || [] }),
-    ownerUserId: row.owner_user_id,
+  const paths = resolveContentAssetStoragePaths({
     entityType,
+    row,
+    assets: assets || [],
+    runtimeEnvironment,
   });
   const job = await prepareStorageDeletionJob({
     client,
@@ -1865,30 +1940,45 @@ const deleteContentWithStorageSaga = async ({ client, userId, entityType, id, ow
       await processStorageDeletionJob({
         client,
         job: claimedJob,
-        bucket: STORAGE_BUCKET,
+        bucket,
         destructiveStateConfirmed: true,
-        resolveRemovablePaths: resolveUnsharedContentStoragePaths,
+        resolveRemovablePaths,
       });
     }
   }
   return true;
 };
 
-export const deleteContent = async ({ event, userId, entityType, id }) => {
-  if (!await isOwnerUser({ event, userId })) return false;
-  const client = await createSupabaseAdminClient();
+export const deleteContent = async ({ event, userId, entityType, id, ownerPrechecked = false }) => {
+  const runtimeEnvironment = runtimeEnvironmentFromEvent(event);
+  if (!ownerPrechecked && !await isOwnerUser({ event, userId })) return false;
+  const client = await createSupabaseAdminClient(runtimeEnvironment);
   if (!client) return false;
-  return deleteContentWithStorageSaga({ client, userId, entityType, id, ownerOnly: false });
+  return deleteContentWithStorageSaga({
+    client,
+    userId,
+    entityType,
+    id,
+    ownerOnly: false,
+    runtimeEnvironment,
+  });
 };
 
-export const deleteOwnedContent = async ({ userId, entityType, id }) => {
-  const client = await createSupabaseAdminClient();
+export const deleteOwnedContent = async ({ event = null, userId, entityType, id, runtimeEnvironment = runtimeEnvironmentFromEvent(event) }) => {
+  const client = await createSupabaseAdminClient(runtimeEnvironment);
   if (!client) return false;
-  return deleteContentWithStorageSaga({ client, userId, entityType, id, ownerOnly: true });
+  return deleteContentWithStorageSaga({
+    client,
+    userId,
+    entityType,
+    id,
+    ownerOnly: true,
+    runtimeEnvironment,
+  });
 };
 
-export const deleteAccount = async ({ userId }) => {
-  const client = await createSupabaseAdminClient();
+export const deleteAccount = async ({ event = null, userId, runtimeEnvironment = runtimeEnvironmentFromEvent(event) }) => {
+  const client = await createSupabaseAdminClient(runtimeEnvironment);
   if (!client) {
     return {
       ok: false,
@@ -1921,7 +2011,7 @@ export const deleteAccount = async ({ userId }) => {
   // The durable fence blocks new upload responses first. Existing signed URLs
   // can still upload without auth, so cleanup runs before and immediately after
   // Auth deletion and the scheduled reconciler keeps scanning through expiry.
-  let removedAssets = await removeAccountStorageObjectsByPrefix({ client, userId });
+  let removedAssets = await removeAccountStorageObjectsByPrefix({ client, userId, runtimeEnvironment });
 
   let authDeleteError = null;
   try {
@@ -1943,7 +2033,7 @@ export const deleteAccount = async ({ userId }) => {
   }
 
   try {
-    removedAssets += await removeAccountStorageObjectsByPrefix({ client, userId });
+    removedAssets += await removeAccountStorageObjectsByPrefix({ client, userId, runtimeEnvironment });
   } catch (error) {
     // Auth deletion is already final. Keep the durable fence so scheduled
     // maintenance can remove any late upload without exposing raw provider data.
@@ -2060,8 +2150,8 @@ export const getChatQuota = async ({ event, limit = 30 }) => {
   return normalizeQuotaResult(data, limit);
 };
 
-export const reserveChatQuota = async ({ userId, route = 'room', roomId = null, requestId, requestFingerprint, limit = 30 }) => {
-  const client = await createSupabaseAdminClient();
+export const reserveChatQuota = async ({ event = null, userId, route = 'room', roomId = null, requestId, requestFingerprint, limit = 30, runtimeEnvironment = runtimeEnvironmentFromEvent(event) }) => {
+  const client = await createSupabaseAdminClient(runtimeEnvironment);
   if (!client) return { allowed: false, limit, remaining: 0, resetAt: '' };
   const { data, error } = await client.rpc('reserve_chat_message_v2', {
     p_user_id: userId,
@@ -2076,8 +2166,8 @@ export const reserveChatQuota = async ({ userId, route = 'room', roomId = null, 
   return normalizeQuotaResult(data, limit, { requireDisposition: true });
 };
 
-export const completeChatQuota = async ({ userId, requestId, requestFingerprint, response }) => {
-  const client = await createSupabaseAdminClient();
+export const completeChatQuota = async ({ event = null, userId, requestId, requestFingerprint, response, runtimeEnvironment = runtimeEnvironmentFromEvent(event) }) => {
+  const client = await createSupabaseAdminClient(runtimeEnvironment);
   if (!client) return false;
   const { data, error } = await client.rpc('complete_legacy_chat_message_v2', {
     p_user_id: userId,
@@ -2089,8 +2179,8 @@ export const completeChatQuota = async ({ userId, requestId, requestFingerprint,
   return data === true;
 };
 
-export const refundChatQuota = async ({ userId, requestId, requestFingerprint, limit = 30 }) => {
-  const client = await createSupabaseAdminClient();
+export const refundChatQuota = async ({ event = null, userId, requestId, requestFingerprint, limit = 30, runtimeEnvironment = runtimeEnvironmentFromEvent(event) }) => {
+  const client = await createSupabaseAdminClient(runtimeEnvironment);
   if (!client) return { limit, remaining: 0, resetAt: '' };
   const { data, error } = await client.rpc('refund_chat_message_v2', {
     p_user_id: userId,
@@ -2102,8 +2192,8 @@ export const refundChatQuota = async ({ userId, requestId, requestFingerprint, l
   return normalizeQuotaResult(data, limit);
 };
 
-export const reconcileExpiredChatReservations = async ({ limit = 100 } = {}) => {
-  const client = await createSupabaseAdminClient();
+export const reconcileExpiredChatReservations = async ({ limit = 100, runtimeEnvironment = null } = {}) => {
+  const client = await createSupabaseAdminClient(runtimeEnvironment);
   if (!client) return { skipped: true, reason: 'admin_not_configured', reconciled: 0 };
   const safeLimit = Math.max(1, Math.min(1000, Math.floor(Number(limit) || 100)));
   const { data, error } = await client.rpc('reconcile_expired_chat_reservations_v2', { p_limit: safeLimit });
@@ -2114,20 +2204,23 @@ export const reconcileExpiredChatReservations = async ({ limit = 100 } = {}) => 
   };
 };
 
-export const reconcileStorageDeletionOutbox = async ({ limit = 5 } = {}) => {
-  const client = await createSupabaseAdminClient();
+export const reconcileStorageDeletionOutbox = async ({ limit = 5, runtimeEnvironment = null } = {}) => {
+  const client = await createSupabaseAdminClient(runtimeEnvironment);
   if (!client) return { skipped: true, reason: 'admin_not_configured', inspected: 0, completed: 0 };
   return drainStorageDeletionOutbox({
     client,
-    bucket: STORAGE_BUCKET,
+    bucket: resolveStorageBucket(runtimeEnvironment),
     limit,
     strict: true,
-    resolveRemovablePaths: resolveUnsharedContentStoragePaths,
+    resolveRemovablePaths: (input) => resolveUnsharedContentStoragePaths({
+      ...input,
+      runtimeEnvironment,
+    }),
   });
 };
 
-export const reconcileAccountStorageCleanupFences = async ({ limit = 5 } = {}) => {
-  const client = await createSupabaseAdminClient();
+export const reconcileAccountStorageCleanupFences = async ({ limit = 5, runtimeEnvironment = null } = {}) => {
+  const client = await createSupabaseAdminClient(runtimeEnvironment);
   if (!client) return { skipped: true, reason: 'admin_not_configured', inspected: 0, completed: 0 };
   const boundedLimit = Math.max(1, Math.min(20, Math.floor(Number(limit) || 5)));
   const dueAt = new Date().toISOString();
@@ -2151,10 +2244,24 @@ export const reconcileAccountStorageCleanupFences = async ({ limit = 5 } = {}) =
         throw error;
       }
       if (authState === 'absent') {
-        await removeAccountStorageObjectsByPrefix({ client, userId: fence.user_id });
+        await removeAccountStorageObjectsByPrefix({
+          client,
+          userId: fence.user_id,
+          runtimeEnvironment,
+        });
         const remainingPaths = [
-          ...(await listOwnedStoragePaths({ client, userId: fence.user_id, entityType: 'character' })),
-          ...(await listOwnedStoragePaths({ client, userId: fence.user_id, entityType: 'world' })),
+          ...(await listOwnedStoragePaths({
+            client,
+            userId: fence.user_id,
+            entityType: 'character',
+            runtimeEnvironment,
+          })),
+          ...(await listOwnedStoragePaths({
+            client,
+            userId: fence.user_id,
+            entityType: 'world',
+            runtimeEnvironment,
+          })),
         ];
         if (remainingPaths.length > 0) {
           const error = new Error('Account storage cleanup remains incomplete.');
@@ -2194,18 +2301,19 @@ export const reconcileAccountStorageCleanupFences = async ({ limit = 5 } = {}) =
   return { skipped: false, inspected: (fencesResult.data || []).length, completed };
 };
 
-export const prepareAssetUploads = async ({ userId, entityType, variants }) => {
-  const client = await createSupabaseAdminClient();
+export const prepareAssetUploads = async ({ event = null, userId, entityType, variants, runtimeEnvironment = runtimeEnvironmentFromEvent(event) }) => {
+  const client = await createSupabaseAdminClient(runtimeEnvironment);
   if (!client) return null;
   await assertAssetUploadsAllowed({ client, userId });
+  const bucket = resolveStorageBucket(runtimeEnvironment);
   const uploadId = `${Date.now()}-${randomUUID().slice(0, 8)}`;
   const uploads = [];
   for (const variant of variants) {
     const path = buildAssetStoragePath({ userId, entityType, uploadId, slot: variant.slot, variant: variant.variant });
     if (!path) throw new Error('INVALID_UPLOAD_PATH');
-    const { data, error } = await client.storage.from(STORAGE_BUCKET).createSignedUploadUrl(path, { upsert: false });
+    const { data, error } = await client.storage.from(bucket).createSignedUploadUrl(path, { upsert: false });
     if (error) throw error;
-    const { data: publicUrlData } = client.storage.from(STORAGE_BUCKET).getPublicUrl(path);
+    const { data: publicUrlData } = client.storage.from(bucket).getPublicUrl(path);
     uploads.push({
       kind: variant.kind,
       width: variant.width,
@@ -2214,11 +2322,11 @@ export const prepareAssetUploads = async ({ userId, entityType, variants }) => {
       token: data.token,
       signedUrl: data.signedUrl,
       publicUrl: publicUrlData.publicUrl,
-      bucket: STORAGE_BUCKET,
+      bucket,
     });
   }
   // Close the check/sign race: a fence that appeared while URLs were being
   // issued prevents those URLs from ever reaching the browser.
   await assertAssetUploadsAllowed({ client, userId });
-  return { bucket: STORAGE_BUCKET, expiresAt: new Date(Date.now() + SIGNED_UPLOAD_URL_TTL_MS).toISOString(), uploads };
+  return { bucket, expiresAt: new Date(Date.now() + SIGNED_UPLOAD_URL_TTL_MS).toISOString(), uploads };
 };

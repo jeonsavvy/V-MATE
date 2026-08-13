@@ -11,6 +11,7 @@ vi.mock('@/lib/supabase', () => ({
 }))
 
 beforeEach(() => {
+  vi.resetModules()
   auth.configured = true
   auth.getSession.mockResolvedValue({ data: { session: null }, error: null })
 })
@@ -48,7 +49,7 @@ describe('optional authenticated detail requests', () => {
   })
 
   it('does not retry an invalid bearer as an anonymous request', async () => {
-    auth.getSession.mockResolvedValue({ data: { session: { access_token: 'expired-token' } }, error: null })
+    auth.getSession.mockResolvedValue({ data: { session: { access_token: 'expired-token', user: { id: 'user-1' } } }, error: null })
     const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ error_code: 'AUTH_UNAUTHORIZED' }), {
       status: 401,
       headers: { 'Content-Type': 'application/json' },
@@ -59,5 +60,22 @@ describe('optional authenticated detail requests', () => {
     await expect(platformApi.fetchCharacter('owned-private')).rejects.toMatchObject({ code: 'AUTH_UNAUTHORIZED', status: 401 })
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get('Authorization')).toBe('Bearer expired-token')
+  })
+
+  it('reuses the settled authenticated session without publishing a checking loop', async () => {
+    auth.getSession.mockResolvedValue({ data: { session: { access_token: 'stable-token', user: { id: 'user-1' } } }, error: null })
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ item: { id: 'owned' } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { platformApi } = await import('@/lib/platform/apiClient')
+
+    await platformApi.fetchCharacter('owned-character')
+    await platformApi.fetchCharacter('owned-character')
+
+    expect(auth.getSession).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get('Authorization')).toBe('Bearer stable-token')
   })
 })

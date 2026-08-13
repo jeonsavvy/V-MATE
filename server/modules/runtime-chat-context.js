@@ -1,45 +1,11 @@
 import { createHash } from 'node:crypto';
 import { isValidCachedContentName } from './prompt-cache.js';
-import {
-    getPromptCacheStoreMode,
-    getRateLimitConfig,
-    getRateLimitStoreMode,
-} from './runtime-config.js';
-import { logServerWarn } from './server-logger.js';
 
-const RATE_LIMIT_KV_BINDING_KEYS = ['V_MATE_RATE_LIMIT_KV', 'RATE_LIMIT_KV'];
-const PROMPT_CACHE_KV_BINDING_KEYS = ['V_MATE_PROMPT_CACHE_KV', 'PROMPT_CACHE_KV'];
 const DEFAULT_RATE_LIMIT_KV_PREFIX = 'v-mate:rl:';
 const DEFAULT_PROMPT_CACHE_KV_PREFIX = 'v-mate:pc:';
+const DEFAULT_RATE_LIMIT_WINDOW_MS = 60_000;
+const DEFAULT_RATE_LIMIT_MAX_REQUESTS = 30;
 const EXPIRY_BUFFER_MS = 15_000;
-
-let runtimeContextCache = new WeakMap();
-
-const isKvNamespace = (value) =>
-    Boolean(value) &&
-    typeof value.get === 'function' &&
-    typeof value.put === 'function' &&
-    typeof value.delete === 'function';
-
-const resolveKvBinding = (env, bindingKeys) => {
-    for (const key of bindingKeys) {
-        const candidate = env?.[key];
-        if (isKvNamespace(candidate)) {
-            return candidate;
-        }
-    }
-
-    return null;
-};
-
-const toSafePrefix = (value, fallback) => {
-    const normalized = String(value || '').trim();
-    if (!normalized) {
-        return fallback;
-    }
-
-    return normalized.endsWith(':') ? normalized : `${normalized}:`;
-};
 
 const parseSerializedObject = (value) => {
     if (!value) {
@@ -115,13 +81,12 @@ export const createKvRateLimitHook = ({
     prefix = DEFAULT_RATE_LIMIT_KV_PREFIX,
     now = () => Date.now(),
 }) => async ({ key, defaultLimit }) => {
-    const { maxRequests, windowMs: defaultWindowMs } = getRateLimitConfig();
     const resolvedWindowMs = Number.isFinite(Number(windowMs)) && Number(windowMs) > 0
         ? Math.floor(Number(windowMs))
-        : defaultWindowMs;
+        : DEFAULT_RATE_LIMIT_WINDOW_MS;
     const resolvedLimit = Number.isFinite(Number(defaultLimit)) && Number(defaultLimit) > 0
         ? Math.floor(Number(defaultLimit))
-        : maxRequests;
+        : DEFAULT_RATE_LIMIT_MAX_REQUESTS;
     const nowMs = now();
 
     const storeKey = toHashedStoreKey(prefix, key);
@@ -215,55 +180,3 @@ export const createKvPromptCacheAdapter = ({
         await kv.delete(storeKey);
     },
 });
-
-export const resolveRuntimeChatHandlerContext = ({ env, traceId = null } = {}) => {
-    if (!env || typeof env !== 'object') {
-        return {};
-    }
-
-    const cached = runtimeContextCache.get(env);
-    if (cached) {
-        return cached;
-    }
-
-    const context = {};
-    const { windowMs } = getRateLimitConfig();
-
-    if (getRateLimitStoreMode() === 'kv') {
-        const rateLimitKv = resolveKvBinding(env, RATE_LIMIT_KV_BINDING_KEYS);
-        if (rateLimitKv) {
-            context.checkRateLimit = createKvRateLimitHook({
-                kv: rateLimitKv,
-                windowMs,
-                prefix: toSafePrefix(env.RATE_LIMIT_KV_PREFIX, DEFAULT_RATE_LIMIT_KV_PREFIX),
-            });
-        } else {
-            logServerWarn('[V-MATE] Configured rate-limit store is unavailable', {
-                traceId,
-                hasRequiredBinding: false,
-            });
-        }
-    }
-
-    if (getPromptCacheStoreMode() === 'kv') {
-        const promptCacheKv = resolveKvBinding(env, PROMPT_CACHE_KV_BINDING_KEYS);
-        if (promptCacheKv) {
-            context.promptCache = createKvPromptCacheAdapter({
-                kv: promptCacheKv,
-                prefix: toSafePrefix(env.PROMPT_CACHE_KV_PREFIX, DEFAULT_PROMPT_CACHE_KV_PREFIX),
-            });
-        } else {
-            logServerWarn('[V-MATE] Configured prompt-cache store is unavailable', {
-                traceId,
-                hasRequiredBinding: false,
-            });
-        }
-    }
-
-    runtimeContextCache.set(env, context);
-    return context;
-};
-
-export const resetRuntimeChatContextCacheForTests = () => {
-    runtimeContextCache = new WeakMap();
-};

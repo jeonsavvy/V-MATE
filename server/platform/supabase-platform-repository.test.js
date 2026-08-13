@@ -5,7 +5,7 @@ import {
   buildAssetStoragePath,
   buildCharacterWritePayload,
   buildWorldWritePayload,
-  collectContentAssetUrls,
+  collectLegacyContentAssetUrls,
   commitRoomTurn,
   createCharacter as createPersistentCharacter,
   createWorld as createPersistentWorld,
@@ -15,10 +15,14 @@ import {
   getCharacterDetail,
   getLibraryPayload,
   getOpsDashboard,
+  getPlatformPersistenceConfig,
   getRoomHistoryForModel,
   getRoomPromptContext,
   getWorldDetail,
   incrementChatStartCountsBestEffort,
+  isPersistentMutationAvailable,
+  isPersistentPlatformAvailable,
+  isPersistentPlatformRequired,
   listCharacters,
   listOwnedStoragePaths,
   listRecentRooms,
@@ -31,6 +35,7 @@ import {
   resolveDataOrFallback,
   resolveEntityById,
   resolveEntityByRef,
+  resolveContentAssetStoragePaths,
   resolveStoragePathFromPublicUrl,
   reconcileExpiredChatReservations,
   reconcileStorageDeletionOutbox,
@@ -47,6 +52,29 @@ const ORIGINAL_SUPABASE_ENV = {
   SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY,
   SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
 };
+
+test('persistence availability reads an explicit runtime environment before process.env fallback', () => {
+  const runtimeEnvironment = {
+    SUPABASE_URL: 'https://runtime-project.supabase.co/',
+    SUPABASE_ANON_KEY: 'runtime-anon-key',
+    SUPABASE_SERVICE_ROLE_KEY: 'runtime-service-key',
+    PUBLIC_ASSETS_BUCKET: 'runtime-assets',
+    APP_ENV: 'production',
+  };
+
+  assert.equal(isPersistentPlatformAvailable(runtimeEnvironment), true);
+  assert.equal(isPersistentMutationAvailable(runtimeEnvironment), true);
+  assert.equal(isPersistentPlatformRequired(runtimeEnvironment), true);
+  assert.deepEqual(getPlatformPersistenceConfig(runtimeEnvironment), {
+    supabaseUrl: 'https://runtime-project.supabase.co',
+    storageBucket: 'runtime-assets',
+    configured: true,
+    mutationConfigured: true,
+  });
+  assert.equal(isPersistentPlatformAvailable({}), false);
+  assert.equal(isPersistentMutationAvailable({}), false);
+  assert.equal(isPersistentPlatformRequired({ APP_ENV: 'test' }), false);
+});
 
 afterEach(() => {
   for (const [key, value] of Object.entries(ORIGINAL_SUPABASE_ENV)) {
@@ -500,8 +528,8 @@ test('service-role content writes prove ownership and return only safe summary c
   }
 });
 
-test('collectContentAssetUrls gathers cover and slot urls for storage cleanup', () => {
-  const urls = collectContentAssetUrls({
+test('legacy asset compatibility gathers cover and bounded slot URL projections', () => {
+  const urls = collectLegacyContentAssetUrls({
     entityType: 'character',
     row: {
       cover_image_url: 'https://example.com/object/public/vmate-assets/user/character/main-detail.webp',
@@ -519,10 +547,6 @@ test('collectContentAssetUrls gathers cover and slot urls for storage cleanup', 
         ],
       },
     },
-    assets: [
-      { url: 'https://example.com/object/public/vmate-assets/user/character/main-detail.webp' },
-      { url: 'https://example.com/object/public/vmate-assets/user/character/angry-detail.webp' },
-    ],
   });
 
   assert.deepEqual(urls, [
@@ -531,6 +555,36 @@ test('collectContentAssetUrls gathers cover and slot urls for storage cleanup', 
     'https://example.com/object/public/vmate-assets/user/character/main-thumb.webp',
     'https://example.com/object/public/vmate-assets/user/character/angry-detail.webp',
   ]);
+});
+
+test('content deletion paths prefer canonical asset relations over legacy URL projections', () => {
+  process.env.SUPABASE_URL = 'https://project.supabase.co';
+  const userId = '11111111-1111-4111-8111-111111111111';
+  const canonicalPath = `${userId}/character/1721971200000-a1b2c3d4/main/detail.webp`;
+  const legacyPath = `${userId}/character/1721971200000-a1b2c3d4/main/card.webp`;
+  const toPublicUrl = (path) => `https://project.supabase.co/storage/v1/object/public/vmate-assets/${path}`;
+
+  assert.deepEqual(resolveContentAssetStoragePaths({
+    entityType: 'character',
+    row: {
+      owner_user_id: userId,
+      cover_image_url: toPublicUrl(legacyPath),
+      prompt_profile_json: { imageSlots: [{ detailUrl: toPublicUrl(legacyPath) }] },
+    },
+    assets: [{ url: toPublicUrl(canonicalPath) }],
+  }), [canonicalPath]);
+
+  assert.deepEqual(resolveContentAssetStoragePaths({
+    entityType: 'character',
+    row: { owner_user_id: userId, cover_image_url: toPublicUrl(legacyPath), prompt_profile_json: {} },
+    assets: [],
+  }), [legacyPath]);
+
+  assert.deepEqual(resolveContentAssetStoragePaths({
+    entityType: 'character',
+    row: { owner_user_id: userId, cover_image_url: toPublicUrl(legacyPath), prompt_profile_json: {} },
+    assets: [{ url: 'https://foreign.example/not-canonical.webp' }],
+  }), [], 'an existing asset relation fails closed instead of widening into legacy projections');
 });
 
 test('resolveStoragePathFromPublicUrl rejects foreign hosts, users, entities, and traversal', () => {
@@ -725,10 +779,15 @@ test('deleteAccount aborts database and auth deletion when owner-prefix storage 
 });
 
 test('asset upload preparation checks the account cleanup fence before and after signing URLs', async () => {
-  process.env.SUPABASE_URL = 'https://project.supabase.co';
-  process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-test-key';
   const userId = '11111111-1111-4111-8111-111111111111';
   const variant = { kind: 'thumb', slot: 'main', variant: 'thumb', width: 300, height: 400 };
+  const event = {
+    runtimeEnvironment: {
+      SUPABASE_URL: 'https://runtime-project.supabase.co',
+      SUPABASE_SERVICE_ROLE_KEY: 'runtime-service-role-test-key',
+      PUBLIC_ASSETS_BUCKET: 'runtime-assets',
+    },
+  };
 
   for (const scenario of ['before', 'after']) {
     let fenceChecks = 0;
@@ -746,7 +805,8 @@ test('asset upload preparation checks the account cleanup fence before and after
       }
       if (requestUrl.includes('/storage/v1/object/upload/sign/') && method === 'POST') {
         signedRequests += 1;
-        return new Response(JSON.stringify({ url: `/object/upload/sign/vmate-assets/${userId}/character/upload/main/thumb.webp?token=signed-token` }), {
+        assert.match(requestUrl, /^https:\/\/runtime-project\.supabase\.co\/storage\/v1\/object\/upload\/sign\/runtime-assets\//);
+        return new Response(JSON.stringify({ url: `/object/upload/sign/runtime-assets/${userId}/character/upload/main/thumb.webp?token=signed-token` }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         });
@@ -755,7 +815,7 @@ test('asset upload preparation checks the account cleanup fence before and after
     };
 
     await assert.rejects(
-      prepareAssetUploads({ userId, entityType: 'character', variants: [variant] }),
+      prepareAssetUploads({ event, userId, entityType: 'character', variants: [variant] }),
       (error) => error?.code === 'ACCOUNT_DELETE_IN_PROGRESS',
       scenario,
     );
@@ -989,7 +1049,7 @@ test('deleting content preserves canonical Storage objects still referenced by a
         : [{
           id: remainingId,
           owner_user_id: userId,
-          cover_image_url: toPublicUrl(sharedPath),
+          cover_image_url: null,
           avatar_image_url: null,
           prompt_profile_json: {},
         }];
@@ -997,8 +1057,10 @@ test('deleting content preserves canonical Storage objects still referenced by a
     }
     if (request.url.includes('/rest/v1/character_assets') && request.method === 'GET') {
       const assets = request.url.includes('character_id=in.')
-        ? [{ url: toPublicUrl(sharedPath) }]
-        : [];
+        ? [{ character_id: remainingId, url: toPublicUrl(sharedPath) }]
+        : request.url.includes(`character_id=eq.${deletedId}`)
+          ? [{ url: toPublicUrl(sharedPath) }, { url: toPublicUrl(exclusivePath) }]
+          : [];
       return new Response(JSON.stringify(assets), { status: 200, headers: { 'content-type': 'application/json' } });
     }
     if (request.url.includes('/rest/v1/storage_deletion_outbox') && request.method === 'POST') {
@@ -1596,7 +1658,7 @@ test('repository source keeps base prompt reads off authenticated wildcard queri
     source.indexOf('export const createRoom ='),
     source.indexOf('export const getRoom ='),
   );
-  assert.match(createRoomSource, /createSupabaseAdminClient\(\)/);
+  assert.match(createRoomSource, /createSupabaseAdminClient\(runtimeEnvironmentFromEvent\(event\)\)/);
   assert.match(createRoomSource, /select\(CHARACTER_ROOM_CONTEXT_COLUMNS\)/);
   assert.match(createRoomSource, /target\.row\.owner_user_id === userId/);
   assert.match(createRoomSource, /content_moderation/);
@@ -1605,7 +1667,7 @@ test('repository source keeps base prompt reads off authenticated wildcard queri
     source.indexOf('export const appendRoomMessages ='),
     source.indexOf('export const commitRoomTurn ='),
   );
-  assert.match(appendSource, /const admin = await createSupabaseAdminClient\(\)/);
+  assert.match(appendSource, /const admin = await createSupabaseAdminClient\(runtimeEnvironmentFromEvent\(event\)\)/);
   assert.match(appendSource, /\.eq\('user_id', userId\)/);
   assert.doesNotMatch(appendSource, /client\.from\('rooms'\)/);
 
@@ -1613,13 +1675,13 @@ test('repository source keeps base prompt reads off authenticated wildcard queri
     source.indexOf('export const getOpsDashboard ='),
     source.indexOf('export const setContentVisibility ='),
   );
-  assert.match(opsSource, /ownerMode \? await createSupabaseAdminClient\(\) : null/);
+  assert.match(opsSource, /createSupabaseAdminClient\(runtimeEnvironmentFromEvent\(event\)\)/);
   assert.match(opsSource, /OWNED_CONTENT_VIEWS\.character/);
   assert.match(opsSource, /CHARACTER_BASE_SUMMARY_COLUMNS/);
   assert.doesNotMatch(opsSource, /select\(['"]\*['"]\)/);
 });
 
-test('prompt privacy migrations preserve expand-to-lockdown rollout compatibility', async () => {
+test('prompt privacy migrations and fresh schema preserve their separate contracts', async () => {
   const normalizeSql = (value) => value.replace(/\r\n/g, '\n').trim();
   const [schemaSource, expandSource, lockdownSource] = await Promise.all([
     readFile(new URL('../../supabase/schema.sql', import.meta.url), 'utf8'),
@@ -1667,10 +1729,27 @@ test('prompt privacy migrations preserve expand-to-lockdown rollout compatibilit
   );
   const roomGrant = lockdown.match(/grant select \([\s\S]*?\) on public\.rooms to authenticated;/i)?.[0] || '';
   assert.doesNotMatch(roomGrant, /bridge_profile_json/i);
-  assert.ok(schema.includes(expand), 'fresh schema must include the exact expand phase');
-  assert.ok(schema.endsWith(lockdown), 'fresh schema must end in the exact lockdown state');
-  assert.ok(
-    schema.indexOf(expand) < schema.indexOf(lockdown),
-    'fresh schema must preserve expand-before-lockdown ordering',
+
+  assert.match(schema, /create view public\.public_character_catalog/i);
+  assert.match(schema, /create view public\.owned_room_summaries/i);
+  assert.match(
+    schema,
+    /revoke select on table public\.characters, public\.worlds from public, anon, authenticated/i,
+  );
+  const schemaRoomGrant = schema.match(/grant select \([\s\S]*?\) on public\.rooms to authenticated;/i)?.[0] || '';
+  assert.ok(schemaRoomGrant);
+  assert.doesNotMatch(schemaRoomGrant, /bridge_profile_json|resolved_prompt_snapshot_json/i);
+  assert.doesNotMatch(
+    schema,
+    /vmate_private|prompt_lockdown_.*20260729|manual (?:expand|privilege) rollback|conditional forward restore/i,
+    'fresh schema must contain final objects and privileges, not rollout evidence or rollback procedures',
+  );
+  assert.doesNotMatch(
+    schema,
+    /update public\.room_state_summaries[\s\S]*current_situation = '대화를 이어가고 있습니다\.'/i,
+  );
+  assert.doesNotMatch(
+    schema,
+    /update public\.room_messages\s+set content_json = jsonb_build_object[\s\S]*sequence_no = 1/i,
   );
 });

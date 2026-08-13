@@ -97,3 +97,21 @@ export const resolveCanonicalAssetPath = ({ url, userId, entityType, supabaseUrl
     return null
   }
 }
+
+export const resolveCanonicalAssetPathsFromRows = ({
+  assets,
+  userId,
+  entityType,
+  supabaseUrl,
+  bucket = 'vmate-assets',
+}) => Array.from(new Set(
+  (Array.isArray(assets) ? assets : [])
+    .map((asset) => resolveCanonicalAssetPath({
+      url: asset?.url,
+      userId,
+      entityType,
+      supabaseUrl,
+      bucket,
+    }))
+    .filter(Boolean),
+))

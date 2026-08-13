@@ -270,6 +270,8 @@ runningSummary
 
 이 구조는 중복 요청과 오래된 room version의 덮어쓰기를 막기 위한 것입니다. lockdown 이후 쓰기 RPC는 `service_role`만 실행할 수 있고 브라우저는 Worker API를 통해서만 변경합니다.
 
+Gemini 응답은 공통 `ChatTurnService`에서 구조화된 assistant message로 한 번만 해석합니다. 필수 필드가 없는 JSON이나 일반 텍스트는 정상 응답으로 보정하지 않고 `RESPONSE_INVALID_FORMAT`으로 종료하며, room turn을 저장하지 않고 quota를 환불합니다. 네트워크·빈 응답 재시도는 최초 요청과 같은 history, system instruction, generation configuration을 유지합니다. 남은 함수 실행 시간이 부족하면 대화 의미를 축약한 요청으로 바꾸지 않고 retryable error를 반환합니다.
+
 ## 8. 현재 보장하지 않는 것
 
 현재 구현을 다음 기능으로 오해하면 안 됩니다.

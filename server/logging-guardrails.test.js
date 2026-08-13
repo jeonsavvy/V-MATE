@@ -13,7 +13,7 @@ const LOGGED_FILES = [
     'server/modules/chat-context-hooks.js',
     'server/modules/gemini-orchestrator.js',
     'server/modules/response-normalizer.js',
-    'server/modules/runtime-chat-context.js',
+    'server/modules/runtime-environment-chat-context.js',
     'server/platform/supabase-platform-repository.js',
     'server/cloud-run-server.js',
 ];

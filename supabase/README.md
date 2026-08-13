@@ -19,6 +19,7 @@
 ### 신규 환경
 
 `schema.sql`을 사용합니다. 이 파일은 migration history를 대체하는 운영 upgrade 스크립트가 아닙니다.
+비어 있는 DB에는 과거 데이터가 없으므로 prompt-lockdown backup, scrub, restore 객체를 만들지 않고 현재 view, 함수, RLS, grant 상태만 적용합니다.
 
 로컬 검증:
 
@@ -64,6 +65,12 @@ npm run test:db:upgrade
 
 `schema.sql`은 긴 파일이지만 migration을 합쳐 놓은 정리 대상이 아닙니다. 신규 환경 결과와 기존 환경 upgrade 결과를 각각 검증하기 위해 두 진입점을 의도적으로 유지합니다.
 
+## 자산 삭제 기준
+
+캐릭터와 월드의 asset relation row를 삭제 identity의 우선 소스로 사용합니다. Worker는 relation row의 URL을 현재 Supabase origin, bucket, owner, entity 경계에 맞는 Storage path로 검증한 뒤 outbox에 기록합니다. Asset relation이 없는 과거 콘텐츠에만 cover/avatar와 제한된 image slot URL projection을 호환 경로로 사용합니다.
+
+삭제 대상은 DB row 삭제 전에 outbox에 저장되고, lease를 획득한 Worker가 DB 삭제 확인 후 Storage를 정리합니다. 다른 콘텐츠의 asset relation 또는 legacy projection이 같은 path를 참조하면 해당 객체를 보존합니다. 이 규칙은 account 삭제의 prefix cleanup fence를 대체하지 않습니다.
+
 ## expand → lockdown 경계
 
 적용 순서는 다음과 같습니다.
@@ -86,6 +93,8 @@ lockdown 이후에는 브라우저 직접 table/Storage 쓰기 권한을 되살�
 4. post-lockdown privilege smoke와 observation workflow가 lockdown evidence의 `releaseTrack`을 이어받아 프롬프트 column 차단과 safe view 권한을 검증합니다.
 
 호환 Worker 검증 전에 prompt-read lockdown을 적용하지 않습니다. expand 단계 rollback은 view만 제거하며, lockdown rollback은 기존 Worker를 긴급 복구할 때만 broad read grant를 일시 복원하므로 disclosure surface가 다시 열립니다.
+
+위 backup과 scrub 절차는 기존 데이터가 있는 upgrade migration에만 적용됩니다. Fresh `schema.sql`은 최종 prompt privacy 권한과 safe view만 만들며 `vmate_private` evidence schema를 만들지 않습니다.
 
 승인과 rollback evidence의 전체 순서는 [`docs/operations.md`](../docs/operations.md)를 확인하세요.
 
