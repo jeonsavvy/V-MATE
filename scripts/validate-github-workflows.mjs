@@ -425,6 +425,8 @@ const validateWorkflow = (file, source) => {
       'lockdown_evidence_run_id:',
       'privilege_evidence_run_id:',
       'verification_evidence_run_id:',
+      'previous_baseline_evidence_run_id:',
+      'Verify previous read-only baseline renewal source',
       'Verify deployed post-lockdown lineage',
       '20260727000000',
       '20260727025134',
@@ -447,6 +449,39 @@ const validateWorkflow = (file, source) => {
       'Current database fingerprints do not match the applied lockdown evidence.',
     ]) {
       if (!source.includes(required)) fail(file, `missing read-only baseline attestation guard: ${required}`)
+    }
+    const renewalStep = root.jobs?.attest?.steps?.find((step) => step?.name === 'Verify previous read-only baseline renewal source')
+    const originalLineageStep = root.jobs?.attest?.steps?.find((step) => step?.name === 'Verify deployed post-lockdown lineage')
+    if (renewalStep?.if !== "${{ inputs.previous_baseline_evidence_run_id != '' }}" || renewalStep?.env?.GH_TOKEN !== '${{ github.token }}') {
+      fail(file, 'previous baseline renewal is not isolated behind its explicit input and step-scoped GitHub token')
+    }
+    if (originalLineageStep?.if !== "${{ inputs.previous_baseline_evidence_run_id == '' }}") {
+      fail(file, 'original post-lockdown lineage path is not preserved as the opposite renewal mode')
+    }
+    for (const required of [
+      'actions/runs/$PREVIOUS_BASELINE_EVIDENCE_RUN_ID',
+      'actions/workflows/release-database-baseline-attestation.yml',
+      'database-baseline-evidence-production-$PREVIOUS_BASELINE_EVIDENCE_RUN_ID',
+      "run.conclusion === 'success'",
+      "run.status === 'completed'",
+      "run.event === 'workflow_dispatch'",
+      'run.head_sha === evidence.commit',
+      'run.head_branch === process.env.DEFAULT_BRANCH',
+      'run.path === expectedWorkflowPath',
+      'workflow.path === expectedWorkflowPath',
+      'run.workflow_id === workflow.id',
+      'evidence.remoteStateFingerprint',
+      'evidence.migrationRowsFingerprint',
+      'evidence.lockdownEvidenceRunId === process.env.LOCKDOWN_EVIDENCE_RUN_ID',
+      'evidence.privilegeEvidenceRunId === process.env.PRIVILEGE_EVIDENCE_RUN_ID',
+      'evidence.verificationEvidenceRunId === process.env.VERIFICATION_EVIDENCE_RUN_ID',
+      'git merge-base --is-ancestor "$PREVIOUS_BASELINE_COMMIT" "$GITHUB_SHA"',
+      'git diff --quiet "$PREVIOUS_BASELINE_COMMIT" "$GITHUB_SHA" -- supabase/migrations/',
+    ]) {
+      if (!String(renewalStep?.run).includes(required)) fail(file, `previous baseline renewal is missing: ${required}`)
+    }
+    if (String(renewalStep?.run).includes('database-release-evidence-production-')) {
+      fail(file, 'previous baseline renewal still depends on the expiring original lockdown artifact')
     }
     const baselineScopeStep = root.jobs?.attest?.steps?.find((step) => step?.name === 'Validate protected read-only baseline scope')
     if (!baselineScopeStep) fail(file, 'protected read-only baseline scope step is absent')

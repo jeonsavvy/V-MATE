@@ -108,6 +108,12 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   const baselineCiStep = baselineWorkflow.jobs.attest.steps.find(
     (step) => step.name === 'Require successful CI for this default-branch commit',
   );
+  const baselineRenewalStep = baselineWorkflow.jobs.attest.steps.find(
+    (step) => step.name === 'Verify previous read-only baseline renewal source',
+  );
+  const baselineOriginalLineageStep = baselineWorkflow.jobs.attest.steps.find(
+    (step) => step.name === 'Verify deployed post-lockdown lineage',
+  );
   const commonJsHeredocs = [...release.matchAll(/\bnode([^\r\n]*?)\s+<<'NODE'\r?\n([\s\S]*?)\r?\n\s*NODE(?=\r?\n|$)/g)];
   assert.ok(commonJsHeredocs.length > 0);
   for (const [index, match] of commonJsHeredocs.entries()) {
@@ -347,6 +353,34 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(baseline, /lockdown_evidence_run_id:/);
   assert.match(baseline, /privilege_evidence_run_id:/);
   assert.match(baseline, /verification_evidence_run_id:/);
+  assert.ok(baselineWorkflow.on.workflow_dispatch.inputs.previous_baseline_evidence_run_id);
+  assert.ok(baselineRenewalStep);
+  assert.equal(baselineRenewalStep.if, "${{ inputs.previous_baseline_evidence_run_id != '' }}");
+  assert.equal(baselineRenewalStep.env.GH_TOKEN, '${{ github.token }}');
+  assert.equal(baselineOriginalLineageStep.if, "${{ inputs.previous_baseline_evidence_run_id == '' }}");
+  for (const required of [
+    'actions/runs/$PREVIOUS_BASELINE_EVIDENCE_RUN_ID',
+    'actions/workflows/release-database-baseline-attestation.yml',
+    'database-baseline-evidence-production-$PREVIOUS_BASELINE_EVIDENCE_RUN_ID',
+    "run.conclusion === 'success'",
+    "run.status === 'completed'",
+    "run.event === 'workflow_dispatch'",
+    'run.head_sha === evidence.commit',
+    'run.head_branch === process.env.DEFAULT_BRANCH',
+    'run.path === expectedWorkflowPath',
+    'workflow.path === expectedWorkflowPath',
+    'run.workflow_id === workflow.id',
+    'evidence.remoteStateFingerprint',
+    'evidence.migrationRowsFingerprint',
+    'evidence.lockdownEvidenceRunId === process.env.LOCKDOWN_EVIDENCE_RUN_ID',
+    'evidence.privilegeEvidenceRunId === process.env.PRIVILEGE_EVIDENCE_RUN_ID',
+    'evidence.verificationEvidenceRunId === process.env.VERIFICATION_EVIDENCE_RUN_ID',
+    'git merge-base --is-ancestor "$PREVIOUS_BASELINE_COMMIT" "$GITHUB_SHA"',
+    'git diff --quiet "$PREVIOUS_BASELINE_COMMIT" "$GITHUB_SHA" -- supabase/migrations/',
+  ]) {
+    assert.match(baselineRenewalStep.run, new RegExp(required.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
+  assert.doesNotMatch(baselineRenewalStep.run, /database-release-evidence-production-/);
   assert.match(baseline, /Verify deployed post-lockdown lineage/);
   assert.match(baseline, /084b38123a37e70d3fa51093fe44b39098a36bc2/);
   assert.match(baseline, /b2b997f6c0eec183509cf2bc4241fc29eb2f6b7e/);
@@ -1017,6 +1051,9 @@ test('operations documentation records manual approved release, runtime prerequi
   assert.match(operationsDoc, /`supabase\/migrations\/\*\*`가 동일한지 fail-closed/);
   assert.match(operationsDoc, /같은 SHA의 CI `quality`와 `Database contracts \(local Docker only\)`가 성공/);
   assert.match(operationsDoc, /이미 적용된 migration을 다시 실행하지 않습니다/);
+  assert.match(operationsDoc, /`previous_baseline_evidence_run_id`/);
+  assert.match(operationsDoc, /원격 fingerprint를 다시 읽어 이전 값과 비교/);
+  assert.match(operationsDoc, /유효한 이전 baseline artifact도 없으면 fail-closed/);
   assert.match(operationsDoc, /일반 경로의 `prompt-privacy:apply-lockdown`.*6시간.*physical backup evidence.*필수/);
   assert.match(operationsDoc, /Prelaunch direct 경로만 같은 6시간 제한의 attestation으로 이 gate를 대체/);
   assert.match(operationsDoc, /vmate_private\.prompt_lockdown_room_state_backup_20260729/);

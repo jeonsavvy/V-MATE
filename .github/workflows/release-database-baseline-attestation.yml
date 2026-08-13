@@ -28,6 +28,10 @@ on:
         description: Successful immediate live verification chained to the privilege smoke
         required: true
         type: string
+      previous_baseline_evidence_run_id:
+        description: Optional unexpired successful baseline evidence used to renew lineage after an original artifact expires
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -51,6 +55,7 @@ jobs:
       LOCKDOWN_EVIDENCE_RUN_ID: ${{ inputs.lockdown_evidence_run_id }}
       PRIVILEGE_EVIDENCE_RUN_ID: ${{ inputs.privilege_evidence_run_id }}
       VERIFICATION_EVIDENCE_RUN_ID: ${{ inputs.verification_evidence_run_id }}
+      PREVIOUS_BASELINE_EVIDENCE_RUN_ID: ${{ inputs.previous_baseline_evidence_run_id }}
       BASELINE_SOURCE_SHA: 084b38123a37e70d3fa51093fe44b39098a36bc2
       POST_LOCKDOWN_EVIDENCE_SHA: b2b997f6c0eec183509cf2bc4241fc29eb2f6b7e
       AUTHORIZED_BASELINE_RELEASE_SHA: ${{ vars.AUTHORIZED_BASELINE_RELEASE_SHA }}
@@ -74,6 +79,7 @@ jobs:
           [[ "$BASELINE_APPROVED" == 'READ_ONLY_BASELINE_APPROVED' ]] || { echo '::error::read-only baseline approval is required'; exit 1; }
           [[ "$RELEASE_TRACK" == 'prompt-privacy' ]] || { echo '::error::post-lockdown baseline requires the prompt-privacy track'; exit 1; }
           [[ "$LOCKDOWN_EVIDENCE_RUN_ID" =~ ^[0-9]+$ && "$PRIVILEGE_EVIDENCE_RUN_ID" =~ ^[0-9]+$ && "$VERIFICATION_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::post-lockdown evidence run IDs must be canonical'; exit 1; }
+          [[ -z "$PREVIOUS_BASELINE_EVIDENCE_RUN_ID" || "$PREVIOUS_BASELINE_EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::previous baseline evidence run ID must be canonical'; exit 1; }
           [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ && "$AUTHORIZED_BASELINE_RELEASE_SHA" =~ ^[0-9a-f]{40}$ && "$GITHUB_SHA" == "$AUTHORIZED_BASELINE_RELEASE_SHA" ]] || { echo '::error::authorized baseline release SHA guard mismatch'; exit 1; }
           git merge-base --is-ancestor "$BASELINE_SOURCE_SHA" "$GITHUB_SHA" || { echo '::error::baseline source is not an ancestor of this commit'; exit 1; }
           git merge-base --is-ancestor "$POST_LOCKDOWN_EVIDENCE_SHA" "$GITHUB_SHA" || { echo '::error::post-lockdown evidence source is not an ancestor of this commit'; exit 1; }
@@ -107,7 +113,118 @@ jobs:
           for (const required of ['quality', 'Database contracts (local Docker only)']) if (conclusions.get(required) !== 'success') throw new Error(`Required CI job did not pass: ${required}`);
           NODE
 
+      - name: Verify previous read-only baseline renewal source
+        if: ${{ inputs.previous_baseline_evidence_run_id != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export RENEWAL_DIR
+          RENEWAL_DIR=$(mktemp -d "$RUNNER_TEMP/vmate-baseline-renewal-XXXXXX")
+          trap 'rm -rf -- "$RENEWAL_DIR"' EXIT
+          mkdir -p "$RENEWAL_DIR/artifact"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PREVIOUS_BASELINE_EVIDENCE_RUN_ID" > "$RENEWAL_DIR/run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release-database-baseline-attestation.yml" > "$RENEWAL_DIR/workflow.json"
+          gh run download "$PREVIOUS_BASELINE_EVIDENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "database-baseline-evidence-production-$PREVIOUS_BASELINE_EVIDENCE_RUN_ID" --dir "$RENEWAL_DIR/artifact"
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const read = (...parts) => JSON.parse(fs.readFileSync(path.join(process.env.RENEWAL_DIR, ...parts), 'utf8'));
+          const run = read('run.json');
+          const workflow = read('workflow.json');
+          const evidence = read('artifact', 'database-baseline-evidence.json');
+          const expectedWorkflowPath = '.github/workflows/release-database-baseline-attestation.yml';
+          const projectRefHash = crypto.createHash('sha256').update(process.env.PROJECT_REF).digest('hex');
+          const lockdownMigrationAlias = { sourceVersion: '20260727000000', remoteVersion: '20260727025134', remoteName: 'backend_stabilization_lockdown' };
+          const lockdownMigrationAliasHash = crypto.createHash('sha256').update(JSON.stringify(lockdownMigrationAlias)).digest('hex');
+          const requiredInvariants = [
+            'expandApplied', 'lockdownAliasApplied', 'directTableWritesBlocked',
+            'legacyQuotaWritesBlocked', 'storageWritePoliciesAbsent',
+            'serviceV2MutationRpcsCallable', 'clientV2MutationRpcsBlocked',
+            'promptPrivacyMigrationsApplied', 'privatePromptSchemaBlocked', 'privatePromptTablesBlocked',
+            'clientPromptColumnsBlocked', 'requiredSafeViewsReadable',
+            'ownerViewsAnonymousBlocked', 'safeViewsExcludePromptColumns',
+            'safeViewsUseSecurityBarrier', 'safeViewDefinitionsMatch',
+            'servicePromptColumnsReadable',
+          ];
+          const expectedEvidenceKeys = [
+            'allPassed', 'attestedAt', 'baselineSourceSha', 'commit', 'invariants',
+            'lockdownAppliedAt', 'lockdownCommit', 'lockdownEvidenceRunId',
+            'lockdownMigrationAlias', 'lockdownMigrationAliasHash', 'lockdownStateAttestedAt',
+            'migrationListHash', 'migrationRowsFingerprint', 'missingMigrationCount', 'operation',
+            'postLockdownSourceSha', 'previousStableWorkerVersionId', 'privilegeCommit',
+            'privilegeEvidenceRunId', 'projectRefHash', 'queryMode', 'releaseTrack',
+            'remoteStateFingerprint', 'schemaVersion', 'target', 'verificationCommit',
+            'verificationEvidenceRunId', 'workerVersionId',
+          ];
+          const canonicalVersion = (value) => typeof value === 'string' && /^[A-Za-z0-9_-]+$/.test(value);
+          const canonicalDate = (value) => Number.isFinite(Date.parse(value || ''));
+          const runBound = run.id === Number(process.env.PREVIOUS_BASELINE_EVIDENCE_RUN_ID)
+            && run.conclusion === 'success'
+            && run.status === 'completed'
+            && run.event === 'workflow_dispatch'
+            && run.head_sha === evidence.commit
+            && run.head_branch === process.env.DEFAULT_BRANCH
+            && run.path === expectedWorkflowPath
+            && workflow.path === expectedWorkflowPath
+            && run.workflow_id === workflow.id;
+          const evidenceBound = JSON.stringify(Object.keys(evidence).sort()) === JSON.stringify(expectedEvidenceKeys.sort())
+            && evidence.schemaVersion === 2
+            && evidence.target === 'production'
+            && evidence.operation === 'read-only-post-lockdown-baseline-attestation'
+            && evidence.queryMode === 'supabase_read_only_user'
+            && evidence.releaseTrack === process.env.RELEASE_TRACK
+            && /^[0-9a-f]{40}$/.test(evidence.commit || '')
+            && evidence.baselineSourceSha === process.env.BASELINE_SOURCE_SHA
+            && evidence.postLockdownSourceSha === process.env.POST_LOCKDOWN_EVIDENCE_SHA
+            && evidence.projectRefHash === projectRefHash
+            && evidence.lockdownEvidenceRunId === process.env.LOCKDOWN_EVIDENCE_RUN_ID
+            && evidence.privilegeEvidenceRunId === process.env.PRIVILEGE_EVIDENCE_RUN_ID
+            && evidence.verificationEvidenceRunId === process.env.VERIFICATION_EVIDENCE_RUN_ID
+            && evidence.lockdownCommit === process.env.BASELINE_SOURCE_SHA
+            && evidence.privilegeCommit === process.env.POST_LOCKDOWN_EVIDENCE_SHA
+            && evidence.verificationCommit === process.env.POST_LOCKDOWN_EVIDENCE_SHA
+            && canonicalVersion(evidence.workerVersionId)
+            && canonicalVersion(evidence.previousStableWorkerVersionId)
+            && /^[a-f0-9]{64}$/.test(evidence.migrationListHash || '')
+            && /^[a-f0-9]{32}$/.test(evidence.migrationRowsFingerprint || '')
+            && /^[a-f0-9]{32}$/.test(evidence.remoteStateFingerprint || '')
+            && evidence.missingMigrationCount === 0
+            && JSON.stringify(evidence.lockdownMigrationAlias) === JSON.stringify(lockdownMigrationAlias)
+            && evidence.lockdownMigrationAliasHash === lockdownMigrationAliasHash
+            && evidence.invariants
+            && JSON.stringify(Object.keys(evidence.invariants).sort()) === JSON.stringify(requiredInvariants.sort())
+            && requiredInvariants.every((name) => evidence.invariants[name] === true)
+            && evidence.allPassed === true
+            && canonicalDate(evidence.lockdownAppliedAt)
+            && canonicalDate(evidence.lockdownStateAttestedAt)
+            && canonicalDate(evidence.attestedAt)
+            && canonicalDate(run.created_at)
+            && canonicalDate(run.updated_at)
+            && Date.parse(evidence.lockdownAppliedAt) <= Date.parse(evidence.lockdownStateAttestedAt)
+            && Date.parse(evidence.lockdownStateAttestedAt) <= Date.parse(evidence.attestedAt)
+            && Date.parse(run.created_at) <= Date.parse(evidence.attestedAt)
+            && Date.parse(evidence.attestedAt) <= Date.parse(run.updated_at);
+          if (!runBound || !evidenceBound) throw new Error('Previous baseline evidence is not bound to an approved successful lineage attestation.');
+          fs.appendFileSync(process.env.GITHUB_ENV, [
+            `LOCKDOWN_REMOTE_STATE_FINGERPRINT=${evidence.remoteStateFingerprint}`,
+            `LOCKDOWN_MIGRATION_ROWS_FINGERPRINT=${evidence.migrationRowsFingerprint}`,
+            `LINEAGE_WORKER_VERSION_ID=${evidence.workerVersionId}`,
+            `LINEAGE_PREVIOUS_STABLE_VERSION_ID=${evidence.previousStableWorkerVersionId}`,
+            `LOCKDOWN_APPLIED_AT=${evidence.lockdownAppliedAt}`,
+            `LINEAGE_STATE_ATTESTED_AT=${evidence.lockdownStateAttestedAt}`,
+            `PREVIOUS_BASELINE_COMMIT=${evidence.commit}`,
+            '',
+          ].join('\n'));
+          NODE
+          [[ "$PREVIOUS_BASELINE_COMMIT" != "$GITHUB_SHA" ]] || { echo '::error::previous baseline must precede the current release'; exit 1; }
+          git merge-base --is-ancestor "$PREVIOUS_BASELINE_COMMIT" "$GITHUB_SHA" || { echo '::error::previous baseline commit is not an ancestor of this release'; exit 1; }
+          git diff --quiet "$PREVIOUS_BASELINE_COMMIT" "$GITHUB_SHA" -- supabase/migrations/ || { echo '::error::baseline renewal cannot cross a database migration change'; exit 1; }
+
       - name: Verify deployed post-lockdown lineage
+        if: ${{ inputs.previous_baseline_evidence_run_id == '' }}
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
