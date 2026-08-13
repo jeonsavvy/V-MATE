@@ -184,8 +184,8 @@ if (livePropagation && !manifestPaths) {
   throw new Error('--live-propagation requires --dist-manifest')
 }
 const releaseIdentityAsset = manifest?.files.find((asset) => asset.path === 'release-version.txt')
-const propagationMode = Boolean(workerName && manifestPaths)
-if (propagationMode && !releaseIdentityAsset) {
+const propagationMode = Boolean(manifestPaths && (workerName || livePropagation))
+if (workerName && manifestPaths && !releaseIdentityAsset) {
   throw new Error('Version-override smoke requires the release identity asset')
 }
 if (livePropagation && !releaseIdentityAsset) {

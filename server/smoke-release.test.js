@@ -267,7 +267,7 @@ test('release smoke does not retry manifest mismatches without a version overrid
   assert.doesNotMatch(result.stderr, /propagation deadline/)
 })
 
-test('live propagation polls only the release identity before one strict public-origin smoke', async (context) => {
+test('live propagation verifies the public origin after release identity convergence', async (context) => {
   const temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'v-mate-live-propagation-'))
   context.after(async () => rm(temporaryDirectory, { recursive: true, force: true }))
 
@@ -390,8 +390,83 @@ test('live propagation fails closed at the identity deadline without logging res
   assert.doesNotMatch(result.stderr, new RegExp(leakedBody))
 })
 
-test('live propagation does not retry a strict smoke failure after identity convergence', async (context) => {
-  const temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'v-mate-live-propagation-strict-'))
+test('live propagation retries bounded manifest convergence after identity changes', async (context) => {
+  const temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'v-mate-live-propagation-manifest-'))
+  context.after(async () => rm(temporaryDirectory, { recursive: true, force: true }))
+
+  const candidateAsset = Buffer.from('candidate asset')
+  const releaseVersion = Buffer.from('candidate-release\n')
+  const manifestPath = path.join(temporaryDirectory, 'manifest.json')
+  await writeFile(manifestPath, JSON.stringify({
+    version: 1,
+    files: [
+      { path: 'assets/candidate.js', bytes: candidateAsset.byteLength, sha256: createHash('sha256').update(candidateAsset).digest('hex') },
+      { path: 'release-version.txt', bytes: releaseVersion.byteLength, sha256: createHash('sha256').update(releaseVersion).digest('hex') },
+    ],
+  }))
+
+  let identityRequests = 0
+  let homepageRequests = 0
+  let assetRequests = 0
+  let recoveryRequests = 0
+  let chatRequests = 0
+  const server = createServer((request, response) => {
+    assert.equal(request.headers['cloudflare-workers-version-overrides'], undefined)
+    if (request.url === '/release-version.txt') {
+      identityRequests += 1
+      response.end(releaseVersion)
+      return
+    }
+    if (request.url === '/') {
+      homepageRequests += 1
+      const asset = homepageRequests === 1 ? '/assets/stable.js' : '/assets/candidate.js'
+      response.end(`<script>window.__V_MATE_RUNTIME_ENV__={}</script><script src="${asset}"></script>`)
+      return
+    }
+    if (request.url === '/assets/candidate.js') {
+      assetRequests += 1
+      response.end(candidateAsset)
+      return
+    }
+    if (request.url === '/auth/recovery') {
+      recoveryRequests += 1
+      response.end('<script>window.__V_MATE_RUNTIME_ENV__={}</script>')
+      return
+    }
+    if (request.url === '/api/chat') {
+      chatRequests += 1
+      response.writeHead(401, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ error_code: 'AUTH_REQUIRED' }))
+      return
+    }
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  context.after(() => new Promise((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve())
+  }))
+
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  const result = await runNodeScript(path.join(repositoryRoot, 'scripts', 'smoke-release.mjs'), [
+    '--base-url', `http://127.0.0.1:${address.port}`,
+    '--dist-manifest', manifestPath,
+    '--allow-localhost', 'true',
+    '--live-propagation', 'true',
+    '--propagation-timeout-ms', '3000',
+  ])
+
+  assert.equal(result.exitCode, 0, result.stderr)
+  assert.equal(identityRequests, 2)
+  assert.equal(homepageRequests, 2)
+  assert.equal(assetRequests, 1)
+  assert.equal(recoveryRequests, 1)
+  assert.equal(chatRequests, 1)
+})
+
+test('live propagation fails closed when the homepage never converges', async (context) => {
+  const temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'v-mate-live-propagation-homepage-deadline-'))
   context.after(async () => rm(temporaryDirectory, { recursive: true, force: true }))
 
   const releaseVersion = Buffer.from('candidate-release\n')
@@ -431,14 +506,13 @@ test('live propagation does not retry a strict smoke failure after identity conv
     '--dist-manifest', manifestPath,
     '--allow-localhost', 'true',
     '--live-propagation', 'true',
-    '--propagation-timeout-ms', '3000',
+    '--propagation-timeout-ms', '75',
   ])
 
   assert.notEqual(result.exitCode, 0)
   assert.equal(identityRequests, 1)
-  assert.equal(homepageRequests, 1)
-  assert.match(result.stderr, /Homepage verification failed/)
-  assert.doesNotMatch(result.stderr, /propagation deadline/)
+  assert.ok(homepageRequests >= 1)
+  assert.match(result.stderr, /Homepage verification failed after propagation deadline/)
 })
 
 test('live propagation rejects missing identity and version overrides before network access', async (context) => {

@@ -896,8 +896,9 @@ for (const required of [
   'livePropagation && !propagationTimeoutValue',
   'livePropagation && propagationTimeoutMs > 20_000',
   'livePropagation && workerName',
-  'const propagationMode = Boolean(workerName && manifestPaths)',
+  'const propagationMode = Boolean(manifestPaths && (workerName || livePropagation))',
   'Live release identity did not propagate before the deadline',
+  'Homepage verification failed after propagation deadline',
 ]) {
   if (!releaseSmoke.includes(required)) fail('scripts/smoke-release.mjs', `missing bounded candidate smoke contract: ${required}`)
 }

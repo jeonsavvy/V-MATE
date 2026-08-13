@@ -304,8 +304,9 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(smoke, /livePropagation && !propagationTimeoutValue/);
   assert.match(smoke, /livePropagation && propagationTimeoutMs > 20_000/);
   assert.match(smoke, /livePropagation && workerName/);
-  assert.match(smoke, /const propagationMode = Boolean\(workerName && manifestPaths\)/);
+  assert.match(smoke, /const propagationMode = Boolean\(manifestPaths && \(workerName \|\| livePropagation\)\)/);
   assert.match(smoke, /Live release identity did not propagate before the deadline/);
+  assert.match(smoke, /Homepage verification failed after propagation deadline/);
   assert.match(smoke, /performance\.now\(\)/);
   assert.match(smoke, /maximumAssetBytes/);
   assert.match(smoke, /maximumManifestBytes/);
