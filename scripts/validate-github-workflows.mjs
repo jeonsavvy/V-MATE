@@ -407,7 +407,7 @@ const validateWorkflow = (file, source) => {
     ]) {
       if (source.includes(forbidden)) fail(file, `raw release metadata must remain runner-private: ${forbidden}`)
     }
-    const releaseEvidenceUpload = root.jobs?.release?.steps?.find((step) => step?.uses === 'actions/upload-artifact@v4' && step?.name === 'Upload release evidence')
+    const releaseEvidenceUpload = root.jobs?.release?.steps?.find((step) => step?.uses === 'actions/upload-artifact@v7' && step?.name === 'Upload release evidence')
     const uploadedPaths = String(releaseEvidenceUpload?.with?.path || '').trim().split(/\r?\n/).filter(Boolean).sort()
     const expectedUploadedPaths = ['artifacts/automatic-rollback.json', 'artifacts/release-evidence.json'].sort()
     if (JSON.stringify(uploadedPaths) !== JSON.stringify(expectedUploadedPaths)) {
@@ -822,7 +822,7 @@ const validateWorkflow = (file, source) => {
       fail(file, 'sanitized post-lockdown evidence contains a raw deployment identifier')
     }
 
-    const uploads = verificationJob.steps?.filter((step) => step?.uses === 'actions/upload-artifact@v4') || []
+    const uploads = verificationJob.steps?.filter((step) => step?.uses === 'actions/upload-artifact@v7') || []
     if (uploads.length !== 1
       || uploads[0].if !== '${{ success() }}'
       || uploads[0].with?.path !== 'artifacts/post-lockdown-verification-evidence.json'

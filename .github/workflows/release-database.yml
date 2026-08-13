@@ -1192,7 +1192,7 @@ jobs:
           NODE
 
       - name: Upload sanitized database release evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: database-release-evidence-${{ inputs.target }}-${{ github.run_id }}
           path: artifacts/database-release-evidence.json

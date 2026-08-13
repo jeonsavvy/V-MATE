@@ -160,7 +160,7 @@ jobs:
           fs.writeFileSync('artifacts/prelaunch-attestation-evidence.json', `${JSON.stringify(evidence, null, 2)}\n`);
           NODE
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: ${{ success() }}
         with:
           name: prelaunch-attestation-evidence-production-${{ github.run_id }}

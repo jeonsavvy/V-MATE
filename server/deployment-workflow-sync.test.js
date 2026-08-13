@@ -1000,7 +1000,7 @@ test('post-lockdown privilege and immediate one-shot verification remain evidenc
   assert.match(evidenceRecord.run, /liveSmokePassed: true/);
   assert.doesNotMatch(evidenceRecord.run, /\b(?:baseUrl|workerName|projectRef)\s*:/);
 
-  const uploads = verificationJob.steps.filter((step) => step.uses === 'actions/upload-artifact@v4');
+  const uploads = verificationJob.steps.filter((step) => step.uses === 'actions/upload-artifact@v7');
   assert.equal(uploads.length, 1);
   assert.equal(uploads[0].if, '${{ success() }}');
   assert.equal(uploads[0].with.path, 'artifacts/post-lockdown-verification-evidence.json');

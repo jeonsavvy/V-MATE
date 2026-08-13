@@ -804,7 +804,7 @@ jobs:
           fs.writeFileSync('artifacts/database-baseline-evidence.json', `${JSON.stringify(evidence, null, 2)}\n`);
           NODE
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: ${{ success() }}
         with:
           name: database-baseline-evidence-production-${{ github.run_id }}
