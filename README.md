@@ -55,17 +55,18 @@ nvm use
 npm install
 ```
 
-프론트엔드 HMR만 시작하려면:
+프론트엔드 HMR과 Node API를 함께 사용하려면 두 터미널에서 각각 실행합니다.
+
+Node API:
+
+```bash
+npm start
+```
+
+Vite:
 
 ```bash
 npm run dev
-```
-
-Vite는 `/api`를 `http://127.0.0.1:8788`로 전달합니다. API까지 함께 개발할 때는 다른 PowerShell에서 서버를 먼저 실행합니다.
-
-```powershell
-$env:PORT=8788
-npm start
 ```
 
 Worker와 빌드된 프론트엔드를 같은 런타임에서 확인하려면:
@@ -102,6 +103,7 @@ npm run test:db
 
 - [채팅 런타임 구조](docs/chat-runtime.md): 캐릭터·월드 합성, prompt snapshot, 기억 압축
 - [API 계약](docs/api.md): 채팅/플랫폼 API, 응답 헤더와 에러 코드
+- [런타임 소유권 결정](docs/architecture/runtime-ownership.md): 요청 정책, 채팅 결과, 프런트엔드 상태의 소유 경계
 - [운영·설정](docs/operations.md): 환경 변수, migration 순서, owner 설정, release/rollback
 - [Supabase SQL 구조](supabase/README.md): fresh schema, immutable migration, operation, DB test 구분
 - [계정 삭제 계약](docs/specs/account-deletion.md): 계정과 소유 데이터 삭제 범위

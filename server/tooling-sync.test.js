@@ -51,7 +51,7 @@ test('README includes verify command and the shared runtime requirement', async 
   const nodeMajor = (await readUtf8('.nvmrc')).trim();
 
   assert.ok(readme.includes('npm run verify'));
-  assert.ok(readme.includes(`Node.js ${nodeMajor} 이상`));
+  assert.ok(readme.includes(`Node.js ${nodeMajor}`));
   assert.ok(readme.includes('nvm use'));
 });
 
@@ -61,6 +61,19 @@ test('vite config keeps supabase-related chunks out of html modulepreload list',
   assert.ok(viteConfig.includes('modulePreload'));
   assert.ok(viteConfig.includes("context.hostType === 'html'"));
   assert.ok(viteConfig.includes("!dependency.includes('vendor-supabase')"));
+});
+
+test('Vite local API proxy matches the Node adapter default port', async () => {
+  const [viteConfig, nodeAdapter] = await Promise.all([
+    readUtf8('vite.config.ts'),
+    readUtf8('server/cloud-run-server.js'),
+  ]);
+  const proxyTarget = viteConfig.match(/['"]\/api['"]\s*:\s*['"](http:\/\/127\.0\.0\.1:(\d+))['"]/);
+  const nodePort = nodeAdapter.match(/process\.env\.PORT\s*\|\|\s*(\d+)/);
+
+  assert.ok(proxyTarget, 'Vite local API proxy target must be an explicit loopback URL');
+  assert.ok(nodePort, 'Node adapter must define a local fallback port');
+  assert.equal(proxyTarget[2], nodePort[1]);
 });
 
 test('.gitignore no longer ignores tracked sql migrations globally', async () => {

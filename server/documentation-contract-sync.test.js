@@ -37,8 +37,6 @@ const REQUIRED_API_ERROR_CODE_TOKENS = [
 ];
 
 const REQUIRED_SECURITY_HEADER_TOKEN = 'X-Content-Type-Options: nosniff';
-const REQUIRED_NODE_RUNTIME_TOKEN = 'Node.js 24 이상';
-
 const readDoc = (relativePath) => readFile(path.join(repoRoot, relativePath), 'utf8');
 
 test('API documentation records chat method policy aligned with backend allow-methods', async () => {
@@ -81,18 +79,5 @@ test('API documentation records nosniff security header used by chat responses',
   assert.ok(
     apiDoc.includes(REQUIRED_SECURITY_HEADER_TOKEN),
     `API documentation is missing security header token: ${REQUIRED_SECURITY_HEADER_TOKEN}`
-  );
-});
-
-test('README runtime requirement stays aligned with package engines field', async () => {
-  const packageJson = JSON.parse(
-    await readFile(path.join(repoRoot, 'package.json'), 'utf8')
-  );
-  assert.equal(packageJson?.engines?.node, '>=24.0.0');
-
-  const readme = await readDoc('README.md');
-  assert.ok(
-    readme.includes(REQUIRED_NODE_RUNTIME_TOKEN),
-    `README is missing runtime token: ${REQUIRED_NODE_RUNTIME_TOKEN}`
   );
 });

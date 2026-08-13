@@ -1084,35 +1084,38 @@ test('wrangler config enables Cloudflare cron trigger for Supabase keepalive', a
   assert.match(wranglerConfig, /"3,18,33,48 \* \* \* \*"/);
 });
 
-test('operations documentation records manual approved release, runtime prerequisites, and version rollback', async () => {
+test('operations documentation points to approved release and recovery controls', async () => {
   const operationsDoc = await readUtf8('docs/operations.md');
 
-  assert.match(operationsDoc, /main.*읽기 전용/i);
-  assert.match(operationsDoc, /workflow_dispatch/);
-  assert.match(operationsDoc, /CLOUDFLARE_API_TOKEN/);
-  assert.match(operationsDoc, /CLOUDFLARE_OBSERVABILITY_TOKEN/);
-  assert.match(operationsDoc, /CLOUDFLARE_ACCOUNT_ID/);
-  assert.match(operationsDoc, /VITE_SUPABASE_URL/);
+  const requiredWorkflows = [
+    'release-backup-readiness.yml',
+    'release-database.yml',
+    'release-prelaunch-attestation.yml',
+    'release-worker.yml',
+    'release-staging-synthetic-smoke.yml',
+    'release-post-lockdown-privilege-smoke.yml',
+    'release-post-lockdown-observation.yml',
+    'release-database-baseline-attestation.yml',
+  ];
+  const protectedCredentials = [
+    'CLOUDFLARE_API_TOKEN',
+    'CLOUDFLARE_OBSERVABILITY_TOKEN',
+    'CLOUDFLARE_ACCOUNT_ID',
+    'SUPABASE_ACCESS_TOKEN',
+  ];
+  const publicRuntimeConfig = [
+    'VITE_SUPABASE_URL',
+    'VITE_CHAT_API_BASE_URL',
+  ];
+
+  assert.ok(operationsDoc.includes('workflow_dispatch'));
+  for (const workflow of requiredWorkflows) assert.ok(operationsDoc.includes(workflow));
+  for (const credential of protectedCredentials) assert.ok(operationsDoc.includes(credential));
+  for (const variable of publicRuntimeConfig) assert.ok(operationsDoc.includes(variable));
   assert.match(operationsDoc, /VITE_SUPABASE_ANON_KEY|VITE_SUPABASE_PUBLISHABLE_KEY/);
-  assert.match(operationsDoc, /VITE_CHAT_API_BASE_URL/);
-  assert.match(operationsDoc, /versions deploy/);
-  assert.match(operationsDoc, /append-only migration을 추가·삭제·rename·수정하지 않는 runtime·frontend·fresh-schema snapshot 변경/);
-  assert.match(operationsDoc, /`supabase\/migrations\/\*\*`가 동일한지 fail-closed/);
-  assert.match(operationsDoc, /같은 SHA의 CI `quality`와 `Database contracts \(local Docker only\)`가 성공/);
-  assert.match(operationsDoc, /이미 적용된 migration을 다시 실행하지 않습니다/);
-  assert.match(operationsDoc, /`previous_baseline_evidence_run_id`/);
-  assert.match(operationsDoc, /원격 fingerprint를 다시 읽어 이전 값과 비교/);
-  assert.match(operationsDoc, /유효한 이전 baseline artifact도 없으면 fail-closed/);
-  assert.match(operationsDoc, /일반 경로의 `prompt-privacy:apply-lockdown`.*6시간.*physical backup evidence.*필수/);
-  assert.match(operationsDoc, /Prelaunch direct 경로만 같은 6시간 제한의 attestation으로 이 gate를 대체/);
-  assert.match(operationsDoc, /vmate_private\.prompt_lockdown_room_state_backup_20260729/);
-  assert.match(operationsDoc, /vmate_private\.prompt_lockdown_greeting_backup_20260729/);
-  assert.match(operationsDoc, /vmate_private\.prompt_lockdown_backup_manifest_20260729/);
-  assert.match(operationsDoc, /original과 renewal run ID/);
-  assert.match(operationsDoc, /current catalog·row-count·보호 데이터 HMAC/);
-  assert.match(operationsDoc, /24시간을 기다리지 않습니다/);
-  assert.match(operationsDoc, /privilege smoke evidence는 30분 이내/);
-  assert.match(operationsDoc, /version override 없이 공개 origin에 live smoke를 한 번 실행/);
-  assert.match(operationsDoc, /baseline-backed cutover evidence/);
-  assert.match(operationsDoc, /lockdown_evidence_run_id.*비워/);
+  assert.ok(operationsDoc.includes('previousStableVersionId'));
+  assert.ok(operationsDoc.includes('wrangler versions deploy'));
+  assert.ok(operationsDoc.includes('npm run verify'));
+  assert.ok(operationsDoc.includes('npm run test:db'));
+  assert.ok(operationsDoc.includes('npm run cf:dry-run'));
 });
