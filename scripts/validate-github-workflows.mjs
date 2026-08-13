@@ -475,6 +475,8 @@ const validateWorkflow = (file, source) => {
       'evidence.lockdownEvidenceRunId === process.env.LOCKDOWN_EVIDENCE_RUN_ID',
       'evidence.privilegeEvidenceRunId === process.env.PRIVILEGE_EVIDENCE_RUN_ID',
       'evidence.verificationEvidenceRunId === process.env.VERIFICATION_EVIDENCE_RUN_ID',
+      'fs.writeFileSync(process.env.RENEWAL_COMMIT_FILE',
+      'PREVIOUS_BASELINE_COMMIT=$(<"$RENEWAL_COMMIT_FILE")',
       'git merge-base --is-ancestor "$PREVIOUS_BASELINE_COMMIT" "$GITHUB_SHA"',
       'git diff --quiet "$PREVIOUS_BASELINE_COMMIT" "$GITHUB_SHA" -- supabase/migrations/',
     ]) {

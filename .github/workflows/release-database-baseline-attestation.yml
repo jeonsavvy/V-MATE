@@ -123,6 +123,7 @@ jobs:
           export RENEWAL_DIR
           RENEWAL_DIR=$(mktemp -d "$RUNNER_TEMP/vmate-baseline-renewal-XXXXXX")
           trap 'rm -rf -- "$RENEWAL_DIR"' EXIT
+          export RENEWAL_COMMIT_FILE="$RENEWAL_DIR/commit.txt"
           mkdir -p "$RENEWAL_DIR/artifact"
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PREVIOUS_BASELINE_EVIDENCE_RUN_ID" > "$RENEWAL_DIR/run.json"
           gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release-database-baseline-attestation.yml" > "$RENEWAL_DIR/workflow.json"
@@ -208,6 +209,7 @@ jobs:
             && Date.parse(run.created_at) <= Date.parse(evidence.attestedAt)
             && Date.parse(evidence.attestedAt) <= Date.parse(run.updated_at);
           if (!runBound || !evidenceBound) throw new Error('Previous baseline evidence is not bound to an approved successful lineage attestation.');
+          fs.writeFileSync(process.env.RENEWAL_COMMIT_FILE, `${evidence.commit}\n`);
           fs.appendFileSync(process.env.GITHUB_ENV, [
             `LOCKDOWN_REMOTE_STATE_FINGERPRINT=${evidence.remoteStateFingerprint}`,
             `LOCKDOWN_MIGRATION_ROWS_FINGERPRINT=${evidence.migrationRowsFingerprint}`,
@@ -215,10 +217,11 @@ jobs:
             `LINEAGE_PREVIOUS_STABLE_VERSION_ID=${evidence.previousStableWorkerVersionId}`,
             `LOCKDOWN_APPLIED_AT=${evidence.lockdownAppliedAt}`,
             `LINEAGE_STATE_ATTESTED_AT=${evidence.lockdownStateAttestedAt}`,
-            `PREVIOUS_BASELINE_COMMIT=${evidence.commit}`,
             '',
           ].join('\n'));
           NODE
+          PREVIOUS_BASELINE_COMMIT=$(<"$RENEWAL_COMMIT_FILE")
+          [[ "$PREVIOUS_BASELINE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::previous baseline commit is invalid'; exit 1; }
           [[ "$PREVIOUS_BASELINE_COMMIT" != "$GITHUB_SHA" ]] || { echo '::error::previous baseline must precede the current release'; exit 1; }
           git merge-base --is-ancestor "$PREVIOUS_BASELINE_COMMIT" "$GITHUB_SHA" || { echo '::error::previous baseline commit is not an ancestor of this release'; exit 1; }
           git diff --quiet "$PREVIOUS_BASELINE_COMMIT" "$GITHUB_SHA" -- supabase/migrations/ || { echo '::error::baseline renewal cannot cross a database migration change'; exit 1; }
