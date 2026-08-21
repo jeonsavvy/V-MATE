@@ -141,23 +141,17 @@ export function AuthDialog({ open, onOpenChange, onSuccess, initialMode = "signi
         throw error
       }
 
-      if (data.user) {
-        if (data.session) {
-          onOpenChange(false)
-          setSignUpEmail("")
-          setSignUpPassword("")
-          setSignUpConfirmPassword("")
-          setSignUpName("")
-          onSuccess?.()
-        } else {
-          toast.success("확인 메일을 보냈습니다. 이메일 인증 후 로그인해 주세요.")
-          onOpenChange(false)
-          setSignUpEmail("")
-          setSignUpPassword("")
-          setSignUpConfirmPassword("")
-          setSignUpName("")
-        }
+      if (!data.session) {
+        setAuthError("가입을 완료하지 못했습니다. 이미 가입했다면 로그인해 주세요.")
+        return
       }
+
+      onOpenChange(false)
+      setSignUpEmail("")
+      setSignUpPassword("")
+      setSignUpConfirmPassword("")
+      setSignUpName("")
+      onSuccess?.()
     } catch (error: unknown) {
       devError("Account registration failed.")
       setAuthError(resolveErrorMessage(error, "가입하지 못했습니다. 다시 시도해 주세요."))
@@ -213,8 +207,12 @@ export function AuthDialog({ open, onOpenChange, onSuccess, initialMode = "signi
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[94dvh] overflow-y-auto rounded-xl p-6 sm:max-w-lg">
         <DialogHeader className="space-y-2 text-left">
-          <DialogTitle>로그인</DialogTitle>
-          <DialogDescription>대화를 시작하고 기록을 저장하려면 로그인하세요.</DialogDescription>
+          <DialogTitle>{activeTab === "signup" ? "계정 만들기" : "로그인"}</DialogTitle>
+          <DialogDescription>
+            {activeTab === "signup"
+              ? "가입하면 바로 로그인됩니다."
+              : "대화를 시작하고 기록을 저장하려면 로그인하세요."}
+          </DialogDescription>
         </DialogHeader>
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
