@@ -425,7 +425,7 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
     baselineScopeStep.run,
     /serving cutover evidence requires previous baseline evidence/,
   );
-  assert.match(baseline, /schemaVersion: 3/);
+  assert.match(baseline, /schemaVersion: 4/);
   assert.match(baseline, /previousBaselineEvidenceRunId:/);
   assert.match(baseline, /servingCutoverEvidenceRunId:/);
   assert.match(release, /baselineV3Keys/);
@@ -460,7 +460,8 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
     assert.match(baseline, new RegExp(definitionHash));
   }
   assert.match(release, /safeViewDefinitionsMatch/);
-  assert.match(baseline, /Current database fingerprints do not match the applied lockdown evidence/);
+  assert.match(baseline, /Current migration fingerprint does not match the approved baseline/);
+  assert.match(baseline, /Current application catalog does not match same-commit disposable database evidence/);
   assert.match(baseline, /complete_legacy_chat_message_v2\(uuid,text,text,jsonb\)/);
   assert.match(baseline, /commit_room_turn_v2\(uuid,uuid,text,text,bigint,jsonb,jsonb,jsonb,jsonb,jsonb\)/);
   assert.match(baseline, /Record sanitized read-only baseline evidence[\s\S]*trap 'rm -rf private-artifacts' EXIT/);
@@ -1041,7 +1042,61 @@ test('local database harness refuses linked or remote targets and runs fresh plu
   assert.match(runner, /includeUpgradeContracts: true/);
   assert.match(runner, /Duplicate Supabase migration versions detected/);
   assert.match(runner, /migration', 'up', '--local/);
+  assert.match(runner, /capture-application-release-state\.sql/);
+  assert.match(runner, /freshApplicationStateFingerprint/);
+  assert.match(runner, /upgradeApplicationStateFingerprint/);
+  assert.match(runner, /DB_CONTRACT_EVIDENCE_PATH/);
   assert.doesNotMatch(runner, /--linked/);
+});
+
+test('non-migration baseline binds provider catalog drift to same-commit application schema evidence', async () => {
+  const ciSource = await readUtf8('.github/workflows/ci.yml');
+  const baselineSource = await readUtf8('.github/workflows/release-database-baseline-attestation.yml');
+  const releaseSource = await readUtf8('.github/workflows/release-worker.yml');
+  const applicationFingerprintQuery = await readUtf8('scripts/capture-application-release-state.sql');
+  const ci = parseDocument(ciSource, { uniqueKeys: true, version: '1.2' }).toJS();
+  const baseline = parseDocument(baselineSource, { uniqueKeys: true, version: '1.2' }).toJS();
+  const databaseJob = ci.jobs.database_contracts;
+  const databaseRun = databaseJob.steps.find((step) => step.name === 'Run fresh and upgrade database contracts');
+  const databaseUpload = databaseJob.steps.find((step) => step.name === 'Upload sanitized database contract evidence');
+  const baselineEvidence = baseline.jobs.attest.steps.find(
+    (step) => step.name === 'Verify same-commit application database contract evidence',
+  );
+
+  assert.equal(databaseRun.env.DB_CONTRACT_EVIDENCE_PATH, 'artifacts/database-contract-evidence.json');
+  assert.equal(databaseUpload.uses, 'actions/upload-artifact@v7');
+  assert.equal(databaseUpload.with.name, 'database-contract-evidence-${{ github.run_id }}');
+  assert.equal(databaseUpload.with.path, 'artifacts/database-contract-evidence.json');
+  assert.equal(baselineEvidence.env.GH_TOKEN, '${{ github.token }}');
+  for (const required of [
+    'CI_RUN_ID',
+    'actions/runs/$CI_RUN_ID',
+    'actions/workflows/ci.yml',
+    'database-contract-evidence-$CI_RUN_ID',
+    'database-contract-evidence.json',
+    'evidence.commit === process.env.GITHUB_SHA',
+    'evidence.freshApplicationStateFingerprint === evidence.upgradeApplicationStateFingerprint',
+    'EXPECTED_APPLICATION_STATE_FINGERPRINT',
+  ]) assert.match(baselineEvidence.run, new RegExp(required.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+
+  assert.match(baselineSource, /scripts\/capture-application-release-state\.sql/);
+  assert.match(baselineSource, /applicationStateFingerprint/);
+  assert.match(baselineSource, /databaseContractEvidenceRunId/);
+  assert.match(baselineSource, /providerCatalogDriftObserved/);
+  assert.match(baselineSource, /schemaVersion: 4/);
+  assert.match(baselineSource, /application\.application_release_state_fingerprint !== process\.env\.EXPECTED_APPLICATION_STATE_FINGERPRINT/);
+  assert.match(releaseSource, /baselineV4Keys/);
+  assert.match(releaseSource, /evidence\.schemaVersion === 4/);
+  assert.match(releaseSource, /evidence\.applicationStateFingerprint/);
+  assert.match(releaseSource, /evidence\.databaseContractEvidenceRunId/);
+  assert.match(releaseSource, /evidence\.providerCatalogDriftObserved/);
+
+  assert.match(applicationFingerprintQuery, /namespace_record\.nspname in \('public', 'vmate_private'\)/);
+  assert.doesNotMatch(applicationFingerprintQuery, /namespace_record\.nspname in \([^\n]*(?:'auth'|'storage')/);
+  assert.match(applicationFingerprintQuery, /pg_catalog\.aclexplode/);
+  assert.match(applicationFingerprintQuery, /case when policy_role\.role_oid = 0 then 'PUBLIC' else role_record\.rolname end/);
+  assert.doesNotMatch(applicationFingerprintQuery, /constraint_record\.oid::text/);
+  assert.match(applicationFingerprintQuery, /application_release_state_fingerprint/);
 });
 
 

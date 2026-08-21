@@ -14,7 +14,9 @@ const migrationDirectory = path.join(repositoryRoot, 'supabase', 'migrations')
 const testDirectory = path.join(repositoryRoot, 'supabase', 'tests')
 const baselineFixture = path.join(testDirectory, 'fixtures', 'pre_b2c_schema.sql')
 const releaseStateQuery = path.join(scriptDirectory, 'capture-release-state.sql')
+const applicationReleaseStateQuery = path.join(scriptDirectory, 'capture-application-release-state.sql')
 const migrationStateQuery = path.join(scriptDirectory, 'capture-migration-state.sql')
+const databaseContractEvidencePath = 'artifacts/database-contract-evidence.json'
 
 const corePortTargets = [
   { name: 'api', section: 'api', key: 'port' },
@@ -171,6 +173,34 @@ export const createDisposableProjectId = (pid = process.pid, uniqueId = randomUU
   return `vmate-contract-${pid}-${suffix}`
 }
 
+export const buildDatabaseContractEvidence = ({
+  commit,
+  freshApplicationStateFingerprint,
+  upgradeApplicationStateFingerprint,
+}) => {
+  if (typeof commit !== 'string' || !/^[a-f0-9]{40}$/.test(commit)) {
+    throw new Error('Database contract evidence commit must be a canonical SHA')
+  }
+  for (const [name, value] of Object.entries({
+    freshApplicationStateFingerprint,
+    upgradeApplicationStateFingerprint,
+  })) {
+    if (typeof value !== 'string' || !/^[a-f0-9]{32}$/.test(value)) {
+      throw new Error(`${name} must be a canonical fingerprint`)
+    }
+  }
+  if (freshApplicationStateFingerprint !== upgradeApplicationStateFingerprint) {
+    throw new Error('Disposable fresh and upgrade application catalog fingerprints differ')
+  }
+  return {
+    schemaVersion: 1,
+    commit,
+    freshApplicationStateFingerprint,
+    upgradeApplicationStateFingerprint,
+    allPassed: true,
+  }
+}
+
 const localHosts = new Set(['localhost', '127.0.0.1', '::1'])
 const assertLocalConnectionEnvironment = () => {
   for (const variableName of ['DATABASE_URL', 'SUPABASE_DB_URL', 'SUPABASE_URL']) {
@@ -264,6 +294,7 @@ const assertStateFingerprint = async (containerId, queryFile, label) => {
   if (fingerprints.length !== 1) {
     throw new Error(`${label} did not return exactly one canonical fingerprint`)
   }
+  return fingerprints[0]
 }
 
 // The final schema and lockdown migration create vmate_private themselves, so reset must leave it absent.
@@ -288,7 +319,13 @@ const runFresh = async (containerId, workDirectory) => {
   resetLocalSchemas(containerId)
   runSql(containerId, await readFile(schemaFile, 'utf8'), 'Apply final schema.sql')
   await assertStateFingerprint(containerId, releaseStateQuery, 'Capture local release-state fingerprint')
+  const applicationStateFingerprint = await assertStateFingerprint(
+    containerId,
+    applicationReleaseStateQuery,
+    'Capture local application release-state fingerprint',
+  )
   runPgTap(workDirectory)
+  return applicationStateFingerprint
 }
 
 const runUpgrade = async (containerId, workDirectory) => {
@@ -299,7 +336,13 @@ const runUpgrade = async (containerId, workDirectory) => {
   supabaseCommand(['migration', 'up', '--local', '--workdir', workDirectory])
   await assertStateFingerprint(containerId, releaseStateQuery, 'Capture local release-state fingerprint')
   await assertStateFingerprint(containerId, migrationStateQuery, 'Capture local migration-row fingerprint')
+  const applicationStateFingerprint = await assertStateFingerprint(
+    containerId,
+    applicationReleaseStateQuery,
+    'Capture local application release-state fingerprint',
+  )
   runPgTap(workDirectory, { includeUpgradeContracts: true })
+  return applicationStateFingerprint
 }
 
 const prepareDisposableProject = async () => {
@@ -342,6 +385,13 @@ export const main = async (arguments_ = process.argv.slice(2)) => {
   if (!['--fresh', '--upgrade', '--all'].includes(testMode)) {
     throw new Error('Usage: node scripts/run-db-tests.mjs [--fresh|--upgrade|--all]')
   }
+  const configuredEvidencePath = process.env.DB_CONTRACT_EVIDENCE_PATH
+  if (configuredEvidencePath && configuredEvidencePath.replace(/\\/g, '/') !== databaseContractEvidencePath) {
+    throw new Error(`DB_CONTRACT_EVIDENCE_PATH must be ${databaseContractEvidencePath}`)
+  }
+  if (configuredEvidencePath && testMode !== '--all') {
+    throw new Error('Database contract evidence requires both fresh and upgrade modes')
+  }
 
   await assertCanonicalMigrationVersions()
   assertPrerequisites()
@@ -350,8 +400,24 @@ export const main = async (arguments_ = process.argv.slice(2)) => {
   try {
     await portReservation.release()
     const containerId = startLocalSupabase(workDirectory, projectId)
-    if (testMode === '--fresh' || testMode === '--all') await runFresh(containerId, workDirectory)
-    if (testMode === '--upgrade' || testMode === '--all') await runUpgrade(containerId, workDirectory)
+    let freshApplicationStateFingerprint
+    let upgradeApplicationStateFingerprint
+    if (testMode === '--fresh' || testMode === '--all') {
+      freshApplicationStateFingerprint = await runFresh(containerId, workDirectory)
+    }
+    if (testMode === '--upgrade' || testMode === '--all') {
+      upgradeApplicationStateFingerprint = await runUpgrade(containerId, workDirectory)
+    }
+    if (configuredEvidencePath) {
+      const evidence = buildDatabaseContractEvidence({
+        commit: process.env.GITHUB_SHA,
+        freshApplicationStateFingerprint,
+        upgradeApplicationStateFingerprint,
+      })
+      const absoluteEvidencePath = path.join(repositoryRoot, databaseContractEvidencePath)
+      await mkdir(path.dirname(absoluteEvidencePath), { recursive: true })
+      await writeFile(absoluteEvidencePath, `${JSON.stringify(evidence, null, 2)}\n`, { flag: 'wx' })
+    }
     process.stdout.write('\nLocal DB contract tests passed.\n')
   } finally {
     await portReservation.release()

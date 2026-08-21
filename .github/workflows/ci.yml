@@ -69,4 +69,14 @@ jobs:
         run: npm ci
 
       - name: Run fresh and upgrade database contracts
+        env:
+          DB_CONTRACT_EVIDENCE_PATH: artifacts/database-contract-evidence.json
         run: npm run test:db
+
+      - name: Upload sanitized database contract evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: database-contract-evidence-${{ github.run_id }}
+          path: artifacts/database-contract-evidence.json
+          if-no-files-found: error
+          retention-days: 7

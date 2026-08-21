@@ -229,7 +229,8 @@ test('declares the canonical production hostname while preserving Workers.dev an
   assert.match(baselineWorkflow, /084b38123a37e70d3fa51093fe44b39098a36bc2/);
   assert.match(baselineWorkflow, /b2b997f6c0eec183509cf2bc4241fc29eb2f6b7e/);
   assert.match(baselineWorkflow, /read-only-post-lockdown-baseline-attestation/);
-  assert.match(baselineWorkflow, /Current database fingerprints do not match the applied lockdown evidence/);
+  assert.match(baselineWorkflow, /Current migration fingerprint does not match the approved baseline/);
+  assert.match(baselineWorkflow, /Current application catalog does not match same-commit disposable database evidence/);
   assert.match(baselineWorkflow, /20260727000000/);
   assert.match(baselineWorkflow, /20260727025134/);
   assert.match(baselineWorkflow, /backend_stabilization_lockdown/);

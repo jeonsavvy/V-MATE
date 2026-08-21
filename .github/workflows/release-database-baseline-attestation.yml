@@ -107,6 +107,7 @@ jobs:
           set -euo pipefail
           [[ -n "$DEFAULT_BRANCH" && "$GITHUB_REF" == "refs/heads/$DEFAULT_BRANCH" ]] || { echo '::error::Baseline attestation must run from the default branch'; exit 1; }
           node --input-type=module <<'NODE'
+          const fs = await import('node:fs');
           const headers = { Accept: 'application/vnd.github+json', Authorization: `Bearer ${process.env.GH_TOKEN}`, 'X-GitHub-Api-Version': '2022-11-28' };
           const response = await fetch(`https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${process.env.GITHUB_SHA}&status=completed&per_page=100`, { headers });
           if (!response.ok) throw new Error(`GitHub API request failed with status ${response.status}`);
@@ -118,6 +119,63 @@ jobs:
           const jobs = await jobsResponse.json();
           const conclusions = new Map((jobs.jobs || []).map((job) => [job.name, job.conclusion]));
           for (const required of ['quality', 'Database contracts (local Docker only)']) if (conclusions.get(required) !== 'success') throw new Error(`Required CI job did not pass: ${required}`);
+          fs.appendFileSync(process.env.GITHUB_ENV, `CI_RUN_ID=${run.id}\n`);
+          NODE
+
+      - name: Verify same-commit application database contract evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CI_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::same-commit CI run binding is missing'; exit 1; }
+          export CI_EVIDENCE_DIR
+          CI_EVIDENCE_DIR=$(mktemp -d "$RUNNER_TEMP/vmate-ci-database-evidence-XXXXXX")
+          trap 'rm -rf -- "$CI_EVIDENCE_DIR"' EXIT
+          mkdir -p "$CI_EVIDENCE_DIR/artifact"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID" > "$CI_EVIDENCE_DIR/run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml" > "$CI_EVIDENCE_DIR/workflow.json"
+          gh run download "$CI_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "database-contract-evidence-$CI_RUN_ID" --dir "$CI_EVIDENCE_DIR/artifact"
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const read = (...parts) => JSON.parse(fs.readFileSync(path.join(process.env.CI_EVIDENCE_DIR, ...parts), 'utf8'));
+          const run = read('run.json');
+          const workflow = read('workflow.json');
+          const expectedPath = '.github/workflows/ci.yml';
+          const files = [];
+          const walk = (directory) => fs.readdirSync(directory, { withFileTypes: true }).forEach((entry) => {
+            const item = path.join(directory, entry.name);
+            if (entry.isDirectory()) walk(item); else if (entry.name === 'database-contract-evidence.json') files.push(item);
+          });
+          walk(path.join(process.env.CI_EVIDENCE_DIR, 'artifact'));
+          if (files.length !== 1) throw new Error('Same-commit CI database evidence artifact is incomplete.');
+          const evidence = JSON.parse(fs.readFileSync(files[0], 'utf8'));
+          const expectedKeys = [
+            'allPassed', 'commit', 'freshApplicationStateFingerprint',
+            'schemaVersion', 'upgradeApplicationStateFingerprint',
+          ];
+          const runBound = run.id === Number(process.env.CI_RUN_ID)
+            && run.conclusion === 'success'
+            && run.status === 'completed'
+            && run.event === 'push'
+            && run.head_sha === process.env.GITHUB_SHA
+            && run.head_branch === process.env.DEFAULT_BRANCH
+            && run.path === expectedPath
+            && workflow.path === expectedPath
+            && run.workflow_id === workflow.id;
+          const evidenceBound = evidence.schemaVersion === 1
+            && JSON.stringify(Object.keys(evidence).sort()) === JSON.stringify(expectedKeys.sort())
+            && evidence.commit === process.env.GITHUB_SHA
+            && /^[a-f0-9]{32}$/.test(evidence.freshApplicationStateFingerprint || '')
+            && evidence.freshApplicationStateFingerprint === evidence.upgradeApplicationStateFingerprint
+            && evidence.allPassed === true;
+          if (!runBound || !evidenceBound) throw new Error('Same-commit application database contract evidence is invalid.');
+          fs.appendFileSync(process.env.GITHUB_ENV, [
+            `DATABASE_CONTRACT_EVIDENCE_RUN_ID=${run.id}`,
+            `EXPECTED_APPLICATION_STATE_FINGERPRINT=${evidence.freshApplicationStateFingerprint}`,
+            '',
+          ].join('\n'));
           NODE
 
       - name: Verify previous read-only baseline renewal source
@@ -171,6 +229,11 @@ jobs:
             ...baselineV2Keys,
             'previousBaselineEvidenceRunId', 'servingCutoverEvidenceRunId',
           ];
+          const baselineV4Keys = [
+            ...baselineV3Keys,
+            'applicationStateFingerprint', 'databaseContractEvidenceRunId',
+            'providerCatalogDriftObserved',
+          ];
           const canonicalVersion = (value) => typeof value === 'string' && /^[A-Za-z0-9_-]+$/.test(value);
           const canonicalDate = (value) => Number.isFinite(Date.parse(value || ''));
           const canonicalOptionalRunId = (value) => value === null || /^[0-9]+$/.test(String(value));
@@ -186,10 +249,18 @@ jobs:
           const evidenceShape = evidence.schemaVersion === 2
             ? JSON.stringify(Object.keys(evidence).sort()) === JSON.stringify(baselineV2Keys.sort())
             : evidence.schemaVersion === 3
-              && JSON.stringify(Object.keys(evidence).sort()) === JSON.stringify(baselineV3Keys.sort())
-              && canonicalOptionalRunId(evidence.previousBaselineEvidenceRunId)
-              && canonicalOptionalRunId(evidence.servingCutoverEvidenceRunId)
-              && (evidence.servingCutoverEvidenceRunId === null || evidence.previousBaselineEvidenceRunId !== null);
+              ? JSON.stringify(Object.keys(evidence).sort()) === JSON.stringify(baselineV3Keys.sort())
+                && canonicalOptionalRunId(evidence.previousBaselineEvidenceRunId)
+                && canonicalOptionalRunId(evidence.servingCutoverEvidenceRunId)
+                && (evidence.servingCutoverEvidenceRunId === null || evidence.previousBaselineEvidenceRunId !== null)
+              : evidence.schemaVersion === 4
+                && JSON.stringify(Object.keys(evidence).sort()) === JSON.stringify(baselineV4Keys.sort())
+                && canonicalOptionalRunId(evidence.previousBaselineEvidenceRunId)
+                && canonicalOptionalRunId(evidence.servingCutoverEvidenceRunId)
+                && (evidence.servingCutoverEvidenceRunId === null || evidence.previousBaselineEvidenceRunId !== null)
+                && /^[a-f0-9]{32}$/.test(evidence.applicationStateFingerprint || '')
+                && /^[0-9]+$/.test(String(evidence.databaseContractEvidenceRunId || ''))
+                && typeof evidence.providerCatalogDriftObserved === 'boolean';
           const evidenceBound = evidenceShape
             && evidence.target === 'production'
             && evidence.operation === 'read-only-post-lockdown-baseline-attestation'
@@ -506,6 +577,7 @@ jobs:
           node scripts/run-supabase-read-only-query.mjs --project-ref "$PROJECT_REF" --sql-file "$workdir/migration-list.sql" --output private-artifacts/migration-list.json
           node scripts/run-supabase-read-only-query.mjs --project-ref "$PROJECT_REF" --sql-file scripts/capture-migration-state.sql --output private-artifacts/migration-state.json
           node scripts/run-supabase-read-only-query.mjs --project-ref "$PROJECT_REF" --sql-file scripts/capture-release-state.sql --output private-artifacts/release-state.json
+          node scripts/run-supabase-read-only-query.mjs --project-ref "$PROJECT_REF" --sql-file scripts/capture-application-release-state.sql --output private-artifacts/application-release-state.json
           {
             printf 'with expected(source_version, remote_version, remote_name) as (values '
             first=true
@@ -748,9 +820,10 @@ jobs:
                   : undefined;
           const migration = firstRow(readJson('private-artifacts/migration-state.json'));
           const release = firstRow(readJson('private-artifacts/release-state.json'));
+          const application = firstRow(readJson('private-artifacts/application-release-state.json'));
           const migrationCoverage = firstRow(readJson('private-artifacts/migration-coverage.json'));
           const invariants = firstRow(readJson('private-artifacts/invariants.json'))?.invariants;
-          if (!migration?.migration_rows_fingerprint || !release?.release_state_fingerprint || !migrationCoverage || !invariants || typeof invariants !== 'object') throw new Error('Read-only baseline query result is invalid.');
+          if (!migration?.migration_rows_fingerprint || !release?.release_state_fingerprint || !application?.application_release_state_fingerprint || !migrationCoverage || !invariants || typeof invariants !== 'object') throw new Error('Read-only baseline query result is invalid.');
           if (!Array.isArray(migrationCoverage.missing_source_versions) || migrationCoverage.missing_source_versions.length !== 0) throw new Error('A source migration is not applied remotely.');
           const required = [
             'expandApplied', 'lockdownAliasApplied', 'directTableWritesBlocked',
@@ -763,14 +836,14 @@ jobs:
             'servicePromptColumnsReadable',
           ];
           if (!required.every((name) => invariants[name] === true)) throw new Error('Read-only baseline invariants did not pass.');
-          if (migration.migration_rows_fingerprint !== process.env.LOCKDOWN_MIGRATION_ROWS_FINGERPRINT
-            || release.release_state_fingerprint !== process.env.LOCKDOWN_REMOTE_STATE_FINGERPRINT) {
-            throw new Error('Current database fingerprints do not match the applied lockdown evidence.');
-          }
+          if (migration.migration_rows_fingerprint !== process.env.LOCKDOWN_MIGRATION_ROWS_FINGERPRINT) throw new Error('Current migration fingerprint does not match the approved baseline.');
+          if (application.application_release_state_fingerprint !== process.env.EXPECTED_APPLICATION_STATE_FINGERPRINT) throw new Error('Current application catalog does not match same-commit disposable database evidence.');
+          if (!/^[0-9]+$/.test(process.env.DATABASE_CONTRACT_EVIDENCE_RUN_ID || '')) throw new Error('Same-commit database evidence run binding is invalid.');
           const migrationList = fs.readFileSync('private-artifacts/migration-list.json');
           const lockdownMigrationAlias = { sourceVersion: '20260727000000', remoteVersion: '20260727025134', remoteName: 'backend_stabilization_lockdown' };
+          const providerCatalogDriftObserved = release.release_state_fingerprint !== process.env.LOCKDOWN_REMOTE_STATE_FINGERPRINT;
           const evidence = {
-            schemaVersion: 3,
+            schemaVersion: 4,
             target: 'production',
             operation: 'read-only-post-lockdown-baseline-attestation',
             queryMode: 'supabase_read_only_user',
@@ -794,6 +867,9 @@ jobs:
             migrationListHash: crypto.createHash('sha256').update(migrationList).digest('hex'),
             migrationRowsFingerprint: migration.migration_rows_fingerprint,
             remoteStateFingerprint: release.release_state_fingerprint,
+            applicationStateFingerprint: application.application_release_state_fingerprint,
+            databaseContractEvidenceRunId: process.env.DATABASE_CONTRACT_EVIDENCE_RUN_ID,
+            providerCatalogDriftObserved,
             missingMigrationCount: 0,
             lockdownMigrationAlias,
             lockdownMigrationAliasHash: crypto.createHash('sha256').update(JSON.stringify(lockdownMigrationAlias)).digest('hex'),

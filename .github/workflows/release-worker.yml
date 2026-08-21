@@ -321,16 +321,27 @@ jobs:
             ...baselineV2Keys,
             'previousBaselineEvidenceRunId', 'servingCutoverEvidenceRunId',
           ];
+          const baselineV4Keys = [
+            ...baselineV3Keys,
+            'applicationStateFingerprint', 'databaseContractEvidenceRunId',
+            'providerCatalogDriftObserved',
+          ];
           const canonicalOptionalRunId = (value) => value === null || /^[0-9]+$/.test(String(value));
           const baselineEvidenceShape = evidence.schemaVersion === 2
             ? JSON.stringify(Object.keys(evidence).sort()) === JSON.stringify(baselineV2Keys.sort())
             : evidence.schemaVersion === 3
-              && JSON.stringify(Object.keys(evidence).sort()) === JSON.stringify(baselineV3Keys.sort())
-              && canonicalOptionalRunId(evidence.previousBaselineEvidenceRunId)
-              && canonicalOptionalRunId(evidence.servingCutoverEvidenceRunId)
-              && (evidence.servingCutoverEvidenceRunId === null || evidence.previousBaselineEvidenceRunId !== null);
+              ? JSON.stringify(Object.keys(evidence).sort()) === JSON.stringify(baselineV3Keys.sort())
+                && canonicalOptionalRunId(evidence.previousBaselineEvidenceRunId)
+                && canonicalOptionalRunId(evidence.servingCutoverEvidenceRunId)
+                && (evidence.servingCutoverEvidenceRunId === null || evidence.previousBaselineEvidenceRunId !== null)
+              : evidence.schemaVersion === 4
+                && JSON.stringify(Object.keys(evidence).sort()) === JSON.stringify(baselineV4Keys.sort())
+                && canonicalOptionalRunId(evidence.previousBaselineEvidenceRunId)
+                && canonicalOptionalRunId(evidence.servingCutoverEvidenceRunId)
+                && (evidence.servingCutoverEvidenceRunId === null || evidence.previousBaselineEvidenceRunId !== null);
           const valid = baseline
-            ? baselineEvidenceShape
+            ? evidence.schemaVersion === 4
+              && baselineEvidenceShape
               && evidence.target === 'production'
               && evidence.operation === 'read-only-post-lockdown-baseline-attestation'
               && evidence.queryMode === 'supabase_read_only_user'
@@ -350,6 +361,9 @@ jobs:
               && /^[a-f0-9]{64}$/.test(String(evidence.migrationListHash || ''))
               && /^[a-f0-9]{32}$/.test(String(evidence.migrationRowsFingerprint || ''))
               && /^[a-f0-9]{32}$/.test(String(evidence.remoteStateFingerprint || ''))
+              && /^[a-f0-9]{32}$/.test(String(evidence.applicationStateFingerprint || ''))
+              && /^[0-9]+$/.test(String(evidence.databaseContractEvidenceRunId || ''))
+              && typeof evidence.providerCatalogDriftObserved === 'boolean'
               && evidence.missingMigrationCount === 0
               && JSON.stringify(evidence.lockdownMigrationAlias) === JSON.stringify(lockdownMigrationAlias)
               && evidence.lockdownMigrationAliasHash === lockdownMigrationAliasHash

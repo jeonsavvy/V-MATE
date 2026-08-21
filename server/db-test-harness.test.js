@@ -3,12 +3,39 @@ import net from 'node:net'
 import { test } from 'node:test'
 
 import {
+  buildDatabaseContractEvidence,
   buildDisposableConfig,
   createDisposableProjectId,
   getDisposablePortTargets,
   reserveAvailablePorts,
   resetLocalSchemasSql,
 } from '../scripts/run-db-tests.mjs'
+
+test('DB contract evidence requires identical canonical fresh and upgrade application fingerprints', () => {
+  const fingerprint = 'a'.repeat(32)
+  assert.deepEqual(buildDatabaseContractEvidence({
+    commit: 'b'.repeat(40),
+    freshApplicationStateFingerprint: fingerprint,
+    upgradeApplicationStateFingerprint: fingerprint,
+  }), {
+    schemaVersion: 1,
+    commit: 'b'.repeat(40),
+    freshApplicationStateFingerprint: fingerprint,
+    upgradeApplicationStateFingerprint: fingerprint,
+    allPassed: true,
+  })
+
+  assert.throws(() => buildDatabaseContractEvidence({
+    commit: 'b'.repeat(40),
+    freshApplicationStateFingerprint: fingerprint,
+    upgradeApplicationStateFingerprint: 'c'.repeat(32),
+  }), /fresh and upgrade application catalog fingerprints differ/)
+  assert.throws(() => buildDatabaseContractEvidence({
+    commit: 'not-a-commit',
+    freshApplicationStateFingerprint: fingerprint,
+    upgradeApplicationStateFingerprint: fingerprint,
+  }), /commit must be a canonical SHA/)
+})
 
 const listenErrorCode = (host, port) => new Promise((resolve, reject) => {
   const server = net.createServer()
