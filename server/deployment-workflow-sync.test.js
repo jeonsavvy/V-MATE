@@ -461,7 +461,7 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   }
   assert.match(release, /safeViewDefinitionsMatch/);
   assert.match(baseline, /Current migration fingerprint does not match the approved baseline/);
-  assert.match(baseline, /Current application catalog does not match same-commit disposable database evidence/);
+  assert.match(baseline, /Current application catalog changed after the previous schema-4 baseline/);
   assert.match(baseline, /complete_legacy_chat_message_v2\(uuid,text,text,jsonb\)/);
   assert.match(baseline, /commit_room_turn_v2\(uuid,uuid,text,text,bigint,jsonb,jsonb,jsonb,jsonb,jsonb\)/);
   assert.match(baseline, /Record sanitized read-only baseline evidence[\s\S]*trap 'rm -rf private-artifacts' EXIT/);
@@ -1077,16 +1077,17 @@ test('non-migration baseline binds provider catalog drift to same-commit applica
     'evidence.commit === process.env.GITHUB_SHA',
     '/^[a-f0-9]{32}$/.test(evidence.freshApplicationStateFingerprint',
     '/^[a-f0-9]{32}$/.test(evidence.upgradeApplicationStateFingerprint',
-    'EXPECTED_APPLICATION_STATE_FINGERPRINT=${evidence.upgradeApplicationStateFingerprint}',
-    'EXPECTED_APPLICATION_STATE_FINGERPRINT',
+    'DATABASE_CONTRACT_EVIDENCE_RUN_ID=${run.id}',
   ]) assert.match(baselineEvidence.run, new RegExp(required.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.doesNotMatch(baselineEvidence.run, /EXPECTED_APPLICATION_STATE_FINGERPRINT/);
 
   assert.match(baselineSource, /scripts\/capture-application-release-state\.sql/);
+  assert.match(baselineSource, /PREVIOUS_APPLICATION_STATE_FINGERPRINT=\$\{evidence\.schemaVersion === 4 \? evidence\.applicationStateFingerprint : ''\}/);
   assert.match(baselineSource, /applicationStateFingerprint/);
   assert.match(baselineSource, /databaseContractEvidenceRunId/);
   assert.match(baselineSource, /providerCatalogDriftObserved/);
   assert.match(baselineSource, /schemaVersion: 4/);
-  assert.match(baselineSource, /application\.application_release_state_fingerprint !== process\.env\.EXPECTED_APPLICATION_STATE_FINGERPRINT/);
+  assert.match(baselineSource, /previousApplicationStateFingerprint && application\.application_release_state_fingerprint !== previousApplicationStateFingerprint/);
   assert.match(releaseSource, /baselineV4Keys/);
   assert.match(releaseSource, /evidence\.schemaVersion === 4/);
   assert.match(releaseSource, /evidence\.applicationStateFingerprint/);

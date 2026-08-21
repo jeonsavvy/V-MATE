@@ -156,10 +156,11 @@ Runtime, frontend, fresh-schema snapshot만 바뀐 release는 다음 조건에�
 - trusted lockdown source부터 현재 SHA까지 `supabase/migrations/**`가 변경되지 않음
 - 현재 SHA가 보호 환경에서 승인됐고 동일 SHA의 CI quality와 로컬 DB 계약 job이 성공함
 - 원격 migration fingerprint와 prompt read 권한 검사가 통과함
-- 동일 SHA의 disposable upgrade DB와 운영 `public`·`vmate_private` 카탈로그 fingerprint가 일치함
+- 동일 SHA의 disposable fresh/upgrade DB 계약이 모두 통과하고 두 카탈로그 fingerprint가 canonical 형식임
+- 이전 baseline이 schema 4라면 운영 `public`·`vmate_private` 카탈로그 fingerprint가 이전 값과 정확히 일치함
 - baseline evidence가 생성 후 6시간 이내임
 
-Fresh DB는 별도 계약 검증과 fingerprint 생성을 수행하지만, upgrade 전용 복구 테이블과 immutable manifest를 의도적으로 만들지 않으므로 운영 fingerprint의 비교 대상은 아닙니다. Supabase가 관리하는 `auth`·`storage` 카탈로그의 변화는 앱 소유 카탈로그와 migration 검증이 모두 통과한 뒤 관찰값으로만 기록합니다. 만료된 baseline은 유효한 이전 baseline lineage를 검증한 뒤 원격 fingerprint를 다시 읽어 갱신합니다. 그 사이 serving Worker가 바뀌었다면 성공한 cutover evidence도 함께 검증합니다. 이전 lineage나 필요한 cutover artifact를 확인할 수 없으면 중단합니다. 이 경로는 migration을 다시 실행하거나 원격 DB를 수정하지 않습니다.
+Fresh DB는 별도 계약 검증과 fingerprint 생성을 수행하지만, upgrade 전용 복구 테이블과 immutable manifest를 의도적으로 만들지 않으므로 운영 fingerprint의 비교 대상은 아닙니다. Schema 3 이전 baseline에는 앱 카탈로그 fingerprint가 없으므로, migration fingerprint와 기존 권한·뷰 불변식이 모두 통과한 첫 schema 4 baseline이 현재 값을 확립합니다. 이후 schema 4 갱신은 그 값의 연속성을 엄격히 확인합니다. Supabase가 관리하는 `auth`·`storage` 카탈로그의 변화는 앱 소유 카탈로그와 migration 검증이 모두 통과한 뒤 관찰값으로만 기록합니다. 만료된 baseline은 유효한 이전 baseline lineage를 검증한 뒤 원격 fingerprint를 다시 읽어 갱신합니다. 그 사이 serving Worker가 바뀌었다면 성공한 cutover evidence도 함께 검증합니다. 이전 lineage나 필요한 cutover artifact를 확인할 수 없으면 중단합니다. 이 경로는 migration을 다시 실행하거나 원격 DB를 수정하지 않습니다.
 
 ### 배포 자격 증명
 

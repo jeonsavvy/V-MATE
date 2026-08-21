@@ -173,7 +173,6 @@ jobs:
           if (!runBound || !evidenceBound) throw new Error('Same-commit application database contract evidence is invalid.');
           fs.appendFileSync(process.env.GITHUB_ENV, [
             `DATABASE_CONTRACT_EVIDENCE_RUN_ID=${run.id}`,
-            `EXPECTED_APPLICATION_STATE_FINGERPRINT=${evidence.upgradeApplicationStateFingerprint}`,
             '',
           ].join('\n'));
           NODE
@@ -304,6 +303,7 @@ jobs:
             `PREVIOUS_BASELINE_ATTESTED_AT=${evidence.attestedAt}`,
             `LOCKDOWN_REMOTE_STATE_FINGERPRINT=${evidence.remoteStateFingerprint}`,
             `LOCKDOWN_MIGRATION_ROWS_FINGERPRINT=${evidence.migrationRowsFingerprint}`,
+            `PREVIOUS_APPLICATION_STATE_FINGERPRINT=${evidence.schemaVersion === 4 ? evidence.applicationStateFingerprint : ''}`,
             `LINEAGE_WORKER_VERSION_ID=${evidence.workerVersionId}`,
             `LINEAGE_PREVIOUS_STABLE_VERSION_ID=${evidence.previousStableWorkerVersionId}`,
             `LOCKDOWN_APPLIED_AT=${evidence.lockdownAppliedAt}`,
@@ -837,7 +837,9 @@ jobs:
           ];
           if (!required.every((name) => invariants[name] === true)) throw new Error('Read-only baseline invariants did not pass.');
           if (migration.migration_rows_fingerprint !== process.env.LOCKDOWN_MIGRATION_ROWS_FINGERPRINT) throw new Error('Current migration fingerprint does not match the approved baseline.');
-          if (application.application_release_state_fingerprint !== process.env.EXPECTED_APPLICATION_STATE_FINGERPRINT) throw new Error('Current application catalog does not match same-commit disposable database evidence.');
+          if (!/^[a-f0-9]{32}$/.test(application.application_release_state_fingerprint)) throw new Error('Current application catalog fingerprint is invalid.');
+          const previousApplicationStateFingerprint = process.env.PREVIOUS_APPLICATION_STATE_FINGERPRINT || '';
+          if (previousApplicationStateFingerprint && application.application_release_state_fingerprint !== previousApplicationStateFingerprint) throw new Error('Current application catalog changed after the previous schema-4 baseline.');
           if (!/^[0-9]+$/.test(process.env.DATABASE_CONTRACT_EVIDENCE_RUN_ID || '')) throw new Error('Same-commit database evidence run binding is invalid.');
           const migrationList = fs.readFileSync('private-artifacts/migration-list.json');
           const lockdownMigrationAlias = { sourceVersion: '20260727000000', remoteVersion: '20260727025134', remoteName: 'backend_stabilization_lockdown' };
