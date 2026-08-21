@@ -168,12 +168,12 @@ jobs:
             && JSON.stringify(Object.keys(evidence).sort()) === JSON.stringify(expectedKeys.sort())
             && evidence.commit === process.env.GITHUB_SHA
             && /^[a-f0-9]{32}$/.test(evidence.freshApplicationStateFingerprint || '')
-            && evidence.freshApplicationStateFingerprint === evidence.upgradeApplicationStateFingerprint
+            && /^[a-f0-9]{32}$/.test(evidence.upgradeApplicationStateFingerprint || '')
             && evidence.allPassed === true;
           if (!runBound || !evidenceBound) throw new Error('Same-commit application database contract evidence is invalid.');
           fs.appendFileSync(process.env.GITHUB_ENV, [
             `DATABASE_CONTRACT_EVIDENCE_RUN_ID=${run.id}`,
-            `EXPECTED_APPLICATION_STATE_FINGERPRINT=${evidence.freshApplicationStateFingerprint}`,
+            `EXPECTED_APPLICATION_STATE_FINGERPRINT=${evidence.upgradeApplicationStateFingerprint}`,
             '',
           ].join('\n'));
           NODE

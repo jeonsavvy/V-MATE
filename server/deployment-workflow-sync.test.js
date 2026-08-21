@@ -1075,7 +1075,9 @@ test('non-migration baseline binds provider catalog drift to same-commit applica
     'database-contract-evidence-$CI_RUN_ID',
     'database-contract-evidence.json',
     'evidence.commit === process.env.GITHUB_SHA',
-    'evidence.freshApplicationStateFingerprint === evidence.upgradeApplicationStateFingerprint',
+    '/^[a-f0-9]{32}$/.test(evidence.freshApplicationStateFingerprint',
+    '/^[a-f0-9]{32}$/.test(evidence.upgradeApplicationStateFingerprint',
+    'EXPECTED_APPLICATION_STATE_FINGERPRINT=${evidence.upgradeApplicationStateFingerprint}',
     'EXPECTED_APPLICATION_STATE_FINGERPRINT',
   ]) assert.match(baselineEvidence.run, new RegExp(required.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 

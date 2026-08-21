@@ -11,29 +11,30 @@ import {
   resetLocalSchemasSql,
 } from '../scripts/run-db-tests.mjs'
 
-test('DB contract evidence requires identical canonical fresh and upgrade application fingerprints', () => {
-  const fingerprint = 'a'.repeat(32)
+test('DB contract evidence preserves canonical fresh and upgrade application fingerprints', () => {
+  const freshFingerprint = 'a'.repeat(32)
+  const upgradeFingerprint = 'c'.repeat(32)
   assert.deepEqual(buildDatabaseContractEvidence({
     commit: 'b'.repeat(40),
-    freshApplicationStateFingerprint: fingerprint,
-    upgradeApplicationStateFingerprint: fingerprint,
+    freshApplicationStateFingerprint: freshFingerprint,
+    upgradeApplicationStateFingerprint: upgradeFingerprint,
   }), {
     schemaVersion: 1,
     commit: 'b'.repeat(40),
-    freshApplicationStateFingerprint: fingerprint,
-    upgradeApplicationStateFingerprint: fingerprint,
+    freshApplicationStateFingerprint: freshFingerprint,
+    upgradeApplicationStateFingerprint: upgradeFingerprint,
     allPassed: true,
   })
 
   assert.throws(() => buildDatabaseContractEvidence({
     commit: 'b'.repeat(40),
-    freshApplicationStateFingerprint: fingerprint,
-    upgradeApplicationStateFingerprint: 'c'.repeat(32),
-  }), /fresh and upgrade application catalog fingerprints differ/)
+    freshApplicationStateFingerprint: 'not-a-fingerprint',
+    upgradeApplicationStateFingerprint: upgradeFingerprint,
+  }), /freshApplicationStateFingerprint must be a canonical fingerprint/)
   assert.throws(() => buildDatabaseContractEvidence({
     commit: 'not-a-commit',
-    freshApplicationStateFingerprint: fingerprint,
-    upgradeApplicationStateFingerprint: fingerprint,
+    freshApplicationStateFingerprint: freshFingerprint,
+    upgradeApplicationStateFingerprint: upgradeFingerprint,
   }), /commit must be a canonical SHA/)
 })
 

@@ -16,7 +16,7 @@
 
 ## Consequential assumption
 
-- The drift is safe only if a stable fingerprint of `public` and `vmate_private` matches both disposable fresh and upgrade databases for the same commit and the read-only production query.
+- The drift is safe only if the read-only production fingerprint of `public` and `vmate_private` matches the same-commit disposable upgrade database. The fresh path must independently pass its contracts and emit a canonical fingerprint.
 - Until that equality is proven, the release remains blocked.
 
 ## Non-goals
@@ -38,14 +38,14 @@
 ### Disposable database evidence
 
 - The DB harness calculates the application fingerprint after both fresh-schema and upgrade paths.
-- Fresh and upgrade fingerprints must be equal.
+- Fresh and upgrade fingerprints may differ because upgrade-only recovery tables and their immutable manifest are intentionally absent from `schema.sql`.
 - CI writes a sanitized artifact only when an explicit output path is supplied. The artifact contains the commit, both fingerprints, and `allPassed`; it contains no connection data or row content.
 
 ### Production baseline
 
 - The baseline workflow downloads the database artifact from the successful same-commit CI run it already validates.
 - It runs the same application fingerprint query through the existing read-only Supabase query surface.
-- Production, fresh, and upgrade fingerprints must all match.
+- Production must match the upgrade fingerprint because production follows the migration path. The fresh fingerprint proves the final-schema path was measured after its independent contract suite, but it is not used as the production oracle.
 - The existing full catalog fingerprint remains observational evidence. A difference from the previous baseline is recorded as provider-catalog drift only after the application fingerprint, migration fingerprint, and existing invariants pass.
 - Baseline evidence schema 4 adds `applicationStateFingerprint`, `databaseContractEvidenceRunId`, and `providerCatalogDriftObserved`. Previous schema 3 evidence remains valid only as renewal lineage input.
 
@@ -60,7 +60,7 @@
 same-commit CI succeeds
   -> disposable fresh application fingerprint
   -> disposable upgrade application fingerprint
-  -> require fresh == upgrade
+  -> require both fingerprints are canonical and both contract paths passed
   -> upload sanitized DB-contract artifact
 
 read-only production baseline
@@ -68,7 +68,7 @@ read-only production baseline
   -> require migration rows and existing privilege invariants
   -> download exact same-commit CI DB-contract artifact
   -> calculate production application fingerprint
-  -> require production == fresh == upgrade
+  -> require production == upgrade
   -> record current full catalog fingerprint and provider-drift boolean
   -> upload schema 4 baseline evidence
 

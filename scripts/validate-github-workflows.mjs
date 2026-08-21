@@ -453,6 +453,7 @@ const validateWorkflow = (file, source) => {
       'd6600ea38a78da1ee3a4c4779dd459250f887908eb40b13bbd3f64adb1c9437c',
       'Verify same-commit application database contract evidence',
       'database-contract-evidence-$CI_RUN_ID',
+      'EXPECTED_APPLICATION_STATE_FINGERPRINT=${evidence.upgradeApplicationStateFingerprint}',
       'scripts/capture-application-release-state.sql',
       'Current migration fingerprint does not match the approved baseline.',
       'Current application catalog does not match same-commit disposable database evidence.',

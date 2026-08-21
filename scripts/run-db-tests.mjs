@@ -189,9 +189,6 @@ export const buildDatabaseContractEvidence = ({
       throw new Error(`${name} must be a canonical fingerprint`)
     }
   }
-  if (freshApplicationStateFingerprint !== upgradeApplicationStateFingerprint) {
-    throw new Error('Disposable fresh and upgrade application catalog fingerprints differ')
-  }
   return {
     schemaVersion: 1,
     commit,
