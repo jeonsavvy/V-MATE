@@ -142,8 +142,6 @@ jobs:
             production_origin=$(canonical_origin "$PRODUCTION_BASE_URL") || { echo '::error::production target guard is not configured'; exit 1; }
             [[ "$input_origin" == "$production_origin" && "$WORKER_NAME" == "$PRODUCTION_WORKER_NAME" ]] || { echo '::error::production target guard mismatch'; exit 1; }
             [[ "$input_origin" == 'https://v-mate.satinode.com' ]] || { echo '::error::production must use the canonical V-MATE origin'; exit 1; }
-            legacy_origin='https://v-mate.jeonsavvy.workers.dev'
-            echo "LEGACY_ORIGIN=$legacy_origin" >> "$GITHUB_ENV"
           fi
           if [[ '${{ inputs.operation }}' != 'shadow' ]]; then
             [[ "$INPUT_VERSION_ID" =~ ^[A-Za-z0-9_-]+$ ]] || { echo '::error::version_id is required and must be canonical'; exit 1; }
@@ -1016,9 +1014,6 @@ jobs:
           trap 'rm -f -- "$WRANGLER_OUTPUT_FILE_PATH"' EXIT
           version_tag="github-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           release_allowed_origins="$APPROVED_ORIGIN"
-          if [[ '${{ inputs.target }}' == 'production' ]]; then
-            release_allowed_origins="$APPROVED_ORIGIN,$LEGACY_ORIGIN"
-          fi
           npx --no-install wrangler versions upload "${args[@]}" --name "$WORKER_NAME" --tag "$version_tag" --message "$GITHUB_SHA" --var "ALLOWED_ORIGINS:$release_allowed_origins"
           version_id=$(node - "$version_tag" <<'NODE'
           const fs = require('node:fs');
@@ -1144,14 +1139,6 @@ jobs:
           else
             node scripts/smoke-release.mjs --base-url "$BASE_URL" --worker-name "$WORKER_NAME" --version-id "$version_id" --dist-manifest artifacts/dist-manifest.json | tee artifacts/smoke.log
           fi
-
-      - name: Smoke preserved legacy Workers.dev hostname
-        if: ${{ inputs.target == 'production' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Do not override the version or compare the new manifest here: this URL must prove the live legacy hostname remains reachable during shadow releases too.
-          node scripts/smoke-release.mjs --base-url "$LEGACY_ORIGIN" | tee artifacts/legacy-smoke.log
 
       - name: Verify live cutover once at public origin
         if: ${{ inputs.operation == 'cutover' }}

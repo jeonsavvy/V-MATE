@@ -251,7 +251,6 @@ const validateWorkflow = (file, source) => {
     for (const required of [
       'echo "APPROVED_ORIGIN=$input_origin" >> "$GITHUB_ENV"',
       'release_allowed_origins="$APPROVED_ORIGIN"',
-      'release_allowed_origins="$APPROVED_ORIGIN,$LEGACY_ORIGIN"',
       '--var "ALLOWED_ORIGINS:$release_allowed_origins"',
       'wrangler triggers deploy --env "" --name "$WORKER_NAME" --dry-run',
       'baseline_evidence_run_id:',

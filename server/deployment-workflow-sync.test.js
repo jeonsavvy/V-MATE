@@ -240,7 +240,8 @@ test('github ci is read-only and Worker release requires a manual zero-traffic g
   assert.match(release, /APPROVED_ORIGIN=\$input_origin/);
   assert.match(release, /wrangler triggers deploy --env "" --name "\$WORKER_NAME" --dry-run/);
   assert.match(release, /wrangler triggers deploy --env "" --name "\$WORKER_NAME"\n/);
-  assert.match(release, /release_allowed_origins="\$APPROVED_ORIGIN,\$LEGACY_ORIGIN"/);
+  assert.match(release, /release_allowed_origins="\$APPROVED_ORIGIN"/);
+  assert.doesNotMatch(release, /LEGACY_ORIGIN|jeonsavvy\.workers\.dev|legacy-smoke\.log/);
   assert.match(release, /baseline_evidence_run_id/);
   assert.match(release, /exactly one expand_evidence_run_id or baseline_evidence_run_id is required/);
   const unchangedMigrationGuard = /git diff --quiet "\$BASELINE_SOURCE_SHA" "\$GITHUB_SHA" -- supabase\/migrations\//;

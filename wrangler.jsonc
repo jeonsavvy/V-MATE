@@ -2,7 +2,8 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "v-mate",
   "main": "worker.js",
-  "workers_dev": true,
+  "workers_dev": false,
+  "preview_urls": true,
   "routes": [
     {
       "pattern": "v-mate.satinode.com",

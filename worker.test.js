@@ -196,7 +196,7 @@ test('platform artwork frames fill their media slots without thumbnail padding',
   assert.doesNotMatch(source, /h-full w-full object-contain p-3/);
 });
 
-test('declares the canonical production hostname while preserving Workers.dev and isolating staging routes', () => {
+test('declares the canonical production hostname, disables production Workers.dev, and isolates staging routes', () => {
   const config = JSON.parse(readFileSync('wrangler.jsonc', 'utf8'));
   const index = readFileSync('index.html', 'utf8');
   const workflow = readFileSync('.github/workflows/release-worker.yml', 'utf8').replace(/\r\n/g, '\n');
@@ -205,19 +205,18 @@ test('declares the canonical production hostname while preserving Workers.dev an
     'utf8',
   ).replace(/\r\n/g, '\n');
 
-  assert.equal(config.workers_dev, true);
+  assert.equal(config.workers_dev, false);
+  assert.equal(config.preview_urls, true);
   assert.deepEqual(config.routes, [{ pattern: 'v-mate.satinode.com', custom_domain: true }]);
   assert.equal(config.env.staging.workers_dev, true);
   assert.deepEqual(config.env.staging.routes, []);
   assert.match(index, /<link rel="canonical" href="https:\/\/v-mate\.satinode\.com\/" \/>/);
   assert.match(index, /<meta property="og:url" content="https:\/\/v-mate\.satinode\.com\/" \/>/);
-  assert.match(workflow, /legacy_origin='https:\/\/v-mate\.jeonsavvy\.workers\.dev'/);
   assert.match(workflow, /wrangler triggers deploy --env "" --name "\$WORKER_NAME" --dry-run/);
   assert.match(workflow, /wrangler triggers deploy --env "" --name "\$WORKER_NAME"\n/);
-  assert.match(workflow, /release_allowed_origins="\$APPROVED_ORIGIN"\n          if \[\[ '\$\{\{ inputs\.target \}\}' == 'production' \]\]/);
-  assert.match(workflow, /release_allowed_origins="\$APPROVED_ORIGIN,\$LEGACY_ORIGIN"/);
+  assert.match(workflow, /release_allowed_origins="\$APPROVED_ORIGIN"/);
+  assert.doesNotMatch(workflow, /LEGACY_ORIGIN|jeonsavvy\.workers\.dev|legacy-smoke\.log/);
   assert.match(workflow, /--var "ALLOWED_ORIGINS:\$release_allowed_origins"/);
-  assert.match(workflow, /Smoke preserved legacy Workers\.dev hostname/);
   assert.match(workflow, /exactly one expand_evidence_run_id or baseline_evidence_run_id is required/);
   assert.match(workflow, /AUTHORIZED_DOMAIN_RELEASE_SHA/);
   assert.match(workflow, /AUTHORIZED_BASELINE_RELEASE_SHA/);
