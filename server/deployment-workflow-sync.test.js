@@ -1110,10 +1110,11 @@ test('wrangler config preserves dashboard vars during deploy', async () => {
 });
 
 
-test('wrangler config serves SPA deep links while preserving runtime env injection', async () => {
+test('wrangler config gives the Worker ownership of SPA fallback and runtime env injection', async () => {
   const wranglerConfig = await readUtf8('wrangler.jsonc');
 
-  assert.match(wranglerConfig, /"not_found_handling"\s*:\s*"single-page-application"/);
+  assert.match(wranglerConfig, /"html_handling"\s*:\s*"none"/);
+  assert.match(wranglerConfig, /"not_found_handling"\s*:\s*"none"/);
   assert.match(wranglerConfig, /"run_worker_first"\s*:\s*\[/);
   for (const route of [
     '/api/*',

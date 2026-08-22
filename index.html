@@ -16,17 +16,98 @@
       content="캐릭터와 월드를 조합해 대화하고, 장면과 기억을 이어가는 캐릭터챗 플랫폼"
     />
     <meta property="og:url" content="https://v-mate.satinode.com/" />
-    <meta name="twitter:card" content="summary" />
+    <meta property="og:image" content="https://v-mate.satinode.com/starter/world-a-hero-v1.webp" />
+    <meta property="og:image:width" content="1280" />
+    <meta property="og:image:height" content="720" />
+    <meta property="og:image:alt" content="비가 갠 저녁의 도시 거리를 그린 V-MATE 월드 이미지" />
+    <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="V-MATE" />
     <meta
       name="twitter:description"
       content="캐릭터와 월드를 조합해 대화하고, 장면과 기억을 이어가는 캐릭터챗 플랫폼"
     />
+    <meta name="twitter:image" content="https://v-mate.satinode.com/starter/world-a-hero-v1.webp" />
+    <meta name="twitter:image:alt" content="비가 갠 저녁의 도시 거리를 그린 V-MATE 월드 이미지" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "name": "V-MATE",
+        "url": "https://v-mate.satinode.com/",
+        "description": "캐릭터와 월드를 조합해 대화하고, 장면과 기억을 이어가는 캐릭터챗 플랫폼",
+        "inLanguage": "ko"
+      }
+    </script>
+    <style id="v-mate-static-shell-styles">
+      .v-mate-static-shell { box-sizing: border-box; max-width: 72rem; margin: 0 auto; padding: 4rem 1.5rem; color: #171717; font-family: Pretendard, "Noto Sans KR", system-ui, sans-serif; }
+      .v-mate-static-shell * { box-sizing: border-box; }
+      .v-mate-static-shell__eyebrow { margin: 0 0 .75rem; color: #6d28d9; font-size: .8rem; font-weight: 700; letter-spacing: .12em; }
+      .v-mate-static-shell h1 { max-width: 18ch; margin: 0; font-size: clamp(2.25rem, 7vw, 4.75rem); line-height: 1.05; letter-spacing: -.055em; }
+      .v-mate-static-shell__lead { max-width: 48rem; margin: 1.5rem 0 0; color: #525252; font-size: 1.05rem; line-height: 1.85; }
+      .v-mate-static-shell__grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 1rem; margin-top: 3rem; }
+      .v-mate-static-shell section { padding: 1.5rem; border: 1px solid #e7e7e7; border-radius: 1rem; background: #fafafa; }
+      .v-mate-static-shell h2 { margin: 0; font-size: 1.1rem; }
+      .v-mate-static-shell section p, .v-mate-static-shell li { color: #5f5f5f; line-height: 1.75; }
+      .v-mate-static-shell ul { margin: 1rem 0 0; padding-left: 1.25rem; }
+      .v-mate-static-shell footer { margin-top: 2.5rem; padding-top: 1.25rem; border-top: 1px solid #e7e7e7; color: #666; line-height: 1.7; }
+      .v-mate-static-shell a { color: #5b21b6; text-underline-offset: .2em; }
+    </style>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>V-MATE</title>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <main class="v-mate-static-shell">
+        <header>
+          <p class="v-mate-static-shell__eyebrow">V-MATE · CHARACTER CHAT</p>
+          <h1>캐릭터와 월드를 골라 한 장면을 이어 가는 대화</h1>
+          <p class="v-mate-static-shell__lead">
+            V-MATE는 마음에 드는 캐릭터와 월드를 조합해 하나의 대화방을 만드는 서사형 캐릭터챗 플랫폼입니다.
+            공개된 캐릭터를 살펴보고, 원하는 배경 세계를 더하거나 캐릭터만으로 바로 대화를 시작할 수 있습니다.
+            캐릭터의 성격과 말투, 관계의 출발점에 월드의 장면 규칙과 분위기를 합쳐 방마다 다른 시작 장면을 구성합니다.
+          </p>
+        </header>
+
+        <div class="v-mate-static-shell__grid">
+          <section aria-labelledby="static-start-heading">
+            <h2 id="static-start-heading">대화는 어떻게 시작하나요?</h2>
+            <p>
+              홈에서 공개 캐릭터와 월드를 탐색한 뒤 조합을 선택하면 플레이 룸을 만들 수 있습니다.
+              월드는 선택 사항이므로 캐릭터 한 명만 골라도 시작할 수 있습니다. 로그인한 이용자는 자신의 캐릭터와 월드를 만들고,
+              이미지 슬롯과 소개 문구를 다듬어 공개 또는 개인 콘텐츠로 관리할 수 있습니다.
+            </p>
+          </section>
+
+          <section aria-labelledby="static-memory-heading">
+            <h2 id="static-memory-heading">장면과 기억은 어떻게 이어지나요?</h2>
+            <p>
+              방을 만들 때 선택한 설정은 그 방의 기본 프롬프트로 고정됩니다. 대화가 길어지면 최근 메시지와 규칙 기반 누적 요약,
+              현재 장면 상태를 함께 사용해 다음 응답의 맥락을 구성합니다. 원문 메시지는 방 기록에 남지만 오래된 모든 세부 사실을
+              모델이 항상 기억하는 구조는 아니므로, 중요한 설정은 캐릭터와 월드 설명에 분명하게 적는 편이 좋습니다.
+            </p>
+          </section>
+
+          <section aria-labelledby="static-features-heading">
+            <h2 id="static-features-heading">무엇을 관리할 수 있나요?</h2>
+            <ul>
+              <li>캐릭터·월드 탐색, 즐겨찾기와 보관함</li>
+              <li>최근 대화방 확인과 이어서 대화하기</li>
+              <li>캐릭터·월드 제작, 수정, 이미지 슬롯 전환</li>
+              <li>신고, 계정 삭제, 개인정보 처리 안내</li>
+            </ul>
+          </section>
+        </div>
+
+        <footer>
+          <p>
+            대화와 제작 기능은 JavaScript를 사용하는 웹 앱에서 제공됩니다.
+            개인정보 처리 항목과 이용자 권리는 <a href="/privacy">개인정보처리방침</a>에서 확인할 수 있습니다.
+            기계가 읽기 쉬운 서비스 요약은 <a href="/llms.txt">llms.txt</a>, 공개 경로 목록은
+            <a href="/sitemap.xml">사이트맵</a>에 있습니다.
+          </p>
+        </footer>
+      </main>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

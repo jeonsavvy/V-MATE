@@ -14,6 +14,16 @@ import {
 
 // Worker는 정적 셸 응답에 runtime env를 주입하고, chat API와 platform API를 분기한다.
 const CHAT_API_PATH = "/api/chat";
+const SPA_ROUTE_PATTERNS = [
+  /^\/$/,
+  /^\/index\.html$/,
+  /^\/(?:characters|worlds|rooms|chat)\/[^/]+\/?$/,
+  /^\/start\/(?:character|world)\/[^/]+\/?$/,
+  /^\/create\/(?:character|world)\/?$/,
+  /^\/edit\/(?:character|world)\/[^/]+\/?$/,
+  /^\/(?:recent|library|ops|privacy)\/?$/,
+  /^\/auth\/recovery\/?$/,
+];
 const SUPABASE_KEEPALIVE_BASE_PATHS = [
   "/rest/v1/characters",
   "/rest/v1/worlds",
@@ -407,10 +417,34 @@ const handlePlatformApiRequest = async (request, runtimeConfig, executionContext
   return toWorkerResponse(result, result?.headers);
 };
 
-const isHtmlRequest = (request) => {
-  if (request.method !== "GET") return false;
-  const accept = request.headers.get("accept") || "";
-  return accept.includes("text/html");
+const isDocumentMethod = (request) => request.method === "GET" || request.method === "HEAD";
+
+const acceptsMediaType = (request, mediaType) => {
+  const normalizedMediaType = mediaType.toLowerCase();
+  return (request.headers.get("accept") || "")
+    .split(",")
+    .some((range) => range.trim().toLowerCase().split(";", 1)[0] === normalizedMediaType);
+};
+
+const isHomepagePath = (pathname) => pathname === "/" || pathname === "/index.html";
+
+const isSpaRoutePathname = (pathname) =>
+  SPA_ROUTE_PATTERNS.some((pattern) => pattern.test(pathname));
+
+const isDocumentLikePathname = (pathname) => {
+  const lastSegment = pathname.split("/").filter(Boolean).at(-1) || "";
+  return !lastSegment.includes(".");
+};
+
+const ensureContentNegotiationVary = (headers = new Headers()) => {
+  const nextHeaders = new Headers(headers);
+  const existing = (nextHeaders.get("vary") || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .filter((value) => !["accept", "accept-encoding"].includes(value.toLowerCase()));
+  nextHeaders.set("Vary", ["Accept", "Accept-Encoding", ...existing].join(", "));
+  return nextHeaders;
 };
 
 // 기존 공개 binding을 읽되, 브라우저에는 안정된 공개 필드명만 전달한다.
@@ -442,7 +476,7 @@ const injectRuntimeEnvIntoHtml = async (response, env) => {
     ? html.replace("</head>", `${runtimeScript}</head>`)
     : `${runtimeScript}${html}`;
 
-  const headers = new Headers(response.headers);
+  const headers = ensureContentNegotiationVary(response.headers);
   headers.delete("content-length");
   headers.delete("etag");
   headers.set("Cache-Control", "no-store, max-age=0");
@@ -460,13 +494,94 @@ const injectRuntimeEnvIntoHtml = async (response, env) => {
   });
 };
 
+const serveHomepageMarkdown = async (request, env) => {
+  const markdownUrl = new URL(request.url);
+  markdownUrl.pathname = "/llms.txt";
+  markdownUrl.search = "";
+  const assetResponse = await env.ASSETS.fetch(new Request(markdownUrl.toString(), request));
+
+  if (!assetResponse.ok) {
+    return withSecurityHeaders(assetResponse);
+  }
+
+  const headers = ensureContentNegotiationVary(assetResponse.headers);
+  headers.set("Content-Type", "text/markdown; charset=utf-8");
+  return new Response(assetResponse.body, {
+    status: assetResponse.status,
+    statusText: assetResponse.statusText,
+    headers: applySecurityHeaders(headers),
+  });
+};
+
+const createNotFoundResponse = (request) => {
+  const url = new URL(request.url);
+  const wantsHtml = acceptsMediaType(request, "text/html");
+  const body = wantsHtml
+    ? `<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="robots" content="noindex" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>페이지를 찾을 수 없습니다 · V-MATE</title>
+  </head>
+  <body>
+    <main>
+      <h1>페이지를 찾을 수 없습니다</h1>
+      <p>요청한 V-MATE 경로가 없거나 이동되었습니다.</p>
+      <ul>
+        <li><a href="${url.origin}/">V-MATE 홈</a></li>
+        <li><a href="${url.origin}/sitemap.xml">사이트맵</a></li>
+        <li><a href="${url.origin}/llms.txt">에이전트용 안내</a></li>
+      </ul>
+    </main>
+  </body>
+</html>`
+    : `# 페이지를 찾을 수 없습니다
+
+요청한 V-MATE 경로가 없거나 이동되었습니다.
+
+- [V-MATE 홈](${url.origin}/)
+- [사이트맵](${url.origin}/sitemap.xml)
+- [에이전트용 안내](${url.origin}/llms.txt)
+`;
+  const headers = ensureContentNegotiationVary({
+    "Cache-Control": "no-store, max-age=0",
+    "Content-Language": "ko",
+    "Content-Type": wantsHtml
+      ? "text/html; charset=utf-8"
+      : "text/markdown; charset=utf-8",
+  });
+
+  return new Response(request.method === "HEAD" ? null : body, {
+    status: 404,
+    headers: applySecurityHeaders(headers),
+  });
+};
+
 const serveStaticAsset = async (request, env) => {
+  const url = new URL(request.url);
+
+  if (
+    isDocumentMethod(request)
+    && isHomepagePath(url.pathname)
+    && acceptsMediaType(request, "text/markdown")
+  ) {
+    return serveHomepageMarkdown(request, env);
+  }
+
   let assetResponse = await env.ASSETS.fetch(request);
 
-  if (assetResponse.status === 404 && isHtmlRequest(request)) {
-    const url = new URL(request.url);
-    url.pathname = "/index.html";
-    assetResponse = await env.ASSETS.fetch(new Request(url.toString(), request));
+  if (assetResponse.status === 404) {
+    if (isDocumentMethod(request) && isSpaRoutePathname(url.pathname)) {
+      url.pathname = "/index.html";
+      url.search = "";
+      assetResponse = await env.ASSETS.fetch(new Request(url.toString(), request));
+    } else if (isDocumentMethod(request) && isDocumentLikePathname(url.pathname)) {
+      return createNotFoundResponse(request);
+    } else {
+      return withSecurityHeaders(assetResponse);
+    }
   }
 
   return injectRuntimeEnvIntoHtml(assetResponse, env);

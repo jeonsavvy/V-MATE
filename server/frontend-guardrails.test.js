@@ -36,9 +36,21 @@ test('document head exposes canonical social sharing metadata', async () => {
   assert.equal(readHeadAttribute(head, 'property', 'og:site_name', 'content'), 'V-MATE');
   assert.equal(readHeadAttribute(head, 'property', 'og:description', 'content'), description);
   assert.equal(readHeadAttribute(head, 'property', 'og:url', 'content'), 'https://v-mate.satinode.com/');
-  assert.equal(readHeadAttribute(head, 'name', 'twitter:card', 'content'), 'summary');
+  assert.equal(
+    readHeadAttribute(head, 'property', 'og:image', 'content'),
+    'https://v-mate.satinode.com/starter/world-a-hero-v1.webp',
+  );
+  assert.equal(readHeadAttribute(head, 'property', 'og:image:width', 'content'), '1280');
+  assert.equal(readHeadAttribute(head, 'property', 'og:image:height', 'content'), '720');
+  assert.match(readHeadAttribute(head, 'property', 'og:image:alt', 'content'), /V-MATE/);
+  assert.equal(readHeadAttribute(head, 'name', 'twitter:card', 'content'), 'summary_large_image');
   assert.equal(readHeadAttribute(head, 'name', 'twitter:title', 'content'), 'V-MATE');
   assert.equal(readHeadAttribute(head, 'name', 'twitter:description', 'content'), description);
+  assert.equal(
+    readHeadAttribute(head, 'name', 'twitter:image', 'content'),
+    'https://v-mate.satinode.com/starter/world-a-hero-v1.webp',
+  );
+  assert.match(readHeadAttribute(head, 'name', 'twitter:image:alt', 'content'), /V-MATE/);
 });
 
 test('versioned frontend assets use immutable browser caching and bounded image payloads', async () => {
@@ -80,7 +92,11 @@ test('robots policy remains valid without restricting public routes', async () =
     .map((line) => line.trim())
     .filter(Boolean);
 
-  assert.deepEqual(directives, ['User-agent: *', 'Disallow:']);
+  assert.deepEqual(directives, [
+    'User-agent: *',
+    'Disallow:',
+    'Sitemap: https://v-mate.satinode.com/sitemap.xml',
+  ]);
 });
 
 const walkFiles = async (rootDir) => {

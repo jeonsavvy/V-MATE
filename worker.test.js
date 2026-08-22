@@ -1037,6 +1037,82 @@ test('serves index.html fallback for html route miss', async () => {
   assert.deepEqual(calledPaths, ['/chat/mika', '/index.html']);
 });
 
+test('returns a recoverable 404 for an unknown document route', async () => {
+  const calledPaths = [];
+  const request = new Request('https://example.com/definitely-not-a-route', {
+    method: 'GET',
+    headers: {
+      accept: 'text/html',
+    },
+  });
+
+  const response = await worker.fetch(request, {
+    ASSETS: {
+      fetch: async (incomingRequest) => {
+        const pathname = new URL(incomingRequest.url).pathname;
+        calledPaths.push(pathname);
+
+        if (pathname === '/index.html') {
+          return new Response('<html><head></head><body>SPA</body></html>', {
+            status: 200,
+            headers: { 'content-type': 'text/html; charset=utf-8' },
+          });
+        }
+
+        return new Response('Not found', {
+          status: 404,
+          headers: { 'content-type': 'text/plain' },
+        });
+      },
+    },
+  });
+
+  assert.equal(response.status, 404);
+  assert.match(response.headers.get('content-type') || '', /text\/html/);
+  const body = await response.text();
+  assert.match(body, /페이지를 찾을 수 없습니다/);
+  assert.match(body, /\/sitemap\.xml/);
+  assert.match(body, /\/llms\.txt/);
+  assert.deepEqual(calledPaths, ['/definitely-not-a-route']);
+});
+
+test('negotiates the homepage as markdown and varies caches by accept headers', async () => {
+  const calledPaths = [];
+  const request = new Request('https://example.com/', {
+    method: 'GET',
+    headers: {
+      accept: 'text/markdown',
+    },
+  });
+
+  const response = await worker.fetch(request, {
+    ASSETS: {
+      fetch: async (incomingRequest) => {
+        const pathname = new URL(incomingRequest.url).pathname;
+        calledPaths.push(pathname);
+
+        if (pathname === '/llms.txt') {
+          return new Response('# V-MATE\n\n캐릭터와 월드를 조합하는 캐릭터챗 플랫폼입니다.', {
+            status: 200,
+            headers: { 'content-type': 'text/plain; charset=utf-8' },
+          });
+        }
+
+        return new Response('<html><head></head><body>SPA</body></html>', {
+          status: 200,
+          headers: { 'content-type': 'text/html; charset=utf-8' },
+        });
+      },
+    },
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'text/markdown; charset=utf-8');
+  assert.equal(response.headers.get('vary'), 'Accept, Accept-Encoding');
+  assert.match(await response.text(), /^# V-MATE/m);
+  assert.deepEqual(calledPaths, ['/llms.txt']);
+});
+
 test('does not inject runtime env script for non-html static assets', async () => {
   const request = new Request('https://example.com/assets/app.js', {
     method: 'GET',
